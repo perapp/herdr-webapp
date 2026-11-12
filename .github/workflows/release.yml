@@ -97,6 +97,8 @@ jobs:
           npm run build
       - name: Rust host checks (cross Linux ARM is built below)
         run: |
+          # macOS /var/folders aliases /private/var; security fixtures require canonical paths.
+          export TMPDIR="$(cd "$RUNNER_TEMP" && pwd -P)"
           cargo fmt --all -- --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked

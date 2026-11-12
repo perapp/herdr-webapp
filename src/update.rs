@@ -873,6 +873,11 @@ async fn events(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn private_tmp() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap())
+            .unwrap()
+    }
     #[test]
     fn restart_identity_keeps_original_terminal_job() {
         let identity = RestartIdentity::capture();
@@ -890,7 +895,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_lock_and_listener_descriptors_close_on_exec() {
         use std::os::fd::AsRawFd;
-        let d = tempfile::tempdir().unwrap();
+        let d = private_tmp();
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
@@ -943,14 +948,14 @@ mod tests {
     }
     #[test]
     fn unmanaged() {
-        let d = tempfile::tempdir().unwrap();
+        let d = private_tmp();
         write_private(&d.path().join("herdr-webapp"), b"test", 0o700).unwrap();
         assert!(eligible(&d.path().join("herdr-webapp")).is_err());
     }
     #[test]
     fn receipt_and_permissions() {
         use std::os::unix::fs::PermissionsExt;
-        let d = tempfile::tempdir().unwrap();
+        let d = private_tmp();
         fs::set_permissions(d.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let root = d.path().join("managed");
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -998,7 +1003,7 @@ mod tests {
     }
     #[test]
     fn ready_retires_only_validated_older_backup_and_allows_next_update() {
-        let d = tempfile::tempdir().unwrap();
+        let d = private_tmp();
         let root = d.path().join("app");
         let backup = backup_fixture(&root, "0.0.0");
         write_private(&backup.join("LICENSE"), b"license", 0o600).unwrap();
@@ -1013,7 +1018,7 @@ mod tests {
     }
     #[test]
     fn backup_retirement_refuses_unsafe_or_unmanaged_content_without_deletion() {
-        let d = tempfile::tempdir().unwrap();
+        let d = private_tmp();
         let root = d.path().join("app");
         let backup = backup_fixture(&root, VERSION);
         assert!(retire_backup(&root).is_err()); // not an older release
@@ -1041,7 +1046,7 @@ mod tests {
     }
     #[test]
     fn activation_rolls_back() {
-        let d = tempfile::tempdir().unwrap();
+        let d = private_tmp();
         let root = d.path().join("app");
         let stage = d.path().join("stage");
         let backup = d.path().join("backup");
@@ -1123,7 +1128,7 @@ mod tests {
     }
     #[test]
     fn lock_exclusive() {
-        let d = tempfile::tempdir().unwrap();
+        let d = private_tmp();
         let root = d.path().join("app");
         let l = Lock::acquire(&root).unwrap();
         assert!(Lock::acquire(&root).is_err());
