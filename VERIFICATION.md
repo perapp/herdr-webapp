@@ -397,3 +397,33 @@ These browser checks do not establish physical iOS/Android keyboard acceptance.
 - The first release is 0.0.1 consistently across Cargo, lockfiles and frontend
   metadata. Published-asset installation and live baseline-to-release upgrade
   verification are recorded separately after publication.
+
+## Published 0.0.1 acceptance
+
+- GitHub release v0.0.1 contains all three target archives, install.sh and
+  SHA256SUMS. Native macOS ARM CI initially found aliased temporary fixture paths;
+  a CI-only canonical-temp fix allowed an unchanged v0.0.1 tag to pass the complete
+  workflow. The repository remains private; downloads use authenticated gh.
+- Downloaded the actual published installer and Linux x86_64 asset, installed into
+  an isolated managed location, ran --version, and successfully reinstalled.
+  The published installer refused replacement of a live managed web server.
+- Updated a separately compiled isolated managed 0.0.0 baseline to the actual
+  published 0.0.1 through the phone confirmation. Desktop check/notice/Cancel,
+  visible phone confirmation, authenticated reconnect, one-time frontend reload,
+  retained output, and trusted post-reconnect command execution passed.
+- Verified the same server PID and foreground TTY process group, unchanged shell
+  PID/creation identity, matching managed receipt, and cleaned update lock/backup.
+- Physical mobile keyboards and Linux ARM installation were not tested. macOS ARM
+  ran native CI checks/version probing; interactive installation was not tested.
+
+## 0.0.2 phone-rotation correction
+
+- Portaled the native update confirmation to document.body. The drawer closes
+  when crossing the phone/desktop breakpoint; its confirmation must not inherit
+  the closed drawer's display:none and leave an invisible blocking modal.
+- make check/release/smoke passed again (110 frontend, 51 Rust, 13 distribution).
+  Actual published 0.0.1-to-0.0.2 acceptance is recorded after publication.
+- An isolated managed preview using the new embedded frontend passed both
+  desktop-to-portrait and portrait-to-landscape confirmation rotation: the dialog
+  stayed visible outside the closed drawer, Cancel removed it, and navigation
+  remained usable. The existing 0.0.1 browser session was preserved afterward.

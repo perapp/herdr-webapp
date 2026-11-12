@@ -49,6 +49,12 @@
     await tick();
     if (!disposed && confirmation) dialog?.showModal();
   }
+  // A viewport change can close the navigation drawer. Keep its modal out of
+  // that hidden ancestor so the confirmation remains visible and dismissible.
+  function portal(node: HTMLDialogElement) {
+    document.body.append(node);
+    return { destroy() { node.close(); node.remove(); } };
+  }
   function dismiss() { dialog?.close(); confirmation = null; }
   function install() {
     const captured = confirmation;
@@ -106,7 +112,7 @@
 </section>
 
 {#if confirmation}
-  <dialog class="update-dialog" bind:this={dialog} aria-labelledby="update-heading" oncancel={event => { event.preventDefault(); dismiss(); }}>
+  <dialog class="update-dialog" use:portal bind:this={dialog} aria-labelledby="update-heading" oncancel={event => { event.preventDefault(); dismiss(); }}>
     <h2 id="update-heading">Update Herdr web?</h2>
     <p class="update-transition"><span>v{confirmation.from}</span><span aria-hidden="true">→</span><strong>v{confirmation.to}</strong></p>
     <p>Only the web server restarts. Herdr Core and your terminals keep running. This browser reconnects automatically and loads the new version.</p>

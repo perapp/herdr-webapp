@@ -87,6 +87,17 @@ and CLI files are not overwritten. If the OS prevents rollback, the backup is
 retained and its recovery path is reported. Config/auth under the separate state
 home are untouched. No core install/restart or terminal operation is performed.
 
+## Web-server activation
+
+In-app updates use in-place Unix exec after a bounded HTTP drain. The server PID,
+foreground TTY job, original stdio, environment and resolved server settings remain
+unchanged; old listener/authentication locks close on exec. Only the web server
+restarts, never Core or terminals. A same-filesystem `.old` backup protects
+rename/exec rollback. After the new HTTP bind, only a validated older managed
+payload is retired automatically, allowing subsequent updates. Unknown or unsafe
+backup contents are preserved for manual recovery; startup is not a full health
+check and does not provide automatic application-health rollback.
+
 ## Publication and verification
 
 `.github/workflows/release.yml` triggers only on pushed `v*` tags or manual
