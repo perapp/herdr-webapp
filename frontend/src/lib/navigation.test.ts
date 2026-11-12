@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { paneTitle, resolvePane, selectPane, visiblePanes } from './navigation';
+import { paneTitle, resolvePane, selectCreated, selectPane, visiblePanes } from './navigation';
 import { blankView } from './view';
 import { viewKey } from './schema';
 import type { LayoutNode, SharedDocument } from './schema';
@@ -10,6 +10,21 @@ function fixture(on: string | null = null): SharedDocument {
   return { on, version:2, spaces:[{ id:'workspace', name:'Work', folder:'/work', tabs:[{ id:'tab', name:'Shell', root:root() }] }] };
 }
 describe('terminal-first navigation', () => {
+  it('selects a confirmed creation on the clicked computer/workspace/tab', () => {
+    const view=blankView();view.space=viewKey(null,'old');
+    expect(selectCreated(view,{on:'beta',space:'remote-space',tab:'other-tab',pane:'new-pane',terminal:'beta/t9'})).toBe(true);
+    expect(view.space).toBe(viewKey('beta','remote-space'));
+    expect(view.tabs[view.space]).toBe('other-tab');
+    expect(view.focused[viewKey('beta','remote-space','other-tab')]).toBe('new-pane');
+  });
+  it('does not navigate on rename responses or malformed creation replies', () => {
+    const view=blankView();const before=JSON.stringify(view);
+    for (const result of [null,{}, {on:null,space:'s',tab:'t',pane:'p',terminal:null},{on:1,space:'s',tab:'t',pane:'p',terminal:'t9'}]) {
+      expect(selectCreated(view,result)).toBe(false);
+      expect(JSON.stringify(view)).toBe(before);
+    }
+  });
+
   it('lists all stack panes, excluding hidden leaves and hidden subtrees', () => {
     expect(visiblePanes(root()).map(p => p.id)).toEqual(['one','two','three']);
   });

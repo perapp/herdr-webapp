@@ -1,4 +1,4 @@
-import { qualify, readable, terminalAddress, terminalName, viewKey } from './schema';
+import { record, qualify, readable, terminalAddress, terminalName, viewKey } from './schema';
 import type { LayoutNode, SharedDocument, SharedSpace, SharedTab, TerminalInfo } from './schema';
 import type { BrowserView } from './view';
 
@@ -47,5 +47,18 @@ export function selectPane(view: BrowserView, document: SharedDocument, space: S
   // An old desktop zoom must not obscure the pane just selected in the drawer.
   delete view.zoomed[tabKey];
   nodes.forEach((node, i) => { if (node.type === 'stack' && nodes[i + 1]) view.stacks[viewKey(document.on, node.id)] = nodes[i + 1].id; });
+  return true;
+}
+
+/** Select only confirmed creations, never fabricated IDs returned for renames. */
+export function selectCreated(view: BrowserView, result: unknown): boolean {
+  if (!record(result) || typeof result.terminal !== 'string' || !result.terminal ||
+    !(result.on === null || typeof result.on === 'string') ||
+    typeof result.space !== 'string' || typeof result.tab !== 'string' || typeof result.pane !== 'string') return false;
+  view.space = viewKey(result.on, result.space);
+  view.tabs[view.space] = result.tab;
+  const key = viewKey(result.on, result.space, result.tab);
+  view.focused[key] = result.pane;
+  delete view.zoomed[key];
   return true;
 }

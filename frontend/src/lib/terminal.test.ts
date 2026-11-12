@@ -18,6 +18,8 @@ describe('native-style browser terminals', () => {
   it('provides phone keyboard shortcuts without ownership controls', () => {
     expect(touchKeys.find(k => k.label === 'Ctrl C')?.data).toBe('\x03');
     expect(touchKeys.find(k => k.label === 'Tab')?.data).toBe('\t');
+    expect(touchKeys.find(k => k.name === 'Page up')?.data).toBe('\x1b[5~');
+    expect(touchKeys.find(k => k.name === 'Page down')?.data).toBe('\x1b[6~');
     expect(touchKeys.filter(k => k.name.startsWith('Arrow'))).toHaveLength(4);
   });
 });

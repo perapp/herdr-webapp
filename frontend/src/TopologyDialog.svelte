@@ -5,7 +5,7 @@
   export type Action = 'rename-space' | 'rename-tab' | 'new-space' | 'new-tab' | 'split';
   let { action, document, space, tab, pane, initialName = '', machine, close, saved }: {
     action: Action; document: SharedDocument; space?: string; tab?: string; pane?: string;
-    initialName?: string; machine: string; close: () => void; saved: () => Promise<void>;
+    initialName?: string; machine: string; close: () => void; saved: (result: unknown) => Promise<void>;
   } = $props();
   let dialog: HTMLDialogElement;
   let name = $state('');
@@ -20,12 +20,12 @@
     if (busy) return;
     busy = true; error = '';
     try {
-      await request('/api/topology', {
+      const result = await request('/api/topology', {
         action, on: document.on, version: document.version, space, tab, pane,
         ...(action === 'split' ? { direction } : { name: name.trim() }),
         ...(action === 'new-space' ? { folder: folder.trim() } : {}),
       });
-      await saved(); close();
+      await saved(result); close();
     } catch (e) { error = `${errorMessage(e)} Refresh the layout before retrying if it changed elsewhere.`; }
     finally { busy = false; }
   }

@@ -1,0 +1,44 @@
+/* Native chrome, with a monospace command ledger and a separate star rail. */
+dialog.command-palette:not(.navigation-drawer){width:min(calc(100% - 32px),620px);height:min(800px,calc(100dvh - 40px));max-height:var(--command-visible-height,calc(100dvh - 40px));padding:0;overflow:hidden}
+dialog.command-palette[open]{display:flex;flex-direction:column}
+.command-palette button,.command-palette input{min-height:44px}
+.command-heading{display:flex;align-items:center;justify-content:space-between;padding:14px 18px 8px;flex-shrink:0}
+.command-heading h2{margin:0;font-size:21px;font-weight:500}
+.command-heading>button{width:44px;padding:0;font-size:25px}
+.command-agent{margin:0 0 4px;font:11px ui-monospace,SFMono-Regular,monospace;color:var(--muted)}
+.command-filters{padding:0 18px 8px;flex-shrink:0;border-bottom:1px solid var(--line)}
+.command-palette label{font-size:12px;margin:8px 0 6px}
+.command-favorites-filter{margin-top:8px;background:transparent}
+.command-favorites-filter[aria-pressed=true]{border-color:var(--teal);background:var(--selected)}
+.command-palette .command-note{font-size:11px;line-height:1.45;color:var(--muted);margin:8px 0 0}
+.command-live{display:flex;align-items:center;gap:10px;margin-top:4px}
+.command-live .command-note{flex:1;min-width:0;overflow-wrap:anywhere;margin:0}
+.command-live button{flex-shrink:0;background:transparent;font-size:12px;padding:0 10px}
+.command-source{align-self:flex-start;font-size:10px;line-height:1.4;color:var(--teal)}
+.command-list{flex:1;min-height:64px;overflow-y:auto;overscroll-behavior:contain;padding:6px 10px}
+.command-row{display:flex;border-radius:5px;border-bottom:1px solid var(--line)}
+.command-row.command-chosen{background:var(--selected)}
+.command-select{flex:1;min-width:0;text-align:left;display:flex;flex-direction:column;gap:4px;background:transparent;border:0;padding:10px 8px}
+.command-select code{font:13px ui-monospace,SFMono-Regular,monospace;color:var(--bright)}
+.command-select span{font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.command-star{flex:0 0 44px;align-self:stretch;background:transparent;border:0;font-size:21px;padding:0}
+.command-star[aria-pressed=true]{color:var(--teal)}
+.command-empty{padding:12px 8px;color:var(--muted);font-size:12px}
+.command-footer{border-top:1px solid var(--line);padding:4px 18px 14px;flex-shrink:0}
+.command-draft{font-family:ui-monospace,SFMono-Regular,monospace}
+.command-error{font-size:12px;color:var(--error);margin:6px 0;overflow-wrap:anywhere}
+.command-error:empty{display:none}
+.command-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
+.command-provenance{font-size:10px;color:var(--muted);margin:10px 0 0;line-height:1.4}
+@media(max-width:600px){dialog.command-palette:not(.navigation-drawer){margin:auto auto 0;bottom:var(--command-bottom,0px);width:100%;max-width:none;height:min(860px,var(--command-visible-height,calc(100dvh - 16px)));max-height:var(--command-visible-height,calc(100dvh - 16px));border-radius:14px 14px 0 0}.command-footer{padding-bottom:max(12px,env(safe-area-inset-bottom))}.command-heading{padding-top:10px}}
+/* A real phone keyboard can shrink visualViewport without changing CSS viewport media queries.
+   Keep the list independent; allow controls to scroll too when the keyboard leaves very little room. */
+.command-palette[data-compact=true] .command-heading{padding:2px 12px}
+.command-palette[data-compact=true] .command-agent{display:none}
+.command-palette[data-compact=true] .command-filters{flex-shrink:1;min-height:70px;max-height:32%;overflow:auto}
+.command-palette[data-compact=true] .command-footer{flex-shrink:1;min-height:120px;max-height:50%;overflow:auto}
+.command-palette[data-compact=true] .command-list{min-height:44px}
+@media(max-height:550px){.command-provenance{margin-top:4px}.command-heading{padding-top:4px;padding-bottom:2px}.command-filters{padding-bottom:4px}.command-palette .command-note{margin-top:4px}.command-footer{padding-bottom:6px}.command-list{min-height:44px}}
+.command-palette[data-compact=true] .command-footer>label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;margin:-1px}
+.command-palette[data-compact=true] .command-provenance{display:none}
+.command-palette[data-compact=true] .command-actions{margin-top:6px}

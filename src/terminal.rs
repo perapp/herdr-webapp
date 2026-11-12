@@ -267,6 +267,7 @@ enum Command {
     Automatic { data: String },
     Resize { cols: u16, rows: u16 },
     Focus { focused: bool },
+    Theme { theme: TerminalTheme },
     Credit { bytes: usize },
 }
 
@@ -370,6 +371,8 @@ async fn session(
                                     if !query.observe {let mut p = cols.to_le_bytes().to_vec(); p.extend(rows.to_le_bytes()); write_frame(&mut writer, channel, RESIZE, &p).await?;}
                                 }
                                 Command::Focus {focused} => if !query.observe {write_frame(&mut writer, channel, FOCUS, &[u8::from(focused)]).await?;},
+                                // Viewer facts merge without claiming focus or resize ownership.
+                                Command::Theme {theme} => if !query.observe {write_frame(&mut writer, channel, FACTS, &serde_json::to_vec(&theme.display())?).await?;},
                             }
                         }
                         Some(Ok(Message::Ping(data))) => {tokio::time::timeout(IO_TIMEOUT, ws.send(Message::Pong(data))).await??;}
@@ -439,6 +442,17 @@ mod tests {
             serde_json::from_value(json!({"terminal":"t1","theme":"dark"})).unwrap();
         assert_eq!(light.theme.display()["bg"], "#eff1f5");
         assert_eq!(dark.theme.display()["bg"], "#1e1e2e");
+        let update: Command =
+            serde_json::from_value(json!({"type":"theme","theme":"light"})).unwrap();
+        assert!(matches!(
+            update,
+            Command::Theme {
+                theme: TerminalTheme::Light
+            }
+        ));
+        assert!(
+            serde_json::from_value::<Command>(json!({"type":"theme","theme":"invalid"})).is_err()
+        );
         assert!(
             serde_json::from_value::<AttachQuery>(json!({"terminal":"t1","theme":"invalid"}))
                 .is_err()

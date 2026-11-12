@@ -7,8 +7,16 @@
   import { record } from './lib/schema';
   import { terminalUrl, touchKeys } from './lib/terminal';
   import { terminalTheme } from './lib/theme';
+  import { initializeAppearance, watchAppearance } from './lib/appearance';
+  import { touchScroll } from './lib/touchScroll';
+  import { initializeFontSize, watchFontSize } from './lib/fontSize';
+  import { imageAccept, imageReference, uploadImage } from './lib/attachments';
+  import { errorMessage } from './lib/api';
+  import CommandPalette from './CommandPalette.svelte';
+  import { isCommandText } from './lib/commands';
+  import type { AgentKind } from './lib/commands';
 
-  let { address, title, reported = 'unreported', active, onfocus, compact = false, showKeys = false }: { address: string; title: string; reported?: string; active: boolean; onfocus: () => void; compact?: boolean; showKeys?: boolean } = $props();
+  let { address, title, reported = 'unreported', active, onfocus, compact = false, showKeys = false, agent }: { address: string; title: string; reported?: string; active: boolean; onfocus: () => void; compact?: boolean; showKeys?: boolean; agent?: AgentKind } = $props();
   let host: HTMLDivElement;
   let status = $state('Connecting');
   let detail = $state('Connecting to the terminal.');
@@ -16,18 +24,44 @@
   let reconnect: () => void = () => {};
   let focusTerminal: () => void = () => onfocus();
   let sendKey: (event: MouseEvent, data: string) => void = () => {};
+  let prepareImageInsertion: (event: Event) => (path: string) => boolean = () => () => false;
+  let imagePicker = $state<HTMLInputElement>();
+  let uploadBusy = $state(false);
+  let uploadStatus = $state('');
+  let uploadError = $state('');
+  let uploadController: AbortController | undefined;
+  let paletteAgent = $state<AgentKind>();
+  let connectionEpoch = $state(0);
+  let paletteEpoch = $state(0);
+  let openCommands: (event: MouseEvent) => void = () => {};
+  let insertCommand = $state<(event: MouseEvent, text: string, run: boolean) => boolean>(() => false);
+  async function chooseImage(file: File | undefined, event: Event) {
+    if (!file || !event.isTrusted || uploadBusy || !attached) return;
+    const insert = prepareImageInsertion(event);
+    uploadController = new AbortController();
+    uploadBusy = true; uploadError = ''; uploadStatus = `Uploading ${file.name}…`;
+    try {
+      const path = await uploadImage(address, file, uploadController.signal);
+      if (uploadController.signal.aborted) return;
+      if (!insert(path)) {
+        uploadStatus = ''; uploadError = 'Image uploaded, but the terminal connection changed. Attach it again when connected.';
+        return;
+      }
+      uploadStatus = 'Image reference inserted. Add your message, then send it in Pi.';
+    } catch (e) {
+      if (!uploadController.signal.aborted) { uploadError = errorMessage(e); uploadStatus = ''; }
+    } finally { uploadBusy = false; }
+  }
 
   onMount(() => {
-    const appearance = matchMedia('(prefers-color-scheme: dark)');
+    let appearance = initializeAppearance();
     const term = new Terminal({
       cursorBlink: false, disableStdin: true, convertEol: false,
       fontFamily: '"Cascadia Code", "SFMono-Regular", Consolas, monospace',
-      fontSize: 13, lineHeight: 1.15, scrollback: 5000,
-      theme: terminalTheme(appearance.matches),
+      fontSize: initializeFontSize(), lineHeight: 1.15, scrollback: 5000,
+      theme: terminalTheme(appearance.dark),
       allowProposedApi: false,
     });
-    const updateTheme = () => { term.options.theme = terminalTheme(appearance.matches); };
-    appearance.addEventListener('change', updateTheme);
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
@@ -42,6 +76,21 @@
     let raf = 0;
     let viewportBounds = '';
     const send = (value: unknown) => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value)); };
+    const stopAppearance = watchAppearance(value => {
+      const changed = appearance.dark !== value.dark;
+      appearance = value;
+      term.options.theme = terminalTheme(value.dark);
+      if (attached && changed) send({ type: 'theme', theme: value.dark ? 'dark' : 'light' });
+    });
+    const stopFontSize = watchFontSize(size => {
+      if (term.options.fontSize === size) return;
+      term.options.fontSize = size;
+      // Font metrics change usable rows/columns without changing the host box.
+      // Propose the new grid through native ownership; do not reconnect or focus.
+      viewportBounds = '';
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(resize);
+    });
     const sendInput = (data: string, binary = false) => {
       if (!attached) return;
       const type = gate.classify(data);
@@ -57,6 +106,9 @@
     const binarySub = term.onBinary(data => sendInput(data, true));
     term.attachCustomKeyEventHandler(event => { gate.mark(event); return attached; });
     const mark = (event: Event) => gate.mark(event);
+    const scrolling = touchScroll(host, term, { attached: () => attached, mark });
+    // Hardware wheels are intentional input too when a TUI requests mouse reports.
+    host.addEventListener('wheel', mark, true);
     // Capture precedes xterm's DOM handlers, including mobile composition/paste.
     host.addEventListener('keydown', mark, true);
     host.addEventListener('beforeinput', mark, true);
@@ -71,6 +123,35 @@
     sendKey = (event, data) => {
       if (!attached || !event.isTrusted) return;
       gate.mark(event); sendInput(data); focusTerminal();
+    };
+    prepareImageInsertion = event => {
+      const trusted = event.isTrusted, current = generation, target = socket;
+      return path => {
+        // Upload completion is not a new gesture. Never queue across a reconnect,
+        // insert into a replacement pane, or summon the keyboard asynchronously.
+        if (!trusted || disposed || !attached || generation !== current || socket !== target || target?.readyState !== WebSocket.OPEN) return false;
+        const reference = imageReference(path);
+        gate.markPaste({ isTrusted: trusted, text: reference });
+        term.paste(reference); // Same trusted file selection; no Enter or focus.
+        return true;
+      };
+    };
+    let commandTarget: { generation: number; socket: WebSocket; agent: AgentKind } | undefined;
+    openCommands = event => {
+      if (!event.isTrusted || !attached || !agent || socket?.readyState !== WebSocket.OPEN) return;
+      commandTarget = { generation, socket, agent };
+      paletteEpoch = connectionEpoch;
+      paletteAgent = agent;
+    };
+    insertCommand = (event, text, run) => {
+      if (!event.isTrusted || !isCommandText(text) || disposed || !attached || !commandTarget || commandTarget.generation !== generation || commandTarget.socket !== socket || socket?.readyState !== WebSocket.OPEN || commandTarget.agent !== agent) return false;
+      // Never clear an existing draft or emulate an exclusive control lock.
+      // Run is an explicit user action; ordinary Insert never sends Enter.
+      gate.markPaste({ isTrusted: event.isTrusted, text });
+      term.paste(text);
+      if (run) { gate.mark(event); sendInput('\r'); }
+      focusTerminal();
+      return true;
     };
     const focused = () => { onfocus(); if (attached) send({ type: 'focus', focused: true }); };
     const blurred = () => { gate.clear(); if (attached) send({ type: 'focus', focused: false }); };
@@ -96,8 +177,9 @@
     function connect() {
       clearTimeout(timer);
       const current = ++generation;
+      connectionEpoch = current;
       socket?.close();
-      gate.clear();
+      gate.clear(); scrolling.reset();
       attached = false;
       automaticInput = false;
       resizeNotifications = false;
@@ -108,7 +190,7 @@
       status = 'Connecting';
       detail = 'Connecting to the terminal.';
       const size = fit.proposeDimensions();
-      const url = terminalUrl(address, size?.cols || term.cols, size?.rows || term.rows, location.href, appearance.matches ? 'dark' : 'light');
+      const url = terminalUrl(address, size?.cols || term.cols, size?.rows || term.rows, location.href, appearance.dark ? 'dark' : 'light');
       const ws = new WebSocket(url);
       socket = ws;
       ws.binaryType = 'arraybuffer';
@@ -137,6 +219,7 @@
             detail = '';
             attempt = 0;
             send({ type: 'credit', bytes: 262144 });
+            send({ type: 'theme', theme: appearance.dark ? 'dark' : 'light' });
             resize(); // Do not summon a phone keyboard or steal focus on attach.
           } else if (msg.type === 'resize') {
             if (validSize(msg.cols, msg.rows)) term.resize(msg.cols, msg.rows as number);
@@ -157,7 +240,7 @@
       ws.onerror = () => { if (generation === current && !final) detail = 'The terminal connection failed. Check your connection or sign in again.'; };
       ws.onclose = () => {
         if (disposed || generation !== current) return;
-        attached = false; gate.clear(); term.options.disableStdin = true;
+        attached = false; gate.clear(); scrolling.reset(); term.options.disableStdin = true;
         if (final) return;
         const delay = retryDelay(attempt++);
         status = 'Disconnected';
@@ -168,13 +251,14 @@
     reconnect = () => { attempt = 0; connect(); };
     connect();
     return () => {
-      disposed = true; generation++; clearTimeout(timer); cancelAnimationFrame(raf);
-      observer.disconnect(); socket?.close(); gate.clear(); dataSub.dispose(); binarySub.dispose();
+      disposed = true; generation++; uploadController?.abort(); clearTimeout(timer); cancelAnimationFrame(raf);
+      observer.disconnect(); socket?.close(); gate.clear(); scrolling.dispose(); dataSub.dispose(); binarySub.dispose();
+      host.removeEventListener('wheel', mark, true);
       host.removeEventListener('keydown', mark, true); host.removeEventListener('beforeinput', mark, true); host.removeEventListener('paste', paste, true);
       host.removeEventListener('input', input, true); host.removeEventListener('compositionend', composition, true);
       host.removeEventListener('click', focusTerminal);
       host.removeEventListener('focusin', focused); host.removeEventListener('focusout', blurred);
-      appearance.removeEventListener('change', updateTheme);
+      stopAppearance(); stopFontSize();
       term.dispose();
     };
   });
@@ -188,10 +272,21 @@
     {#if !attached}<button class="quiet" onclick={() => reconnect()}>Reconnect</button>{/if}
   </header>{/if}
   <div class="terminal-host" bind:this={host}></div>
-  {#if !compact || showKeys}<nav class="terminal-keys" aria-label="Terminal keyboard shortcuts">
+  {#if showKeys}<div class="terminal-accessories"><nav class="terminal-keys" aria-label="Terminal keyboard shortcuts">
     {#each touchKeys as key (key.name)}
       <button aria-label={key.name} disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => sendKey(event, key.data)}>{key.label}</button>
     {/each}
-  </nav>{/if}
+  </nav>
+    <div class="terminal-attachments">
+      <input class="image-picker" bind:this={imagePicker} type="file" accept={imageAccept} aria-label="Choose image to attach"
+        onchange={event => { void chooseImage(event.currentTarget.files?.[0], event); event.currentTarget.value = ''; }} />
+      <span class:error={!!uploadError} class="attachment-status" role={uploadError ? 'alert' : 'status'}>{uploadError || uploadStatus}</span>
+      {#if agent}<button class="agent-commands-button" aria-label="Agent commands" title={`${agent} commands and favorites`} aria-haspopup="dialog" disabled={!attached} onclick={event => openCommands(event)}>/</button>{/if}
+      <button class="attach-image" aria-label={uploadBusy ? 'Uploading image' : 'Attach image'} aria-busy={uploadBusy} disabled={!attached || uploadBusy} onclick={() => imagePicker?.click()} title="Attach image · PNG, JPEG, GIF or WebP · up to 8 MiB">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m8 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9a7 7 0 0 1 10 10l-9 9"/></svg>
+      </button>
+    </div>
+  </div>{/if}
   {#if !attached}<footer class="terminal-detail" role="status">{detail}{#if compact}<button class="quiet" onclick={() => reconnect()}>Reconnect</button>{/if}</footer>{/if}
 </section>
+{#if paletteAgent}<CommandPalette {address} agent={paletteAgent} connected={attached && agent === paletteAgent && connectionEpoch === paletteEpoch} close={() => paletteAgent = undefined} insert={insertCommand} />{/if}

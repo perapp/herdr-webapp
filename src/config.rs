@@ -86,13 +86,24 @@ impl Config {
         Ok(base.join(format!("{session}.sock")))
     }
 
-    pub fn token(&self) -> Result<String> {
-        let path = self.token_file.clone().unwrap_or(
+    pub fn token_path(&self) -> Result<PathBuf> {
+        Ok(self.token_file.clone().unwrap_or(
             std::env::var_os("XDG_STATE_HOME")
                 .map(PathBuf::from)
                 .unwrap_or(home()?.join(".local/state"))
                 .join("herdr-webapp/auth-token"),
-        );
+        ))
+    }
+
+    /// A sidecar follows the configured token, including custom token locations.
+    pub fn session_path(&self) -> Result<PathBuf> {
+        let mut path = self.token_path()?.into_os_string();
+        path.push(".sessions");
+        Ok(path.into())
+    }
+
+    pub fn token(&self) -> Result<String> {
+        let path = self.token_path()?;
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             use std::os::unix::fs::DirBuilderExt;
             std::fs::DirBuilder::new()

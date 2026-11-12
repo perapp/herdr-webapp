@@ -12,11 +12,11 @@ live core was not restarted.
 | `npm ci` | Passed using `frontend/package-lock.json` |
 | `npm run check` | 0 errors, 0 warnings |
 | `npm run lint` | Passed, warnings denied |
-| `npm test` | 30 tests passed |
+| `npm test` | 32 tests passed |
 | `npm run build` | Passed, Vite 8 / Svelte 5 / xterm.js |
 | `cargo fmt --all -- --check` | Passed |
 | `cargo clippy --locked --all-targets -- -D warnings` | Passed |
-| `cargo test --locked` | 25 tests passed |
+| `cargo test --locked` | 27 tests passed |
 | `cargo build --release --locked` | Passed |
 | `npm audit --omit=dev` | 0 vulnerabilities |
 | Full `npm audit` | 2 low development-only advisories; no moderate/high/critical |
@@ -27,8 +27,8 @@ critical test-tool dependencies were upgraded, not ignored. Build/test logs:
 `minimal-ui-check.log`, `minimal-ui-build.log`, `minimal-ui-smoke.log`,
 `minimal-ui-browser.log`, `frontend/audit.log`.
 
-Release artifact: `target/release/herdr-webapp`, **4,009,248 bytes**, Linux x86-64.
-SHA-256: `6d46b59f0318842782f8105425237e1442fde10db3d9a8a684fbd925bfee2596`.
+Release artifact: `target/release/herdr-webapp`, **4,015,296 bytes**, Linux x86-64.
+SHA-256: `eeb761620d395fa2b7f32ada5b9c494ab48b661c852a405f086d5b3e127e250a`.
 The executable embeds its assets; Linux system libc/libm/libgcc remain dynamic
 platform dependencies. It was launched outside the checkout during acceptance.
 
@@ -178,3 +178,205 @@ or destructive close/kill UI. Browser terminal rendering is xterm, not Ghostty's
 native renderer. HTTP is unencrypted unless placed behind an HTTPS proxy/VPN.
 The Mac coordinator's acceptance/completion reports were attempted but denied by
 core's cross-machine callback policy; no routing policy was bypassed.
+
+
+## Mobile tree actions follow-up
+
+Verified 2026-11-12 against two isolated real cores and an isolated Chromium:
+
+- All tab branches start expanded, with no pane counts or generic Workspace
+  actions section in the mobile drawer. Sign-out stays independently accessible.
+- Right-aligned + icons create a workspace on a computer, a tab in a workspace,
+  and a terminal pane in a tab. Pencil icons preserve contextual rename access.
+- Creating from an inactive local or federated tab targets the clicked node, not
+  the currently selected pane. A new pane can also be created in an empty tab.
+- New panes/tabs/workspaces become privately selected; renames do not navigate.
+- Workspace disclosure choices survive incoming state updates; creation controls
+  are separate from disclosure summaries and remain usable on collapsed rows.
+- Actual keyboard input in a newly created federated mobile terminal, reconnect
+  without input replay, and desktop multi-pane restoration/input passed.
+- `make check`, `make release`, and `make smoke` passed. The smoke suite now also
+  covers real local/federated new-pane creation and stale creation rejection.
+
+Evidence: `tree-actions-check.log`, `tree-actions-build.log`,
+`tree-actions-smoke.log`, `tree-actions-browser.log`,
+`test-results/tree-actions-drawer.png`, `test-results/tree-actions-desktop.png`.
+These browser checks do not establish physical iOS/Android keyboard acceptance.
+
+## Touch scrolling follow-up
+
+- Added frame-batched local scrollback with fractional-row accumulation and
+  decaying momentum; reduced-motion disables inertia. Gesture state is cleared
+  on disconnect, mode changes, hidden pages, cancellation and disposal.
+- Added trusted-touch → xterm wheel encoding for mouse-aware apps, including
+  installed Pi's SGR wheel protocol. Application reports have no momentum and
+  are classified as intentional input, not automatic terminal replies.
+- Added PgUp/PgDn accessory keys. Apps without mouse reporting receive no guessed
+  arrow sequences. Swipe clicks are suppressed while taps remain interactive.
+- Eight gesture unit tests cover local batching/momentum, bounded wheel reports,
+  trust, tap/drag threshold, click suppression, pinch, disconnect/mode changes,
+  reduced motion and cleanup. Accessory key payloads are also tested.
+- Isolated Chromium at desktop and phone sizes passed trusted terminal typing,
+  local touch scrolling without PTY input or keyboard focus, and typing after
+  reconnect. An isolated real PTY application negotiated Pi's SGR mouse protocol
+  and received touch-generated wheel reports as `input`, never `automatic`.
+- `make check`, `make release`, and `make smoke` passed with 40 frontend tests
+  and 27 Rust tests. No live user core or terminals were used for verification.
+- These checks do not establish physical iOS/Android scrolling feel, nor do they
+  constitute an end-to-end Pi conversation test on a phone.
+
+## Persistent sessions and Agents tree follow-up
+
+- Browser cookies remain opaque, HttpOnly, SameSite=Strict session IDs, with the
+  existing seven-day expiry. The private `<token-path>.sessions` store contains
+  only hashed IDs and a token binding; rotation invalidates previous sessions.
+  Atomic durable writes, strict file checks and an exclusive lifetime lock
+  protect login/logout persistence. Unsafe or corrupt stores fail closed.
+- `make check`, `make release`, and `make smoke` passed: 44 frontend tests and
+  34 Rust tests. Smoke now restarts the actual isolated web server after login
+  and logout, checking retained-cookie HTTP access, persistent revocation and
+  revoked WebSocket rejection; Origin protection is unchanged.
+- An isolated Chromium browser retained its actual cookie across a real server
+  restart and reload, without a token-bearing URL or another sign-in.
+- The burger drawer and desktop rail now show Agents below Spaces, with live
+  parent/child hierarchy and reported status. Mapped agents select their exact
+  machine/space/tab/pane; unplaced descendants explicitly state that native peek
+  is unavailable. Sign-out controls are removed; backend logout remains tested.
+- Real isolated local, child and federated agents passed exact-pane selection
+  and drawer closing in a phone-sized browser. Hierarchy, unavailable-child
+  messaging, order below Spaces, and absence of sign-out controls were checked.
+  Desktop/phone input and reconnect also passed. A drawer screenshot was
+  inspected in the isolated workstation. No physical-phone acceptance claimed.
+
+## Settings, unified drawer and agent alignment follow-up
+
+- Both desktop and phone use the same burger drawer. Desktop's sidebar and tab
+  strip are removed; desktop renders a full selected tab, phone one selected
+  pane. Top bar retains the current space/tab and compact secondary actions.
+- Settings is in a non-scrolling safe-area-aware drawer footer. Its sheet offers
+  System/Light/Dark, persists per browser, follows OS changes only in System,
+  and reports unavailable browser storage without breaking appearance changes.
+- Terminal themes update in place; native FACTS frames update core viewer colours
+  without reconnecting, typing, focusing or claiming resize ownership. Observer
+  attachments cannot change facts. Reconnect uses the current preference.
+- Agent rows reserve a common disclosure gutter: sibling root names align even
+  when one has children. Child indentation and disclosure interaction remain.
+- `make check`, `make release`, `make smoke` passed (49 frontend, 34 Rust tests).
+  Smoke includes local/federated live theme commands and observer isolation.
+- Isolated real Chromium at desktop and phone sizes verified two panes versus
+  one pane; no sidebar/tab strip; drawer hierarchy; footer position while a long
+  tree scrolls; all appearance modes and OS overrides; localStorage persistence;
+  live terminal colours and theme frames without reconnect; terminal input and
+  reconnect; root-agent alignment, indentation and expand/collapse interaction.
+  Settings and drawer screenshots were inspected. No physical-phone claims.
+- Investigated native/web image difference: existing Pi emits Kitty graphics,
+  which stock xterm does not render. Native-equivalent image support remains
+  explicitly unsupported; no environment/protocol spoofing was introduced.
+
+
+## Mobile image attachment follow-up
+
+- The top-right keyboard button reveals accessory keys and a second attachment
+  row on both desktop and phone. Upload stages the selected image; an explicit
+  Insert reference action pastes a quoted path without Enter, using xterm's
+  bracketed paste where requested. Upload completion and reconnect never type.
+- Native `terminal.put` stages bytes on the selected terminal's actual machine,
+  including configured remote cores, without subprocesses, arbitrary destination
+  paths, filesystem fallbacks or automatic retries. Unsupported native staging
+  fails visibly. Core's state-directory ancestor supplies staging privacy; no
+  public image-serving route or image renderer was added.
+- The authenticated exact-Origin raw upload route accepts PNG/JPEG/GIF/WebP
+  headers, bounds each request at 8 MiB, allows two concurrent uploads and applies
+  conservative run-scoped staging budgets. Other API routes retain their 1 MiB
+  body limit. Browser checks reject empty, oversized and unsupported picker files.
+- `make check` and `make release` passed (55 frontend and 37 Rust tests). The real
+  smoke suite passed after adding image upload checks: exact local/federated file
+  contents and destination, valid PNG above the standard API body cap, early
+  oversized-body rejection, unsupported format, authentication and foreign Origin.
+- Isolated Chromium at desktop and phone sizes passed second-row placement,
+  trusted file-picker upload, no upload/reconnect input, explicit reference paste
+  without newline, and normal input after reconnect. An actual isolated Pi editor
+  displayed the uploaded image path in its unsent draft. No inference request or
+  user credentials were used. The phone-sized Pi screenshot was inspected.
+- Physical iOS/Android picker/camera behaviour remains unverified. HEIC/SVG are
+  explicitly unsupported. Inline Kitty graphics and direct model-image attachment
+  remain separate unsupported features; this follows Pi's staged-path paste flow.
+
+## Automatic attachment insertion follow-up
+
+- The paperclip is icon-only, right-aligned on the second accessory row, with a
+  44×44 target matching the special keys. The confirmation button is removed.
+- A trusted file selection authorizes path insertion after upload only on the
+  exact original live connection. It never presses Enter or focuses the terminal
+  asynchronously. A reconnect/replacement/disposal rejects the stale insertion.
+- `make check`, `make release` and `make smoke` passed. Isolated desktop and
+  phone-sized Chromium verified button size/alignment, automatic path paste with
+  no newline or keyboard focus, delayed-upload rejection after reconnect, and
+  successful fresh upload afterward. The phone screenshot was inspected.
+
+## Agent commands and favorites
+
+- Added the `/` key beside the paperclip: static Pi/Claude/Codex/OpenCode command
+  catalogs selected only by a live terminal's core-reported `status.app`, never by
+  title or terminal-output guessing. Unknown apps and shells have no command key.
+- Selection, search and stars send no terminal input. The editable command has
+  separate Insert (paste only) and Run (paste + Enter) actions. Neither clears an
+  existing draft. Execution requires a trusted click, the original connection,
+  and the same reported agent; stale requests are refused rather than replayed.
+- Stars are stored per agent in browser localStorage, appear first and can be
+  filtered. Tests cover corruption, quotas, blocked storage, obsolete IDs and
+  cross-agent preservation. Command arguments are not saved.
+- `make check`, `make release`, `make smoke` passed (63 frontend tests). Isolated
+  Chromium desktop/390px phone checks verified favorites persistence/filtering,
+  no input on selection/star/search Enter, Insert without Enter, explicit Run of
+  `/session` in real local and federated Pi editors, the exact remote destination,
+  reconnect refusal/fresh-palette recovery, and no palette on a generic shell.
+- Inspected phone screenshots at 844px and keyboard-constrained 380px heights;
+  compact controls and Run remain visible. Physical iOS/Android keyboards remain
+  unverified. Live Pi extension/skill/prompt-template discovery is unsupported.
+
+## Live Pi custom commands
+
+- Added `pi-extension/commands.ts`, installed locally as a separate global Pi
+  extension using `scripts/install-pi-extension.sh`. Existing sessions need
+  `/reload` once. Installer idempotency and refusal to overwrite existing files
+  were verified in private scratch directories. The legacy publisher is intact.
+- The extension enumerates `pi.getCommands()` and publishes bounded metadata via
+  persistent native Unix RPC into a dedicated per-terminal versioned Core doc.
+  No session/source scan, transcript read, subprocess, SSH relay, or new Core
+  executable is involved. Updates use CAS, ownership-safe shutdown clearing,
+  15-second heartbeats, <=500 commands and <=128 KiB. Socket configuration
+  limitations are documented rather than silently guessing a custom config.
+- Authenticated `GET /api/commands` accepts only the selected terminal address.
+  Native lookup derives machine routing; schema, app, PID/run identity, byte/count
+  bounds, 75-second freshness and 5-second future skew are checked. Terminal
+  identity is rechecked after reading. Inbound-only peers remain unsupported.
+- `make check`, `make release`, `make smoke` passed (69 frontend tests). The smoke
+  test now checks exact local/federated command destinations, stale/future/run
+  rejection, denied path/on parameters, authentication and exact Origin handling.
+- Real isolated Pi sessions loaded the publisher, a harmless fixture `/git-mode`
+  handler, a prompt template and a skill. Desktop/phone Chromium discovered all
+  three sources, starred the custom command, persisted it across reload, and ran
+  the fixture command on the exact local and federated terminal with no model
+  inference or real authorization changes.
+- Browser tests also checked unavailable-catalog fallback without losing custom
+  favorites, no execution from absent favorites, retry recovery, built-ins usable
+  during held discovery, and late responses unable to re-enable an old palette
+  after reconnect. Phone/keyboard-height screenshots were inspected; physical
+  iOS/Android keyboards remain unverified. No live user terminal input was sent
+  for verification, and the live Core was not restarted.
+
+## Terminal font-size setting
+
+- Settings now offers 8–28 px terminal text (13 px default), a touch-friendly
+  slider, increment/decrement buttons, current value and reset. Preference is
+  browser-local, synchronizes panes/tabs, and reports blocked storage honestly.
+- Font changes update xterm immediately and recompute the native viewport grid
+  even when the pane's pixel bounds are unchanged. No focus, keystrokes or
+  reconnect is required; native resize ownership remains authoritative.
+- `make check`, `make release` and `make smoke` passed (74 frontend / 39 Rust
+  tests). Isolated desktop Chromium verified all panes changing 13→18 px, native
+  resize without new sockets or terminal input, and persistence on reload.
+  Phone-sized Chromium verified the saved size, slider bounds/disabled controls
+  and reset to 13 px. Settings screenshot inspected. Physical phone keyboards
+  remain unverified.

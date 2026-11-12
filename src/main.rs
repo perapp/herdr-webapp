@@ -1,4 +1,6 @@
+mod attachments;
 mod auth;
+mod commands;
 mod config;
 mod core;
 mod dashboard;
@@ -53,7 +55,11 @@ async fn main() -> anyhow::Result<()> {
     let core = Core::new(socket.clone());
     let app = Arc::new(App {
         core: core.clone(),
-        auth: Auth::new(token.clone(), config.public_origin.clone()),
+        auth: Auth::persistent(
+            token.clone(),
+            config.public_origin.clone(),
+            config.session_path()?,
+        )?,
     });
     let listener = if let Some(port) = config.port {
         tokio::net::TcpListener::bind((config.bind, port)).await?
@@ -128,10 +134,12 @@ pub fn router(app: Shared) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/session", get(session))
         .route("/api/state", get(state))
+        .route("/api/commands", get(commands::handle))
         .route("/api/events", get(events))
         .route("/api/rpc", post(rpc))
         .route("/api/topology", post(topology::handle))
         .route("/api/terminal", get(terminal::upgrade))
+        .merge(attachments::routes())
         .fallback(get(asset))
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(axum::middleware::from_fn(auth::security_headers))
@@ -163,7 +171,7 @@ async fn logout(State(app): State<Shared>, headers: HeaderMap) -> Result<Respons
     app.auth.require(&headers)?;
     app.auth.same_origin(&headers, false)?;
     Ok((
-        [(header::SET_COOKIE, app.auth.logout(&headers))],
+        [(header::SET_COOKIE, app.auth.logout(&headers)?)],
         Json(json!({"authenticated":false})),
     )
         .into_response())

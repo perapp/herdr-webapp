@@ -178,7 +178,7 @@ impl Request {
     fn validate(&self) -> Result<(), ApiError> {
         if !matches!(
             self.action.as_str(),
-            "rename-space" | "rename-tab" | "new-space" | "new-tab" | "split"
+            "rename-space" | "rename-tab" | "new-space" | "new-tab" | "new-pane" | "split"
         ) {
             return Err(bad("Unknown topology action"));
         }
@@ -200,7 +200,8 @@ impl Request {
         if self.action != "new-space" && self.space.is_none() {
             return Err(bad("space is required"));
         }
-        if matches!(self.action.as_str(), "rename-tab" | "split") && self.tab.is_none() {
+        if matches!(self.action.as_str(), "rename-tab" | "new-pane" | "split") && self.tab.is_none()
+        {
             return Err(bad("tab is required"));
         }
         if self.action == "split" && self.pane.is_none() {
@@ -259,7 +260,10 @@ struct Plan {
 impl Plan {
     fn new(r: &Request) -> Self {
         Self {
-            creates_terminal: matches!(r.action.as_str(), "new-space" | "new-tab" | "split"),
+            creates_terminal: matches!(
+                r.action.as_str(),
+                "new-space" | "new-tab" | "new-pane" | "split"
+            ),
             space: if r.action == "new-space" {
                 fresh("sp")
             } else {
@@ -329,6 +333,25 @@ fn apply(doc: &mut Value, r: &Request, p: &Plan, terminal: &str) -> Result<(), A
         .ok_or_else(|| bad("Tab not found in requested space"))?;
     if r.action == "rename-tab" {
         tab["name"] = r.name.clone().unwrap().into();
+        return Ok(());
+    }
+    if r.action == "new-pane" {
+        if tab.get("root").is_none() {
+            tab["root"] = json!({"id":p.container,"type":"row","children":[pane]});
+        } else {
+            let root = &mut tab["root"];
+            if matches!(root["type"].as_str(), Some("row" | "column")) {
+                root["children"].as_array_mut().unwrap().push(pane);
+            } else {
+                // Keep blocks/stacks and opaque fields intact inside their new slot.
+                let mut old = root.take();
+                let size = old.as_object_mut().unwrap().remove("size");
+                *root = json!({"id":p.container,"type":"row","children":[old,pane]});
+                if let Some(size) = size {
+                    root["size"] = size;
+                }
+            }
+        }
         return Ok(());
     }
     let root = tab
@@ -762,6 +785,69 @@ mod tests {
     }
     fn request(action: &str) -> Request {
         serde_json::from_value(json!({"action":action,"on":null,"space":"s","tab":"t","pane":"p","name":"renamed","version":4})).unwrap()
+    }
+    #[test]
+    fn new_pane_appends_to_requested_tab_without_changing_existing_nodes() {
+        for axis in ["row", "column"] {
+            let mut d = doc();
+            d["spaces"][0]["tabs"][0]["root"]["type"] = axis.into();
+            let before = d.clone();
+            let mut r = request("new-pane");
+            r.pane = None;
+            r.validate().unwrap();
+            let p = Plan::new(&r);
+            assert!(p.creates_terminal);
+            apply(&mut d, &r, &p, "t9").unwrap();
+            validate_document(&d).unwrap();
+            assert_eq!(d["extension"], before["extension"]);
+            let children = d["spaces"][0]["tabs"][0]["root"]["children"]
+                .as_array()
+                .unwrap();
+            assert_eq!(children.len(), 3);
+            assert_eq!(
+                children[0],
+                before["spaces"][0]["tabs"][0]["root"]["children"][0]
+            );
+            assert_eq!(
+                children[1],
+                before["spaces"][0]["tabs"][0]["root"]["children"][1]
+            );
+            assert_eq!(children[2]["content"]["terminal"], "t9");
+        }
+    }
+    #[test]
+    fn new_pane_handles_empty_tabs_and_preserves_stack_roots() {
+        let mut d = doc();
+        d["spaces"][0]["tabs"][0]["root"]["children"] = json!([]);
+        let r = request("new-pane");
+        let p = Plan::new(&r);
+        apply(&mut d, &r, &p, "t9").unwrap();
+        validate_document(&d).unwrap();
+        assert_eq!(
+            d["spaces"][0]["tabs"][0]["root"]["children"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut d = doc();
+        let root = &mut d["spaces"][0]["tabs"][0]["root"];
+        root["type"] = "stack".into();
+        root["active"] = "q".into();
+        root["size"] = json!({"px":200});
+        let before = root.clone();
+        apply(&mut d, &r, &p, "t9").unwrap();
+        validate_document(&d).unwrap();
+        let root = &d["spaces"][0]["tabs"][0]["root"];
+        assert_eq!(root["type"], "row");
+        assert_eq!(root["size"], before["size"]);
+        assert_eq!(root["children"][0]["active"], "q");
+        assert_eq!(root["children"][0]["children"], before["children"]);
+        assert_eq!(root["children"][0]["extra"], before["extra"]);
+        assert_eq!(root["children"][1]["content"]["terminal"], "t9");
+        let mut missing_tab = request("new-pane");
+        missing_tab.tab = None;
+        assert!(missing_tab.validate().is_err());
     }
     #[test]
     fn creation_appends_without_changing_existing_layout_or_view() {

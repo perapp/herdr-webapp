@@ -1,6 +1,7 @@
 <script lang="ts">
   import PaneTree from './PaneTree.svelte';
   import TerminalPane from './TerminalPane.svelte';
+  import { detectCommandAgent } from './lib/commands';
   import { qualify, readable, terminalAddress, terminalName, reportedStatus, viewKey } from './lib/schema';
   import type { LayoutNode, TerminalInfo } from './lib/schema';
   let { node, on, terminals, focused, stacks, focus, selectStack, compact = false, showKeys = false }: {
@@ -20,7 +21,7 @@
   <div class="layout-node" class:column={node.type === 'column'} class:row={node.type === 'row'} style:flex={compact ? '1 1 0%' : sizing}>
     {#if node.type === 'block'}
       {#if address}
-        {#key address}<TerminalPane {address} {title} {compact} {showKeys} reported={reportedStatus(terminal)} active={focused === node.id} onfocus={() => focus(node.id)} />{/key}
+        {#key address}<TerminalPane {address} {title} {compact} {showKeys} agent={detectCommandAgent(terminal)} reported={reportedStatus(terminal)} active={focused === node.id} onfocus={() => focus(node.id)} />{/key}
       {:else}
         <section class="unsupported" aria-label={readable(node.title, 'Unavailable pane')}>
           <h3>{readable(node.title, typeof node.content?.mod === 'string' ? readable(node.content.mod, 'Unsupported module') : 'Unsupported pane')}</h3>
@@ -35,11 +36,11 @@
         {/each}
       </nav>
       {#if selected}
-        <PaneTree node={selected} {on} {terminals} {focused} {stacks} {focus} {selectStack} />
+        <PaneTree node={selected} {on} {terminals} {focused} {stacks} {focus} {selectStack} {compact} {showKeys} />
       {:else}<p class="empty">This pane group is empty.</p>{/if}
     {:else}
       {#each children as child, i (child.id || i)}
-        <PaneTree node={child} {on} {terminals} {focused} {stacks} {focus} {selectStack} />
+        <PaneTree node={child} {on} {terminals} {focused} {stacks} {focus} {selectStack} {compact} {showKeys} />
       {:else}<p class="empty">No panes yet. Add a tab to start a terminal.</p>{/each}
     {/if}
     {#if node.floating?.length}<p class="floating-note">Floating panels are not supported in this browser.</p>{/if}
