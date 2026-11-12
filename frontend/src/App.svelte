@@ -6,6 +6,7 @@
   import PaneTree from './PaneTree.svelte';
   import TopologyDialog from './TopologyDialog.svelte';
   import SettingsDialog from './SettingsDialog.svelte';
+  import UpdatePanel from './UpdatePanel.svelte';
   import { initializeAppearance, watchAppearance } from './lib/appearance';
   import type { Action } from './TopologyDialog.svelte';
   import { ApiError, errorMessage, request } from './lib/api';
@@ -270,6 +271,7 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 3-.6 2.2-2 .9-2-.6-2 3.5 1.5 1.6v2.3L2.4 14.5l2 3.5 2-.6 2 .9L9 21h4l.6-2.7 2-.9 2 .6 2-3.5-1.5-1.6v-2.3l1.5-1.6-2-3.5-2 .6-2-.9L13 3Z"/><circle cx="11" cy="12" r="3"/></svg>
       <span>Settings</span><small>{appearance.preference === 'system' ? 'System' : appearance.preference === 'dark' ? 'Dark' : 'Light'}</small>
     </button>
+    <UpdatePanel />
   </footer>
 {/snippet}
 

@@ -6,6 +6,7 @@ mod core;
 mod dashboard;
 mod terminal;
 mod topology;
+mod update;
 
 use auth::{ApiError, Auth, error};
 use axum::{
@@ -33,12 +34,21 @@ struct Assets;
 pub struct App {
     pub core: Arc<Core>,
     pub auth: Auth,
+    pub updates: Arc<update::Updater>,
 }
 pub type Shared = Arc<App>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
+    if let Some(plan) = &config.update_helper {
+        // Deliberately do not expose plan paths or subprocess diagnostics.
+        return update::helper(plan).map_err(|_| {
+            anyhow::anyhow!(
+                "Update helper failed; inspect managed installation backup and lock before recovery"
+            )
+        });
+    }
     if let Some(origin) = &config.public_origin {
         let uri: Uri = origin.parse()?;
         anyhow::ensure!(
@@ -51,10 +61,13 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let token = config.token()?;
-    let socket = config.socket()?;
+    let socket = std::path::absolute(config.socket()?)?;
+    let token_path = std::path::absolute(config.token_path()?)?;
+    let updates = update::Updater::startup()?;
     let core = Core::new(socket.clone());
     let app = Arc::new(App {
         core: core.clone(),
+        updates: updates.clone(),
         auth: Auth::persistent(
             token.clone(),
             config.public_origin.clone(),
@@ -80,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
         })?
     };
     let address = listener.local_addr()?;
+    updates.run_ready();
     let host = if config.bind.is_unspecified() {
         let sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
         sock.connect("192.0.2.1:80").ok();
@@ -93,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let origin = config
         .public_origin
+        .clone()
         .unwrap_or_else(|| format!("http://{}", std::net::SocketAddr::new(host, address.port())));
     let dashboard = Arc::new(dashboard::Dashboard::start(
         &format!("{origin}/#token={token}"),
@@ -101,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
     )?);
     let mut status = core.state.subscribe();
     let logger = dashboard.clone();
-    tokio::spawn(async move {
+    let status_logger = tokio::spawn(async move {
         let mut previous = String::new();
         while status.changed().await.is_ok() {
             let state = status.borrow_and_update();
@@ -119,12 +134,46 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
+    let mut restart_args = vec![
+        "--bind".into(),
+        config.bind.to_string(),
+        "--port".into(),
+        address.port().to_string(),
+        "--core-socket".into(),
+        socket.to_string_lossy().into_owned(),
+        "--token-file".into(),
+        token_path.to_string_lossy().into_owned(),
+    ];
+    if let Some(origin) = config.public_origin {
+        restart_args.extend(["--public-origin".into(), origin]);
+    }
+    if config.no_dashboard {
+        restart_args.push("--no-dashboard".into());
+    }
+    updates.configure(restart_args);
+    updates.clone().automatic();
     tokio::spawn(core.monitor());
-    axum::serve(listener, router(app))
-        .with_graceful_shutdown(async {
-            tokio::signal::ctrl_c().await.ok();
-        })
-        .await?;
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serve = axum::serve(listener, router(app)).with_graceful_shutdown(async {
+        let _ = stopped.await;
+    });
+    let mut serve = Box::pin(std::future::IntoFuture::into_future(serve));
+    tokio::select! {
+        result = &mut serve => result?,
+        _ = tokio::signal::ctrl_c() => { let _ = stop.send(()); let _ = tokio::time::timeout(Duration::from_secs(2), &mut serve).await; },
+        _ = updates.shutdown.notified() => {
+            // Long-lived SSE/WS clients must not hold the web process open indefinitely.
+            let _ = stop.send(());
+            let _ = tokio::time::timeout(Duration::from_secs(2), &mut serve).await;
+        },
+    }
+    // Stop the only dashboard-owning task and restore its screen before exec.
+    status_logger.abort();
+    let _ = status_logger.await;
+    drop(dashboard);
+    // In-place exec retains the foreground shell job and original service/TTY
+    // stdio. CLOEXEC closes auth locks and sockets even if Arc tasks still exist.
+    updates.exec_pending()?;
     Ok(())
 }
 
@@ -140,6 +189,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/topology", post(topology::handle))
         .route("/api/terminal", get(terminal::upgrade))
         .merge(attachments::routes())
+        .merge(update::routes())
         .fallback(get(asset))
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(axum::middleware::from_fn(auth::security_headers))
@@ -272,6 +322,7 @@ mod tests {
     use tower::ServiceExt;
     fn app() -> Shared {
         Arc::new(App {
+            updates: update::Updater::development(),
             core: Core::new("/nonexistent".into()),
             auth: Auth::new("a".repeat(64), None),
         })

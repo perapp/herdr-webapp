@@ -15,6 +15,7 @@ check:
 	cargo fmt --all -- --check
 	cargo clippy --locked --all-targets -- -D warnings
 	cargo test --locked
+	python3 distribution/test_release.py
 
 test:
 	cd frontend && npm test

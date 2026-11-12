@@ -1,0 +1,176 @@
+name: Release
+run-name: Release ${{ inputs.tag || github.ref_name }}
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag matching Cargo.toml (for example v0.0.1)'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify existing tag, commit, and crate version
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, subprocess
+          tag = os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag):
+              raise SystemExit('requires existing stable vX.Y.Z tag')
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          if git('rev-parse', 'HEAD') != git('rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}'):
+              raise SystemExit('checkout is not the requested tag commit')
+          manifest = pathlib.Path('Cargo.toml').read_text()
+          package = re.search(r'(?ms)^\[package\]\s*\n(.*?)(?=^\[|\Z)', manifest)
+          version = re.search(r'^version\s*=\s*"([^"]+)"\s*$', package[1], re.M)[1]
+          if tag != 'v' + version:
+              raise SystemExit('tag must match Cargo.toml')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'tag={tag}\nversion={version}\ncommit={git("rev-parse", "HEAD")}\n')
+          PY
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-apple-darwin
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Rust and target
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          rustup target add '${{ matrix.target }}'
+      - name: Linux ARM cross compiler (glibc Ubuntu 22.04 baseline)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+      - name: Frontend checks and embedded build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run check
+          npm run lint
+          npm test
+          npm run build
+      - name: Rust host checks (cross Linux ARM is built below)
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+      - name: Distribution tests
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: python3 distribution/test_release.py
+      - name: Build locked release and package
+        run: |
+          cargo build --release --locked --target '${{ matrix.target }}'
+          sh scripts/package-release.sh '${{ matrix.target }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/herdr-webapp-v${{ needs.verify.outputs.version }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: [verify, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Assemble complete release manifest
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib, shutil
+          root = pathlib.Path('dist')
+          version = os.environ['RELEASE_VERSION']
+          targets = ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu', 'aarch64-apple-darwin']
+          expected = {f'herdr-webapp-v{version}-{t}.tar.gz' for t in targets}
+          if {p.name for p in root.iterdir()} != expected:
+              raise SystemExit('incomplete or unexpected platform manifest')
+          shutil.copyfile('distribution/install.sh', root / 'install.sh')
+          assets = sorted(expected | {'install.sh'})
+          (root / 'SHA256SUMS').write_text(''.join(
+              f'{hashlib.sha256((root / name).read_bytes()).hexdigest()}  {name}\n' for name in assets))
+          PY
+      - name: Create draft, upload, verify remote completeness, then publish
+        run: |
+          # Published releases are immutable here; re-runs may only resume a draft.
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft > dist/existing.json 2>/dev/null; then
+            python3 -c 'import json; assert json.load(open("dist/existing.json"))["isDraft"], "refusing to modify a published release"'
+          else
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "Herdr Web $RELEASE_TAG" --notes 'Linux GNU x86_64 and aarch64 (glibc 2.35+), Apple Silicon macOS. No Windows or Intel Mac build. Private repository: authenticate gh before downloading. Includes optional Pi metadata installer; does not install or restart Herdr Core.' >/dev/null 2>&1 || { echo 'Draft creation failed'; exit 1; }
+          fi
+          rm -f dist/existing.json
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*.tar.gz dist/SHA256SUMS dist/install.sh >/dev/null 2>&1 || { echo 'Asset upload failed; release remains draft'; exit 1; }
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets,isDraft > dist/remote.json 2>/dev/null || { echo 'Remote manifest read failed'; exit 1; }
+          python3 - <<'PY'
+          import json, pathlib
+          root = pathlib.Path('dist')
+          remote = json.loads((root / 'remote.json').read_text())
+          expected = {p.name: p.stat().st_size for p in root.iterdir() if p.name != 'remote.json'}
+          actual = {a['name']: a['size'] for a in remote['assets']}
+          if not remote['isDraft'] or expected != actual:
+              raise SystemExit('remote release manifest is incomplete; leaving draft unpublished')
+          PY
+          # Byte-verify uploaded assets as well as names and sizes before publication.
+          mkdir dist/remote-bytes
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir dist/remote-bytes >/dev/null 2>&1 || { echo 'Remote asset verification download failed'; exit 1; }
+          (cd dist/remote-bytes && sha256sum --check SHA256SUMS)
+          cmp dist/SHA256SUMS dist/remote-bytes/SHA256SUMS
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest >/dev/null 2>&1 || { echo 'Complete draft could not be published'; exit 1; }

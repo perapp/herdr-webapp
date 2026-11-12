@@ -1,0 +1,24 @@
+/* Native lower drawer chrome; the version-to-version ledger is the only accent. */
+.navigation-settings{max-height:55dvh;overflow:auto;overscroll-behavior:contain}
+.update-panel{border-top:1px solid var(--line);margin-top:3px;padding:3px 6px 0;min-width:0;font-size:11px}
+.update-panel button,.update-panel a{min-height:44px}
+.update-current,.update-available{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.update-version{color:var(--muted);overflow-wrap:anywhere}
+.update-version strong{font:500 11px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--ink)}
+.update-current button{font-size:11px;flex-shrink:0;padding:6px}
+.update-available{padding:0 0 3px;color:var(--bright)}
+.update-available span{overflow-wrap:anywhere}
+.update-available button{flex-shrink:0;border-color:var(--teal);color:var(--teal);font-size:12px}
+.update-panel .update-note,.update-feedback p{margin:4px 0 7px;line-height:1.45;overflow-wrap:anywhere;white-space:pre-wrap}
+.update-note,.update-feedback{color:var(--muted)}
+.update-error{color:var(--error)}
+.update-release{display:inline-flex;align-items:center;color:var(--teal);text-underline-offset:3px}
+.update-release:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.update-dialog{color:var(--ink);background:var(--base)}
+.update-dialog h2{margin-top:0;font-size:18px;font-weight:600}
+.update-dialog p{line-height:1.55;overflow-wrap:anywhere}
+.update-dialog .update-transition{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:12px;border:1px solid var(--line);border-left:3px solid var(--teal);background:var(--panel);font:13px ui-monospace,SFMono-Regular,Consolas,monospace}
+.update-dialog .update-note{font-size:12px}
+.update-dialog-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:20px}
+.update-dialog-actions button{min-height:44px}
+@media(max-width:600px){dialog.update-dialog{width:calc(100% - 24px);max-height:calc(100dvh - 24px);padding:20px;overflow:auto}.update-dialog-actions{display:grid;grid-template-columns:1fr}.update-dialog-actions button{width:100%}}

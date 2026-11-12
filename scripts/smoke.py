@@ -126,6 +126,28 @@ async def main(binary: Path, keep: bool, hold: bool):
             assert client.cookies.get("herdr_session") == session_before_restart
             assert (await client.post("/api/logout", headers={"Origin": "http://evil.example"})).status_code == 403
             print("PASS browser session survives real web-server restart; Origin protections unchanged")
+            update = await client.get("/api/updates")
+            assert update.status_code == 200, update.text
+            update = update.json()
+            assert isinstance(update.get("current_version"), str) and update["current_version"]
+            assert update.get("source") == "development" and update.get("can_install") is False, "standalone source binary must not replace itself"
+            async with client.stream("GET", "/api/updates/events") as response:
+                assert response.status_code == 200
+                async for line in response.aiter_lines():
+                    if line.startswith("data:"):
+                        event = json.loads(line.removeprefix("data:").strip())
+                        assert event["current_version"] == update["current_version"]
+                        break
+            for action in ["check", "install"]:
+                r = await client.post(f"/api/updates/{action}", headers={"Origin": "http://evil.example"}, json={} if action == "check" else {"version": "99.0.0"})
+                assert r.status_code == 403
+            r = await client.post("/api/updates/install", json={"version": "99.0.0"})
+            assert r.status_code in [400, 409], "source build update must be refused"
+            async with httpx.AsyncClient(base_url=origin) as anonymous:
+                for path in ["/api/updates", "/api/updates/events"]:
+                    assert (await anonymous.get(path)).status_code == 401
+                assert (await anonymous.post("/api/updates/install", json={"version": "99.0.0"})).status_code == 401
+            print("PASS update status/events auth, exact Origin, and source-build replacement refusal")
 
             async def wait_state(predicate):
                 async with asyncio.timeout(35):

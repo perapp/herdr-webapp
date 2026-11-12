@@ -1015,6 +1015,7 @@ mod tests {
             }
         });
         let app = std::sync::Arc::new(crate::App {
+            updates: crate::update::Updater::development(),
             core: crate::core::Core::new(path),
             auth: crate::auth::Auth::new("a".repeat(64), None),
         });

@@ -259,6 +259,7 @@ mod tests {
     }
     fn app(core: Arc<Core>) -> Shared {
         Arc::new(App {
+            updates: crate::update::Updater::development(),
             core,
             auth: Auth::new("a".repeat(64), None),
         })

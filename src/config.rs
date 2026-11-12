@@ -13,6 +13,9 @@ use std::{
     about = "Herdr in your browser. Authenticated users have full shell access."
 )]
 pub struct Config {
+    /// Internal verified-candidate helper; never accepted from the HTTP API.
+    #[arg(long, hide = true)]
+    pub update_helper: Option<PathBuf>,
     #[arg(long, env = "HERDR_WEB_BIND", default_value = "0.0.0.0")]
     pub bind: IpAddr,
     /// Explicit port: fail if occupied. Otherwise select the first free port from 8001.

@@ -304,6 +304,7 @@ mod tests {
     #[tokio::test]
     async fn offline_route_auth_origin_and_queries() {
         let app = Arc::new(App {
+            updates: crate::update::Updater::development(),
             core: Core::new("/nonexistent".into()),
             auth: Auth::new("a".repeat(64), None),
         });

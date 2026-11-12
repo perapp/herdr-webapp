@@ -380,3 +380,20 @@ These browser checks do not establish physical iOS/Android keyboard acceptance.
   Phone-sized Chromium verified the saved size, slider bounds/disabled controls
   and reset to 13 px. Settings screenshot inspected. Physical phone keyboards
   remain unverified.
+
+## GitHub release installer and updater — pre-publication
+
+- Added authenticated private-GitHub release installation, deterministic per-target
+  archives/checksums, a draft-first publishing workflow, and README installer links.
+- Added bottom-drawer server version/check/update notice and confirmation popup.
+  Updates verify the matching archive and candidate version, preserve configuration,
+  and restart only the web server using in-place Unix exec. PID, TTY/process-group,
+  stdio and resolved bind/port/Core/token/Origin settings are preserved; listener
+  and authentication-lock descriptors close on exec. Backups are retired only
+  after a new HTTP bind and validation of the older managed payload.
+- Local `make check`, `make release`, `make smoke` passed: 110 frontend tests,
+  51 Rust tests and 13 offline distribution tests. Smoke now checks update API/SSE
+  authentication, exact Origin and refusal to replace an unmanaged source binary.
+- The first release is 0.0.1 consistently across Cargo, lockfiles and frontend
+  metadata. Published-asset installation and live baseline-to-release upgrade
+  verification are recorded separately after publication.

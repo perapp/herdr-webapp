@@ -6,7 +6,54 @@ Svelte/TypeScript/xterm.js frontend embedded. Core remains the terminal authorit
 the browser shares the desktop's machine-owned spaces, tabs and panes. The desktop
 application does not need to be running.
 
-## Start
+## Install a release
+
+[**Download the installer**](https://github.com/perapp/herdr-webapp/releases/latest/download/install.sh)
+· [Release assets and versions](https://github.com/perapp/herdr-webapp/releases)
+
+This repository is private. Sign in with GitHub CLI (`gh auth login`) using an
+account with repository access. Installation also requires Python 3.9+ (the
+running web server does not). Then download and run the installer:
+
+```sh
+installer_dir=$(mktemp -d)
+gh release download --repo perapp/herdr-webapp --pattern install.sh --dir "$installer_dir" &&
+  sh "$installer_dir/install.sh"
+rm -rf "$installer_dir"
+herdr-webapp --port 8001
+```
+
+The installer selects Linux x86-64/ARM64 or macOS ARM64, verifies the release's
+SHA-256 checksum and executable version, and installs per user under
+`${XDG_DATA_HOME:-~/.local/share}/herdr-webapp`, with a CLI symlink in
+`~/.local/bin`. Ensure that directory is on `PATH`. Linux GNU builds target the
+Ubuntu 22.04 / glibc 2.35 baseline. Windows and Intel macOS are not supported.
+A compatible running `herdr-core` is still required; installing or updating this
+web app does not install, stop or update Core.
+
+Use `HERDR_WEB_VERSION=0.0.1` to select a specific release. Installation paths can
+be overridden with absolute `HERDR_WEB_INSTALL_DIR` and `HERDR_WEB_BIN_DIR` paths.
+Existing unmanaged files are never replaced. Stop only the web server before
+re-running the installer on a running managed installation, or use its update UI.
+
+## Updating
+
+The bottom of the burger menu shows the running server version and **Check for
+updates**. Release checks run shortly after startup and hourly afterward. When a
+new version is available, **Update…** opens a confirmation popup. **Update and
+restart** downloads and verifies the matching GitHub release, stages it, then
+restarts only the web server. Core and its terminals keep running. The browser
+reconnects using its existing session and reloads the updated frontend.
+
+Updates require `gh` authenticated on the server (or a server-side `GH_TOKEN`)
+and `tar`. GitHub credentials are never sent to browsers. Updates are explicit,
+not installed merely because a version is available. Source builds can report a
+new version, but only installer-managed releases can self-update. Authentication,
+configuration and browser preferences remain separate from installed binaries.
+Checksums protect against corruption, not a compromised GitHub publisher; these
+releases do not currently have an independent signature-verification scheme.
+
+## Build from source
 
 Build prerequisites: **Rust 1.90+**, **Node 24+**, npm, and Make. Runtime: a running
 compatible `herdr-core` (tested with 0.1.19, protocol generation 1). No Node, Python,
