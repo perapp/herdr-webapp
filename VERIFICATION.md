@@ -427,3 +427,32 @@ These browser checks do not establish physical iOS/Android keyboard acceptance.
   desktop-to-portrait and portrait-to-landscape confirmation rotation: the dialog
   stayed visible outside the closed drawer, Cancel removed it, and navigation
   remained usable. The existing 0.0.1 browser session was preserved afterward.
+
+## Published 0.0.2 acceptance and deployment
+
+- All three v0.0.2 target archives, installer and SHA256SUMS published successfully
+  from the tagged source. Linux ARM remains a cross-build; macOS ARM ran native
+  host checks and the executable version probe.
+- The phone-sized isolated browser performed a genuine published 0.0.1 → 0.0.2
+  update, retaining authentication without re-entering its token, automatically
+  loading the new frontend once, preserving terminal output, and executing a
+  distinct trusted post-reconnect command. Automatic checking caused no reload
+  loop. Desktop final-version controls and portrait/landscape screenshots were
+  inspected; four screenshots remain in ignored dist/verification/v0.0.2/.
+- Across both upgrades, server PID and foreground TTY group stayed unchanged;
+  the isolated shell retained its PID and creation timestamp. Receipts advanced,
+  validated backups and update locks were cleaned, and further updates remain
+  enabled. Both Cancel and installer refusal of live replacement passed.
+- Installed the actual published 0.0.2 asset to the default per-user managed
+  location (~/.local/share/herdr-webapp, CLI ~/.local/bin/herdr-webapp). Switched
+  the existing LAN server pane to that managed executable on 0.0.0.0:8001.
+  The old source server required SIGTERM after its unbounded graceful drain;
+  the new release has the tested bounded drain. Only the web process restarted.
+- Live access-token bytes and durable browser-session store were unchanged;
+  native Core remained connected and the existing Pi terminal was preserved.
+  The live server reports managed 0.0.2, successfully checked private GitHub,
+  and is already on the latest release. Existing pages need one refresh to load
+  the update menu; future in-app updates reload it automatically.
+- All isolated cores/terminals, preview servers, GUI workstation and temporary
+  build/download/auth fixtures were stopped and removed. Only the live managed
+  server was retained. No physical iOS/Android keyboard verification was done.
