@@ -33,6 +33,27 @@ three-platform release pipeline.
   gated deployment. Public health, router/cellular traversal and physical phone
   keyboards are not established by this handoff. Managed LAN 0.0.2 remains live.
 
+## Independent public endpoint/bootstrap verification
+
+After the edge agent deployed the approved catalog, independent checks passed at
+`https://herdr-webapp.perapp.dev`:
+
+- Trusted HTTPS `/healthz`, `/run`, `/client/launcher.py`, and `/api/mode` reporting
+  relay mode, version 0.0.5 and protocol 1. No redirects were accepted by the
+  manifest/raw-asset verifier.
+- Public manifest exactly equals the approved local catalog; all three public
+  executable streams match approved CI size and SHA-256, not merely HTTP status.
+- The actual public `/run` shell script ran with fresh private HOME/XDG directories,
+  a disposable Core and no GitHub credentials. Verified native download, supervised
+  0.0.5 startup, public WSS registration and Core readiness succeeded. The supervisor
+  committed its current-version record. All private bootstrap state, children and
+  Core were removed afterward.
+
+The hosting agent reports TURN locally authenticated but router forwarding still
+requires the user's router SSH authentication. These checks do **not** prove
+public TURN, cross-NAT/cellular terminal transport or physical phone keyboards.
+The original managed LAN 0.0.2 server still returns HTTP 200 and was not upgraded.
+
 ## Automated checks
 
 Latest `make check`, `make release` and `make smoke` completed successfully:
