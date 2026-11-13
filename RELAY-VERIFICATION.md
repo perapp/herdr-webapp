@@ -1,9 +1,18 @@
-# Relay implementation verification — source 0.0.3
+# Relay implementation verification — source 0.0.4
 
 This records implementation/local acceptance, **not public deployment approval**.
 Tests used disposable Cores and owned GUI workstations; the live user Core and
 managed 0.0.2 LAN server were left untouched. A separate edge agent owns actual
 hosting/DNS/router deployment. Release publication is separate from these results.
+
+## Release provenance
+
+The immutable `v0.0.3` tag (`3f908d6`) was not published: its Ubuntu 22.04 CI
+caught an OpenSSL-dependent fixture serial filename; the macOS and Linux ARM jobs
+passed. Version 0.0.4 explicitly chooses that serial path rather than rewriting
+the failed tag. This changes fixture portability/version metadata, not the native
+transport design. Approved catalog publication still requires the complete
+three-platform release pipeline.
 
 ## Automated checks
 

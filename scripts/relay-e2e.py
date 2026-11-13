@@ -249,7 +249,8 @@ class Harness:
         private(extensions, 'subjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\n'
                 'keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n')
         run(['openssl', 'x509', '-req', '-in', str(directory / 'leaf.csr'), '-CA', str(ca),
-             '-CAkey', str(directory / 'ca.key'), '-CAcreateserial', '-days', '1',
+             '-CAkey', str(directory / 'ca.key'), '-CAserial', str(directory / 'ca.srl'),
+             '-CAcreateserial', '-days', '1',
              '-extfile', str(extensions), '-out', str(directory / 'leaf.pem')])
         # Never expose CA signing material through the coturn mount.
         for name in ('ca.key', 'ca.srl', 'leaf.csr', 'leaf.ext'):

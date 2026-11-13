@@ -11,8 +11,9 @@
   before extraction into this directory. The independently cached archive had
   the same checksum; source files were **not copied from the registry cache**.
 - The original MIT and Apache-2.0 license files are retained unchanged. Local
-  changes are offered under the same dual license. `Cargo.lock` in this directory
-  is the unchanged published artifact, not the application's active lockfile.
+  changes are offered under the same dual license. The upstream archive
+  includes a Cargo.lock, but it is not tracked here; the application root
+  Cargo.lock is the active workspace lockfile.
 
 ## Changes
 
