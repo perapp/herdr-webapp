@@ -170,6 +170,9 @@ def main():
             browser.wait("!!document.querySelector('.image-picker')")
             peer_count = browser.js('window.__e2e.peers.length')
             for i in range(21):
+                # Receipt observation can precede Svelte's finally/busy render.
+                # Respect the actual user-facing upload gate before another picker.
+                browser.wait("!!document.querySelector('.attach-image:not(:disabled)')", label='upload ready')
                 browser.draft('printf unexpected > ' + json.dumps(proof) + ' # ')
                 doc = browser.call('DOM.getDocument')['root']['nodeId']
                 node = browser.call('DOM.querySelector', {'nodeId': doc, 'selector': '.image-picker'})['nodeId']
@@ -231,7 +234,7 @@ if __name__ == '__main__':
                    'peer connected', 'shell sentinel', 'acceptance condition',
                    'selected ICE pair missing', 'oversized SCTP frame', 'unexpected relay route',
                    'both peers must select relay', 'wrong TURN transport selected',
-                   'upload reconnected peer', 'pairing fragment persisted'}
+                   'upload reconnected peer', 'pairing fragment persisted', 'upload ready'}
         label = str(error) if isinstance(error, AssertionError) and str(error) in allowed else 'browser operation failed'
         (ROOT / 'result.json').write_text(json.dumps({'ok': False, 'assertion': label}))
         sys.exit(1)

@@ -16,6 +16,23 @@ Both failed tags remain unchanged and unpublished. This changes fixture portabil
 transport design. Approved catalog publication still requires the complete
 three-platform release pipeline.
 
+## Published release and handoff
+
+- **v0.0.5** published successfully by three-platform release CI **43524974192**.
+  Immutable implementation tag: `e8d154204665691e233b4d98519c7b5b07660f28`.
+- Fresh version 0.0.5 passed `make check`, `make release`, `make smoke`, direct,
+  forced UDP and forced TCP acceptance. TLS passed on rerun after fixing a test
+  race: a receipt observer can run before the UI clears upload busy state, so the
+  helper now waits for the user-facing upload button before another picker.
+  This is a test-helper follow-up, not a change to the published executable.
+- `scripts/prepare-relay-release.py` authenticated to private GitHub, verified all
+  three archives/checksums, safely unpacked the approved executables and probed the
+  native version. Catalog: ignored `dist/relay-catalog/0.0.5/`; manifest SHA-256:
+  `d49ab795b31cdbe782353033a767a3edebad309d3a181a53fc2d8a62d730ac0a`.
+- The verified catalog was explicitly handed to the separate edge agent for its
+  gated deployment. Public health, router/cellular traversal and physical phone
+  keyboards are not established by this handoff. Managed LAN 0.0.2 remains live.
+
 ## Automated checks
 
 Latest `make check`, `make release` and `make smoke` completed successfully:
