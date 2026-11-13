@@ -128,6 +128,18 @@ class OfflineTests(unittest.TestCase):
             self.assertEqual({p.name for p in root.iterdir()}, {'ca.pem', 'leaf.pem', 'leaf.key'})
             self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in root.iterdir()))
 
+    def test_tls_signing_without_serial_artifact(self):
+        real_run = runner.run
+        def without_serial(args, **kwargs):
+            result = real_run(args, **kwargs)
+            if '-CAserial' in args:
+                Path(args[args.index('-CAserial') + 1]).unlink(missing_ok=True)
+            return result
+        with tempfile.TemporaryDirectory() as directory, patch.object(runner, 'run', side_effect=without_serial):
+            root = Path(directory)
+            object.__new__(runner.Harness).make_tls(root)
+            self.assertEqual({p.name for p in root.iterdir()}, {'ca.pem', 'leaf.pem', 'leaf.key'})
+
     def test_turn_bad_realm_fails_closed(self):
         fake = TurnSocket('udp', bad_realm=True)
         with patch.object(socket, 'socket', return_value=fake), self.assertRaises(runner.Failure):

@@ -254,7 +254,9 @@ class Harness:
              '-extfile', str(extensions), '-out', str(directory / 'leaf.pem')])
         # Never expose CA signing material through the coturn mount.
         for name in ('ca.key', 'ca.srl', 'leaf.csr', 'leaf.ext'):
-            (directory / name).unlink()
+            # Some OpenSSL versions sign without creating the optional serial
+            # artifact, even with -CAcreateserial. Signing keys remain mandatory.
+            (directory / name).unlink(missing_ok=(name == 'ca.srl'))
         for path in directory.iterdir():
             path.chmod(0o600)
         return ca

@@ -17,9 +17,9 @@ The existing global installer is independent and unchanged.
 - `/client/manifest.json`: JSON (at most 128 KiB):
 
   ```json
-  {"schemaVersion":1,"protocolVersion":1,"version":"0.0.4","assets":[
+  {"schemaVersion":1,"protocolVersion":1,"version":"0.0.5","assets":[
     {"target":"x86_64-unknown-linux-gnu",
-     "url":"/client/0.0.4/x86_64-unknown-linux-gnu/herdr-webapp",
+     "url":"/client/0.0.5/x86_64-unknown-linux-gnu/herdr-webapp",
      "sha256":"<64 lowercase hexadecimal characters>","size":12345678}
   ]}
   ```
@@ -50,7 +50,7 @@ and gracefully exits on SIGTERM. It must atomically replace `ready-file` with a
 regular, single-link, user-owned **0600** JSON file only after healthy connection:
 
 ```json
-{"schemaVersion":1,"pid":123,"version":"0.0.4","protocolVersion":1,"ready":true}
+{"schemaVersion":1,"pid":123,"version":"0.0.5","protocolVersion":1,"ready":true}
 ```
 
 The PID must equal the directly launched child. Readiness is not a durable PID

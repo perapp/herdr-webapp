@@ -1,4 +1,4 @@
-# Relay implementation verification — source 0.0.4
+# Relay implementation verification — source 0.0.5
 
 This records implementation/local acceptance, **not public deployment approval**.
 Tests used disposable Cores and owned GUI workstations; the live user Core and
@@ -9,8 +9,10 @@ hosting/DNS/router deployment. Release publication is separate from these result
 
 The immutable `v0.0.3` tag (`3f908d6`) was not published: its Ubuntu 22.04 CI
 caught an OpenSSL-dependent fixture serial filename; the macOS and Linux ARM jobs
-passed. Version 0.0.4 explicitly chooses that serial path rather than rewriting
-the failed tag. This changes fixture portability/version metadata, not the native
+passed. Version 0.0.4 explicitly chose the serial path, but OpenSSL 3.0 can omit
+that optional artifact entirely. Version 0.0.5 allows the optional serial to be
+absent while still requiring removal of signing keys, and adds a regression test.
+Both failed tags remain unchanged and unpublished. This changes fixture portability/version metadata, not the native
 transport design. Approved catalog publication still requires the complete
 three-platform release pipeline.
 
@@ -23,7 +25,7 @@ Latest `make check`, `make release` and `make smoke` completed successfully:
 - Seven vendored TURN stream/TLS tests: framing, cancellation/close, malformed
   frames, certificate/name/IP verification, plaintext rejection and time bounds.
 - 13 existing distribution tests, 10 relay-launcher tests, 10 catalog tests and
-  nine offline acceptance-harness tests.
+  ten offline acceptance-harness tests.
 - Existing standalone local/federated smoke: durable authentication, exact Origin,
   topology/CAS/unknown-field preservation, native commands/uploads, terminal input,
   credit/resize/observer behavior, reconnect and logout. All against isolated Cores.
