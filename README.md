@@ -6,6 +6,85 @@ Svelte/TypeScript/xterm.js frontend embedded. Core remains the terminal authorit
 the browser shares the desktop's machine-owned spaces, tabs and panes. The desktop
 application does not need to be running.
 
+## Hosted access / outbound connector
+
+The same executable also provides a hosted frontend/signaling service and an
+outbound laptop connector. Local/LAN access remains unchanged (no subcommand, or
+`herdr-webapp local`). **Public deployment is separate from this implementation**;
+infrastructure work for `https://herdr-webapp.perapp.dev` is handed over in [`todo-edge.md`](todo-edge.md).
+Any independently hosted HTTPS origin is supported.
+
+Once the relay is deployed with an approved release catalog:
+
+```sh
+curl -fsSL https://herdr-webapp.perapp.dev/run | sh
+```
+
+Run this on the computer already running Herdr Core. It requires curl and Python
+3.9+, but no GitHub login or permanent installation. The launcher verifies the
+public native executable, keeps a private per-origin cache/state, and supervises
+`connect-relay`. Scan its terminal QR using your phone camera and open the link.
+The QR pins the laptop identity and carries an expiring, one-use pairing secret;
+it never points to the laptop's changing IP. Paired browser keys are nonextractable
+P-256 keys persisted in IndexedDB. Pairing grants full trusted-user shell access.
+Restart the connector to display a fresh one-use QR for another browser; existing
+pairings remain. `connect-relay --reset-pairings` explicitly forgets paired browser
+keys on startup. Deleting browser storage also requires pairing again.
+
+Terminal operations, input, output and uploads use encrypted WebRTC DataChannels,
+directly when possible and through separately configured coturn when necessary.
+The hosted service routes signaling, not terminal plaintext. The hosting origin
+is still trusted to deliver JavaScript and approved downloads; this does not
+protect against a compromised frontend publisher. No new exclusive-control lock
+is added. Lost connections discard pending input/operations instead of replaying.
+TURN credentials are short-lived; renewal currently makes a brief authenticated
+reconnection, not in-place ICE renegotiation. Direct sessions do not periodically
+reconnect. Physical iOS/Android keyboards require separate device validation.
+
+The supervisor checks compatible newer versions while the connector runs, verifies
+size/SHA-256/`--version`, and performs a readiness-gated restart with rollback if
+startup fails. Laptop identity and pairings persist; Core and its terminals are
+never restarted. This is **not** zero-interruption updating or continuous
+end-to-end health rollback. Stopping the launcher stops its connector, not Core.
+
+Manual connector (already downloaded executable):
+
+```sh
+herdr-webapp connect-relay --relay-url https://your-relay.example
+```
+
+Host the relay behind an HTTPS reverse proxy, without exposing a Core socket:
+
+```sh
+python3 scripts/prepare-relay-release.py --version 0.0.3 --output /srv/herdr/catalog
+herdr-webapp serve-relay --bind 0.0.0.0 --port 8080 \
+  --public-origin https://your-relay.example --release-dir /srv/herdr/catalog \
+  --turn-secret-file /private/turn-secret \
+  --turn-url 'turn:turn.your-relay.example:3478?transport=udp' \
+  --turn-url 'turn:turn.your-relay.example:3478?transport=tcp'
+```
+
+Preparation requires a published matching private GitHub release and authenticated
+`gh` on the preparing host only. The catalog and binary must belong to the relay
+UID, with no group/world-writable paths. The shared TURN secret must be a private
+0600 file and never a command-line value. Without a catalog, pairing/signaling can
+run but public executable downloads return 503; without TURN, only direct paths
+work. The checksum-provenanced local ICE patch supports native TURN **UDP, TCP,
+and certificate-verified TLS**. Real isolated coturn acceptance forces both peers
+through each transport; see `RELAY-VERIFICATION.md`. TCP/TLS carries UDP relay
+allocations, not ICE-TCP. TLS uses system roots and hostname/IP-SAN verification;
+configure a `turns:turn.your-relay.example:5349?transport=tcp` URL only with a valid
+certificate and reachable listener. HTTP proxies and TURN-over-DTLS are not added.
+Public network/TURN availability is not implied by an HTTP health check.
+
+See [`RELAY-PROTOCOL.md`](RELAY-PROTOCOL.md),
+[`distribution/relay-launcher.md`](distribution/relay-launcher.md), and
+[`distribution/relay-catalog.md`](distribution/relay-catalog.md) for wire, private
+state, publication, update/rollback and trust contracts. Development-only plain
+HTTP requires `--allow-http-loopback` on both relay and connector with a loopback
+origin/bind; production requires HTTPS. No edge, DNS or router changes are made by
+these commands automatically.
+
 ## Install a release
 
 [**Download the installer**](https://github.com/perapp/herdr-webapp/releases/latest/download/install.sh)
@@ -36,7 +115,7 @@ be overridden with absolute `HERDR_WEB_INSTALL_DIR` and `HERDR_WEB_BIN_DIR` path
 Existing unmanaged files are never replaced. Stop only the web server before
 re-running the installer on a running managed installation, or use its update UI.
 
-## Updating
+## Updating local/LAN installations
 
 The bottom of the burger menu shows the running server version and **Check for
 updates**. Release checks run shortly after startup and hourly afterward. When a

@@ -4,6 +4,13 @@ mod commands;
 mod config;
 mod core;
 mod dashboard;
+mod peer_service;
+mod relay_catalog;
+mod relay_connector;
+mod relay_crypto;
+mod relay_pairings;
+mod relay_server;
+mod relay_wire;
 mod terminal;
 mod topology;
 mod update;
@@ -41,6 +48,90 @@ pub type Shared = Arc<App>;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
+    if config.licenses {
+        print!(
+            "{}\nLocally modified dependency: webrtc-ice 0.17.3\n{}",
+            include_str!("../LICENSE"),
+            include_str!("../vendor/webrtc-ice/LICENSE-MIT")
+        );
+        return Ok(());
+    }
+    match &config.mode {
+        Some(config::Mode::ServeRelay(options)) => {
+            let origin = config.public_origin.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("serve-relay requires --public-origin https://host")
+            })?;
+            let origin = relay_crypto::origin(origin, options.allow_http_loopback)?;
+            let catalog = options
+                .release_dir
+                .as_ref()
+                .map(|path| {
+                    relay_catalog::ReleaseCatalog::load(path, relay_crypto::VERSION).map(Arc::new)
+                })
+                .transpose()?;
+            let turn_secret = options
+                .turn_secret_file
+                .as_ref()
+                .map(|path| -> anyhow::Result<String> {
+                    let bytes = relay_crypto::read_private(path, 4096)?;
+                    Ok(String::from_utf8(bytes)?.trim().to_owned())
+                })
+                .transpose()?;
+            return relay_server::run(
+                relay_server::RelayConfig {
+                    public_origin: origin,
+                    bind: config.bind,
+                    port: config.port.unwrap_or(8080),
+                    allow_insecure_loopback: options.allow_http_loopback,
+                    turn_urls: options.turn_urls.clone(),
+                    turn_secret,
+                    turn_ttl_seconds: options.turn_ttl_seconds,
+                    ..Default::default()
+                },
+                catalog,
+            )
+            .await;
+        }
+        Some(config::Mode::ConnectRelay(options)) => {
+            use sha2::{Digest, Sha256};
+            let origin = relay_crypto::origin(&options.relay_url, options.allow_http_loopback)?;
+            let state_dir = match &options.state_dir {
+                Some(path) => std::path::absolute(path)?,
+                None => {
+                    let base = std::env::var_os("XDG_STATE_HOME")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or(
+                            std::path::PathBuf::from(
+                                std::env::var_os("HOME")
+                                    .ok_or_else(|| anyhow::anyhow!("HOME is required"))?,
+                            )
+                            .join(".local/state"),
+                        );
+                    base.join("herdr-webapp/relay").join(
+                        Sha256::digest(origin.as_bytes())
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>(),
+                    )
+                }
+            };
+            return relay_connector::run(relay_connector::ConnectorConfig {
+                relay_url: origin,
+                core_socket: std::path::absolute(config.socket()?)?,
+                state_dir,
+                ready_file: options
+                    .ready_file
+                    .as_ref()
+                    .map(std::path::absolute)
+                    .transpose()?,
+                allow_http_loopback: options.allow_http_loopback,
+                force_turn: options.force_turn,
+                reset_pairings: options.reset_pairings,
+            })
+            .await;
+        }
+        Some(config::Mode::Local) | None => {}
+    }
     if let Some(plan) = &config.update_helper {
         // Deliberately do not expose plan paths or subprocess diagnostics.
         return update::helper(plan).map_err(|_| {
@@ -179,6 +270,7 @@ async fn main() -> anyhow::Result<()> {
 
 pub fn router(app: Shared) -> Router {
     Router::new()
+        .route("/api/mode", get(|| async { Json(json!({"mode":"local","version":relay_crypto::VERSION,"protocolVersion":relay_crypto::PROTOCOL_VERSION})) }))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/session", get(session))

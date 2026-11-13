@@ -67,6 +67,10 @@ try:
                     if source.is_symlink() or not source.is_file():
                         raise SystemExit(f'not a regular release file: {source}')
                     data = source.read_bytes()
+                    if name == 'LICENSE':
+                        notice = pathlib.Path('vendor/webrtc-ice/LICENSE-MIT')
+                        if notice.is_file():
+                            data += b'\n\nLocally modified dependency: webrtc-ice 0.17.3\n' + notice.read_bytes()
                     entry = tarfile.TarInfo(name)
                     entry.size, entry.mode, entry.mtime = len(data), mode, 0
                     entry.uid = entry.gid = 0

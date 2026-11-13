@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { transportEvents } from './lib/transport';
   import { onMount, tick } from 'svelte';
   import { errorMessage, request } from './lib/api';
   import { canInstallUpdate, detectUpdatedVersion, parseUpdateStatus, updateBusy } from './lib/updates';
@@ -64,7 +65,7 @@
     void perform('/api/updates/install', { version: captured.to });
   }
   onMount(() => {
-    const source = new EventSource('/api/updates/events');
+    const source = transportEvents('/api/updates/events');
     source.addEventListener('update', event => {
       if (disposed) return;
       revision++;

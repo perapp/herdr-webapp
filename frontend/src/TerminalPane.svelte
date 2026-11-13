@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { transportSocket } from './lib/transport';
+  import type { SocketLike } from './lib/transport';
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import '@xterm/xterm/css/xterm.css';
@@ -66,7 +68,7 @@
     term.loadAddon(fit);
     term.open(host);
     const gate = new InputGate();
-    let socket: WebSocket | undefined;
+    let socket: SocketLike | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
     let generation = 0;
@@ -136,7 +138,7 @@
         return true;
       };
     };
-    let commandTarget: { generation: number; socket: WebSocket; agent: AgentKind } | undefined;
+    let commandTarget: { generation: number; socket: SocketLike; agent: AgentKind } | undefined;
     openCommands = event => {
       if (!event.isTrusted || !attached || !agent || socket?.readyState !== WebSocket.OPEN) return;
       commandTarget = { generation, socket, agent };
@@ -191,7 +193,7 @@
       detail = 'Connecting to the terminal.';
       const size = fit.proposeDimensions();
       const url = terminalUrl(address, size?.cols || term.cols, size?.rows || term.rows, location.href, appearance.dark ? 'dark' : 'light');
-      const ws = new WebSocket(url);
+      const ws = transportSocket(url);
       socket = ws;
       ws.binaryType = 'arraybuffer';
       let final = false;

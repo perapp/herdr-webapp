@@ -1,7 +1,7 @@
 {
   "name": "herdr-webapp-frontend",
   "private": true,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -16,9 +16,13 @@
     "@xterm/xterm": "^5.5.0",
     "svelte": "^5.20.0"
   },
-  "engines": { "node": ">=22.12.0" },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "overrides": {
-    "@typescript-eslint/typescript-estree": { "minimatch": "^11.0.1" }
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.1"
+    }
   },
   "devDependencies": {
     "@eslint/js": "^9.20.0",

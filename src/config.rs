@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use rand::RngCore;
 use std::{
     net::IpAddr,
@@ -13,26 +13,81 @@ use std::{
     about = "Herdr in your browser. Authenticated users have full shell access."
 )]
 pub struct Config {
+    #[command(subcommand)]
+    pub mode: Option<Mode>,
+    /// Display the project license and locally vendored dependency notices.
+    #[arg(long, global = true)]
+    pub licenses: bool,
     /// Internal verified-candidate helper; never accepted from the HTTP API.
     #[arg(long, hide = true)]
     pub update_helper: Option<PathBuf>,
-    #[arg(long, env = "HERDR_WEB_BIND", default_value = "0.0.0.0")]
+    #[arg(long, global = true, env = "HERDR_WEB_BIND", default_value = "0.0.0.0")]
     pub bind: IpAddr,
     /// Explicit port: fail if occupied. Otherwise select the first free port from 8001.
-    #[arg(long, env = "HERDR_WEB_PORT")]
+    #[arg(long, global = true, env = "HERDR_WEB_PORT")]
     pub port: Option<u16>,
-    #[arg(long, env = "HC_SOCKET")]
+    #[arg(long, global = true, env = "HC_SOCKET")]
     pub core_socket: Option<PathBuf>,
-    #[arg(long, env = "HC_SESSION")]
+    #[arg(long, global = true, env = "HC_SESSION")]
     pub session: Option<String>,
-    #[arg(long, env = "HERDR_WEB_TOKEN_FILE")]
+    #[arg(long, global = true, env = "HERDR_WEB_TOKEN_FILE")]
     pub token_file: Option<PathBuf>,
     /// Exact external origin when behind an HTTPS reverse proxy (e.g. https://herdr.example).
-    #[arg(long, env = "HERDR_WEB_PUBLIC_ORIGIN")]
+    #[arg(long, global = true, env = "HERDR_WEB_PUBLIC_ORIGIN")]
     pub public_origin: Option<String>,
     /// Plain output instead of the pinned QR / URL dashboard (automatic when redirected).
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub no_dashboard: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Mode {
+    /// Direct LAN access (also the default without a subcommand).
+    Local,
+    /// Host the browser application, pairing/signaling and approved client downloads.
+    ServeRelay(ServeRelay),
+    /// Connect local Herdr Core outbound to a hosted relay and display pairing QR.
+    ConnectRelay(ConnectRelay),
+}
+#[derive(Debug, Args)]
+pub struct ServeRelay {
+    /// Verified public client catalog, prepared with scripts/prepare-relay-release.py.
+    #[arg(long, env = "HERDR_RELAY_RELEASE_DIR")]
+    pub release_dir: Option<PathBuf>,
+    /// TURN REST shared-secret file, owner-only; never pass the secret in argv.
+    #[arg(long, env = "HERDR_RELAY_TURN_SECRET_FILE")]
+    pub turn_secret_file: Option<PathBuf>,
+    /// Coturn URL (repeat for UDP/TCP/TLS); not an HTTP reverse-proxy address.
+    #[arg(
+        long = "turn-url",
+        env = "HERDR_RELAY_TURN_URLS",
+        value_delimiter = ','
+    )]
+    pub turn_urls: Vec<String>,
+    #[arg(long, default_value_t = 600)]
+    pub turn_ttl_seconds: u64,
+    /// Development only: permit HTTP with a loopback origin and bind address.
+    #[arg(long)]
+    pub allow_http_loopback: bool,
+}
+#[derive(Debug, Args)]
+pub struct ConnectRelay {
+    #[arg(long, env = "HERDR_RELAY_URL")]
+    pub relay_url: String,
+    /// Persistent private laptop identity and paired-browser keys.
+    #[arg(long, env = "HERDR_RELAY_STATE_DIR")]
+    pub state_dir: Option<PathBuf>,
+    /// Private supervisor readiness marker, never a pairing credential.
+    #[arg(long)]
+    pub ready_file: Option<PathBuf>,
+    #[arg(long)]
+    pub allow_http_loopback: bool,
+    /// Require TURN relay candidates, useful for network verification.
+    #[arg(long)]
+    pub force_turn: bool,
+    /// Explicitly revoke all stored browser pairings before connecting.
+    #[arg(long)]
+    pub reset_pairings: bool,
 }
 
 fn home() -> Result<PathBuf> {
@@ -168,6 +223,26 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn modes_keep_legacy_flags_and_offline_license_output() {
+        let legacy = Config::try_parse_from(["app", "--port", "8123", "--no-dashboard"]).unwrap();
+        assert!(legacy.mode.is_none());
+        assert_eq!(legacy.port, Some(8123));
+        let local = Config::try_parse_from(["app", "local", "--port", "8123"]).unwrap();
+        assert!(matches!(local.mode, Some(Mode::Local)));
+        assert_eq!(local.port, legacy.port);
+        let notices = Config::try_parse_from(["app", "--licenses"]).unwrap();
+        assert!(notices.licenses && notices.mode.is_none());
+        let connector = Config::try_parse_from([
+            "app",
+            "connect-relay",
+            "--relay-url",
+            "https://relay.example",
+            "--force-turn",
+        ])
+        .unwrap();
+        assert!(matches!(connector.mode, Some(Mode::ConnectRelay(options)) if options.force_turn));
+    }
     #[test]
     fn token_is_private_and_reused() {
         let d = tempfile::tempdir().unwrap();

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { transportEvents } from './lib/transport';
+  import type { EventSourceLike } from './lib/transport';
   import { MOBILE_QUERY, paneTitle, resolvePane, selectCreated, selectPane, visiblePanes } from './lib/navigation';
   import { agentTree } from './lib/agents';
   import type { AgentNode } from './lib/agents';
@@ -14,7 +16,7 @@
   import type { SharedDocument, SharedSpace, SharedTab, LayoutNode } from './lib/schema';
   import { blankView, loadView, saveView } from './lib/view';
 
-  let { initialToken = '' }: { initialToken?: string } = $props();
+  let { initialToken = '', peerMode = false, peerVersion = '', relayVersion = '', peerRoute = '', onForget, computers = [], selectedComputer = '', onChooseComputer }: { initialToken?: string; peerMode?: boolean; peerVersion?: string; relayVersion?: string; peerRoute?: string; onForget?: () => void; computers?: { id: string; name: string }[]; selectedComputer?: string; onChooseComputer?: (id: string) => void } = $props();
   let auth = $state<'checking' | 'signed-out' | 'signed-in'>('checking');
   let token = $state('');
   let loginBusy = $state(false);
@@ -36,7 +38,7 @@
   let view = $state(blankView());
   let viewLoaded = $state(false);
   let modal = $state<{ action: Action; document: SharedDocument; machine: string; space?: string; tab?: string; pane?: string; initialName?: string } | null>(null);
-  let source: EventSource | undefined;
+  let source: EventSourceLike | undefined;
   let lifecycle = 0;
   let revision = 0;
   let disposed = false;
@@ -66,7 +68,7 @@
     }
   }
   async function checkSessionAfterDisconnect(current: number) {
-    if (checkingSession) return;
+    if (peerMode || checkingSession) return;
     checkingSession = true;
     try {
       const session = await request('/api/session');
@@ -80,7 +82,7 @@
     error = '';
     const current = lifecycle;
     // Open the stream before fetching: a newer state event wins over GET.
-    source = new EventSource('/api/events');
+    source = transportEvents('/api/events');
     source.onopen = () => { if (current === lifecycle) { streamLive = true; error = ''; } };
     source.addEventListener('state', event => {
       if (disposed || current !== lifecycle) return;
@@ -174,6 +176,7 @@
     view = loadView();
     viewLoaded = true;
     void (async () => {
+      if (peerMode) { auth = 'signed-in'; await start(); return; }
       const linkToken = initialToken;
       initialToken = '';
       if (linkToken) { await login(undefined, linkToken); return; }
@@ -191,6 +194,14 @@
     return () => { disposed = true; stop(); stopAppearance(); media.removeEventListener('change', updateMobile); window.visualViewport?.removeEventListener('resize', updateViewport); document.removeEventListener('pointerdown', outsideActions); document.removeEventListener('keydown', escapeActions); };
   });
 </script>
+
+<style>
+  .peer-info { padding: 7px 10px; font-size: 11px; color: var(--muted); }
+  .peer-info summary { cursor: pointer; min-height: 28px; display: list-item; }
+  .peer-info p { margin-bottom: 8px; overflow-wrap: anywhere; }
+  .peer-info select { font-size: 11px; margin-bottom: 8px; }
+  .peer-info button { width: 100%; font-size: 11px; }
+</style>
 
 <svelte:head><title>{selected ? `${selected.name} · Herdr` : 'Herdr · Spaces'}</title></svelte:head>
 
@@ -271,7 +282,17 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 3-.6 2.2-2 .9-2-.6-2 3.5 1.5 1.6v2.3L2.4 14.5l2 3.5 2-.6 2 .9L9 21h4l.6-2.7 2-.9 2 .6 2-3.5-1.5-1.6v-2.3l1.5-1.6-2-3.5-2 .6-2-.9L13 3Z"/><circle cx="11" cy="12" r="3"/></svg>
       <span>Settings</span><small>{appearance.preference === 'system' ? 'System' : appearance.preference === 'dark' ? 'Dark' : 'Light'}</small>
     </button>
-    <UpdatePanel />
+    {#if peerMode}
+      <details class="peer-info"><summary>{peerRoute || 'Peer connection'}</summary>
+        <p>Connector {peerVersion || 'unknown'} · Relay {relayVersion || 'unknown'}</p>
+        <p>The laptop launcher manages automatic connector updates while it is running. Manual connectors must be updated on that computer; local-server update controls are not available here.</p>
+        <label for="peer-computer">Computer</label>
+        <select id="peer-computer" value={selectedComputer} onchange={event => onChooseComputer?.(event.currentTarget.value)}>
+          {#each computers as computer (computer.id)}<option value={computer.id}>{computer.name}</option>{/each}
+        </select>
+        <button onclick={onForget}>Forget this computer</button>
+      </details>
+    {:else}<UpdatePanel />{/if}
   </footer>
 {/snippet}
 

@@ -1,12 +1,25 @@
 [package]
 name = "herdr-webapp"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
 description = "A browser window onto Herdr Core"
 
+[workspace]
+members = ["vendor/webrtc-ice"]
+default-members = ["."]
+resolver = "3"
+
 [dependencies]
+hmac = "0.12"
+p256 = { version = "0.13", features = ["ecdsa"] }
+sha1 = "0.10"
+sha2_10 = { package = "sha2", version = "0.10" }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
+tower = { version = "0.5", features = ["util"] }
+url = "2"
+webrtc = "=0.17.3"
 anyhow = "1"
 base64 = "0.22"
 http-body-util = "0.1"
@@ -28,9 +41,12 @@ tokio = { version = "1", features = ["full"] }
 toml = "0.9"
 uuid = { version = "1", features = ["v4"] }
 
+# Narrow upstream patch: verified TURN stream framing and TCP/TLS transports.
+[patch.crates-io]
+webrtc-ice = { path = "vendor/webrtc-ice" }
+
 [dev-dependencies]
 tempfile = "3"
-tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 lto = "thin"

@@ -15,7 +15,11 @@ check:
 	cargo fmt --all -- --check
 	cargo clippy --locked --all-targets -- -D warnings
 	cargo test --locked
-	python3 distribution/test_release.py
+	cargo test --locked -p webrtc-ice --lib turn_stream
+	python3 -B distribution/test_release.py
+	python3 -B distribution/test_relay_launcher.py
+	python3 -B distribution/test_relay_catalog.py
+	python3 -B scripts/relay-e2e/test_static.py
 
 test:
 	cd frontend && npm test

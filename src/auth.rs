@@ -181,7 +181,7 @@ fn cookie(headers: &HeaderMap) -> Option<String> {
         .map(|(_, v)| v.to_string())
 }
 impl Auth {
-    #[cfg(test)]
+    /// In-memory authentication for tests and private in-process adapters; never persisted.
     pub fn new(token: String, origin: Option<String>) -> Self {
         Self {
             token,

@@ -102,9 +102,14 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
+          cargo test --locked -p webrtc-ice --lib turn_stream
       - name: Distribution tests
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: python3 distribution/test_release.py
+        run: |
+          python3 -B distribution/test_release.py
+          python3 -B distribution/test_relay_launcher.py
+          python3 -B distribution/test_relay_catalog.py
+          python3 -B scripts/relay-e2e/test_static.py
       - name: Build locked release and package
         run: |
           cargo build --release --locked --target '${{ matrix.target }}'

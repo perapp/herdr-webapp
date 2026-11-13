@@ -63,6 +63,33 @@ pub struct AttachQuery {
     #[serde(default)]
     theme: TerminalTheme,
 }
+impl AttachQuery {
+    pub(crate) fn valid(&self) -> bool {
+        !self.terminal.is_empty()
+            && self.terminal.len() <= 512
+            && !self.terminal.chars().any(char::is_control)
+            && valid_size(self.cols, self.rows)
+    }
+}
+
+/// Transport-independent terminal messages; cancellation drops the native attachment.
+/// Implementations must bound writes and must never queue disconnected input.
+pub(crate) trait TerminalWire: Send {
+    fn send(&mut self, message: Message) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn recv(&mut self) -> impl std::future::Future<Output = Option<Result<Message>>> + Send;
+}
+impl TerminalWire for WebSocket {
+    async fn send(&mut self, message: Message) -> Result<()> {
+        WebSocket::send(self, message).await?;
+        Ok(())
+    }
+    async fn recv(&mut self) -> Option<Result<Message>> {
+        WebSocket::recv(self)
+            .await
+            .map(|result| result.map_err(Into::into))
+    }
+}
+
 fn default_cols() -> u16 {
     80
 }
@@ -85,11 +112,7 @@ pub async fn upgrade(
 ) -> Result<Response, ApiError> {
     app.auth.require(&headers)?;
     app.auth.same_origin(&headers, true)?;
-    if query.terminal.is_empty()
-        || query.terminal.len() > 512
-        || query.terminal.chars().any(char::is_control)
-        || !valid_size(query.cols, query.rows)
-    {
+    if !query.valid() {
         return Err(error(
             StatusCode::BAD_REQUEST,
             "Invalid terminal or dimensions",
@@ -169,7 +192,7 @@ async fn write_frame(
     tokio::time::timeout(IO_TIMEOUT, w.write_all(&encode(ch, kind, payload))).await??;
     Ok(())
 }
-async fn send_json(ws: &mut WebSocket, value: Value) -> Result<()> {
+async fn send_json(ws: &mut impl TerminalWire, value: Value) -> Result<()> {
     tokio::time::timeout(IO_TIMEOUT, ws.send(Message::Text(value.to_string().into()))).await??;
     Ok(())
 }
@@ -271,12 +294,13 @@ enum Command {
     Credit { bytes: usize },
 }
 
-async fn session(
-    ws: &mut WebSocket,
+pub(crate) async fn session(
+    ws: &mut impl TerminalWire,
     app: &Shared,
     headers: &HeaderMap,
     query: AttachQuery,
 ) -> Result<()> {
+    ensure!(query.valid(), "invalid terminal or dimensions");
     // Includes hello and attach: logout cannot leave a stalled handshake alive indefinitely.
     let (conn, attached) = tokio::time::timeout(Duration::from_secs(8), async {
         let mut conn = Plain::connect(&app.core.path, true).await?;

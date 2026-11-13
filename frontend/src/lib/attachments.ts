@@ -1,4 +1,5 @@
 import { ApiError } from './api';
+import { transportRequest } from './transport';
 import { record } from './schema';
 
 export const maxImageBytes = 8 * 1024 * 1024;
@@ -21,7 +22,7 @@ export function imageReference(path: unknown): string {
 export async function uploadImage(address: string, file: File, signal: AbortSignal): Promise<string> {
   validateImage(file);
   const query = new URLSearchParams({ terminal: address });
-  const response = await fetch(`/api/attachments?${query}`, {
+  const response = await transportRequest(`/api/attachments?${query}`, {
     method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/octet-stream' },
     body: file, signal, cache: 'no-store', redirect: 'error',
   });
