@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Private, opt-in trusted-source main supervisor (Python 3.11+, POSIX).
+"""Private, opt-in main supervisor (Python 3.11+, POSIX).
 
-Requires git, npm/Node and the host Rust toolchain. This executes trusted source,
+Default CI mode anonymously downloads the complete three-target catalog from a
+configured trusted HTTPS publisher. Its publication descriptor binds exact
+manifest bytes, revision, repository and workflow; this is trusted Pages HTTPS
+provenance, NOT cryptographic attestation. No Git/GitHub/build tools or tokens
+are used and no failed CI acquisition ever falls back to local compilation.
+Explicit --source local alone requires git, npm/Node and the host Rust toolchain. This executes trusted source,
 not a sandbox. Use OS resource limits for memory/CPU and a filesystem quota for
 hard disk limits. Keep state on a local filesystem; no other process may mutate
 it. Three artifacts are retained; build caches are removed after every attempt,
@@ -52,6 +57,9 @@ import urllib.parse
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 SEMVER = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z")
 MAX_BINARY = 128 * 1024 * 1024
+MAX_TOTAL = 256 * 1024 * 1024
+TARGETS = {"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin"}
+HEX256 = re.compile(r"[0-9a-f]{64}\Z")
 MAX_WORKSPACE = 6 * 1024**3
 MIN_FREE_BYTES = 2 * 1024**3
 
@@ -96,11 +104,51 @@ def atomic_json(path, value):
             os.unlink(name)
 
 
+def strict_json(raw):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise Failure("invalid_metadata")
+            result[key] = value
+        return result
+    def constant(_value):
+        raise Failure("invalid_metadata")
+    value = json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+    if not isinstance(value, dict):
+        raise Failure("invalid_metadata")
+    return value
+
+
+def validate_manifest(manifest, sha, complete=False):
+    if (set(manifest) != {"schemaVersion", "protocolVersion", "channel", "version", "revision", "assets"}
+            or type(manifest["schemaVersion"]) is not int or manifest["schemaVersion"] != 2
+            or type(manifest["protocolVersion"]) is not int or manifest["protocolVersion"] != 1
+            or manifest["channel"] != "main" or manifest["revision"] != sha
+            or not isinstance(manifest["version"], str) or len(manifest["version"]) > 64
+            or not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", manifest["version"])
+            or not isinstance(manifest["assets"], list)):
+        raise Failure("invalid_catalog")
+    seen, total = set(), 0
+    for asset in manifest["assets"]:
+        if (not isinstance(asset, dict) or set(asset) != {"target", "url", "size", "sha256"}
+                or not isinstance(asset["target"], str) or asset["target"] not in TARGETS
+                or asset["target"] in seen
+                or asset["url"] != f'/main/client/{sha}/{asset["target"]}/herdr-webapp'
+                or type(asset["size"]) is not int or not 0 < asset["size"] <= MAX_BINARY
+                or not isinstance(asset["sha256"], str) or not HEX256.fullmatch(asset["sha256"])):
+            raise Failure("invalid_catalog")
+        seen.add(asset["target"])
+        total += asset["size"]
+    if total > MAX_TOTAL or (seen != TARGETS if complete else seen not in (TARGETS, {native_target()})):
+        raise Failure("invalid_catalog")
+
+
 def read_json(path):
     s = guard(path)
     if s.st_size > 65536:
         raise Failure("invalid_metadata")
-    value = json.loads(path.read_text())
+    value = strict_json(path.read_bytes())
     if not isinstance(value, dict):
         raise Failure("invalid_metadata")
     return value
@@ -210,12 +258,33 @@ def validate_args(a):
         raise Failure("invalid_repository")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", a.branch) or ".." in a.branch or "//" in a.branch:
         raise Failure("invalid_branch")
+    if a.source == "ci":
+        if (repo.hostname != "github.com" or not re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?", repo.path)
+                or repo.port or a.branch != "main"):
+            raise Failure("invalid_ci_repository")
+        source_url(a)
     if a.interval_seconds < 1 or not 1 <= a.build_jobs <= 16 or not 30 <= a.turn_ttl_seconds <= 600:
         raise Failure("invalid_limits")
     if a.turn_secret_file:
         guard(Path(a.turn_secret_file))
     if bool(a.turn_url) != bool(a.turn_secret_file):
         raise Failure("invalid_turn")
+
+
+def source_url(a):
+    raw = a.artifact_base_url
+    parsed = urllib.parse.urlsplit(raw)
+    try:
+        parsed.port
+    except ValueError:
+        raise Failure("invalid_artifact_base_url") from None
+    if (not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment
+            or any(c.isspace() or ord(c) < 32 for c in raw) or "\\" in raw
+            or "%" in raw or ".." in parsed.path or raw.endswith("/")
+            or (parsed.scheme != "https" and not (parsed.scheme == "http" and a.allow_http_loopback
+                and parsed.hostname in ("localhost", "127.0.0.1", "::1")))):
+        raise Failure("invalid_artifact_base_url")
+    return parsed
 
 
 class Manager:
@@ -325,6 +394,142 @@ class Manager:
                 p.stdout.close()
 
     def fetch(self):
+        if self.args.source == "ci":
+            return self.fetch_ci()
+        return self.fetch_local()
+
+    def download(self, path, limit, destination=None, expected=None):
+        # Direct stdlib connections: no proxy/netrc/token/cookie or redirect handling.
+        base = source_url(self.args)
+        connection = (http.client.HTTPSConnection if base.scheme == "https" else http.client.HTTPConnection)(
+            base.hostname, base.port, timeout=5)
+        response = None
+        timer = None
+        output = None
+        try:
+            self.maintenance()
+            if self.stopping:
+                raise Failure("shutdown")
+            self.disk_reserve()
+            connection.connect()
+            wire = connection.sock
+            def expire():
+                try:
+                    wire.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            timer = threading.Timer(60, expire)
+            timer.daemon = True
+            timer.start()
+            connection.request("GET", base.path + path, headers={"Accept": "application/octet-stream"})
+            response = connection.getresponse()
+            if response.status != 200 or response.getheader("Content-Encoding", "identity") != "identity":
+                raise Failure("download_failed")
+            length = response.getheader("Content-Length")
+            if length is not None and (not length.isascii() or not length.isdigit() or int(length) > limit):
+                raise Failure("download_size")
+            if destination is not None:
+                output = destination.open("xb")
+            size, chunks, checksum = 0, [], hashlib.sha256()
+            while True:
+                self.maintenance()
+                if self.stopping:
+                    raise Failure("shutdown")
+                self.disk_reserve()
+                block = response.read1(min(65536, limit + 1 - size))
+                if not block:
+                    break
+                size += len(block)
+                if size > limit:
+                    raise Failure("download_size")
+                checksum.update(block)
+                if output:
+                    output.write(block)
+                else:
+                    chunks.append(block)
+            if length is not None and size != int(length):
+                raise Failure("download_size")
+            if expected and (size != expected["size"] or checksum.hexdigest() != expected["sha256"]):
+                raise Failure("download_integrity")
+            if output:
+                output.flush()
+                os.fsync(output.fileno())
+            return b"".join(chunks)
+        finally:
+            if output:
+                output.close()
+            if timer:
+                timer.cancel()
+            if response:
+                response.close()
+            connection.close()
+
+    def fetch_ci(self):
+        raw = self.download("/main/publication.json", 65536)
+        publication = strict_json(raw)
+        repository = urllib.parse.urlsplit(self.args.repository).path[1:]
+        if repository.endswith(".git"):
+            repository = repository[:-4]
+        if (set(publication) != {"schemaVersion", "repository", "branch", "revision", "workflow", "runId", "manifestSha256"}
+                or type(publication["schemaVersion"]) is not int or publication["schemaVersion"] != 1
+                or publication["repository"] != repository or publication["branch"] != "main"
+                or publication["workflow"] != ".github/workflows/main.yml"
+                or type(publication["runId"]) is not int or publication["runId"] <= 0
+                or not isinstance(publication["revision"], str) or not SHA.fullmatch(publication["revision"])
+                or not isinstance(publication["manifestSha256"], str) or not HEX256.fullmatch(publication["manifestSha256"])):
+            raise Failure("invalid_publication")
+        raw = self.download("/main/client/manifest.json", 65536)
+        if hashlib.sha256(raw).hexdigest() != publication["manifestSha256"]:
+            raise Failure("publication_mismatch")
+        manifest = strict_json(raw)
+        sha = publication["revision"]
+        validate_manifest(manifest, sha, complete=True)
+        self.publication, self.manifest_raw, self.manifest = publication, raw, manifest
+        # Existing SHA is immutable even when it is already active.
+        if (self.artifacts / sha).exists():
+            guard(self.artifacts / sha, directory=True)
+            old = self.artifacts / sha / "catalog" / "manifest.json"
+            guard(old.parent, directory=True)
+            guard(old)
+            if old.read_bytes() != raw:
+                raise Failure("immutable_conflict")
+            self.artifact(sha)
+        return sha
+
+    def acquire_ci(self, sha):
+        if self.publication["revision"] != sha:
+            raise Failure("publication_mismatch")
+        if (self.artifacts / sha).exists():
+            self.artifact(sha)
+            return
+        temp = Path(tempfile.mkdtemp(prefix=".artifact-", dir=self.artifacts))
+        try:
+            catalog = temp / "catalog"
+            private_dir(catalog)
+            private_dir(catalog / sha)
+            for asset in self.manifest["assets"]:
+                directory = catalog / sha / asset["target"]
+                private_dir(directory)
+                binary = directory / "herdr-webapp"
+                self.download(asset["url"], asset["size"], binary, asset)
+                binary.chmod(0o700)
+            file = catalog / "manifest.json"
+            with file.open("xb") as f:
+                f.write(self.manifest_raw)
+                f.flush()
+                os.fsync(f.fileno())
+            self.status("verifying", sha)
+            binary = catalog / sha / native_target() / "herdr-webapp"
+            if self.command([str(binary), "--build-revision"], timeout=10, capture=True) != sha:
+                raise Failure("revision_mismatch")
+            if self.command([str(binary), "--version"], timeout=10, capture=True) != "herdr-webapp " + self.manifest["version"]:
+                raise Failure("version_mismatch")
+            os.rename(temp, self.artifacts / sha)
+        finally:
+            if temp.exists():
+                shutil.rmtree(temp)
+
+    def fetch_local(self):
         if not self.checkout.exists():
             private_dir(self.checkout)
             self.command(["git", "init", "--quiet", str(self.checkout)], timeout=30)
@@ -357,6 +562,11 @@ class Manager:
             raise Failure("workspace_limit")
 
     def build(self, sha):
+        if self.args.source == "ci":
+            return self.acquire_ci(sha)
+        return self.build_local(sha)
+
+    def build_local(self, sha):
         env = dict(os.environ, CARGO_BUILD_JOBS=str(self.args.build_jobs),
                    CARGO_INCREMENTAL="0", HERDR_BUILD_REVISION=sha)
         # Never inherit a cross-target or external target-directory override.
@@ -436,15 +646,16 @@ class Manager:
         catalog = root / "catalog"
         guard(catalog, directory=True)
         manifest = read_json(catalog / "manifest.json")
-        if (manifest.get("schemaVersion") != 2 or manifest.get("protocolVersion") != 1
-                or manifest.get("channel") != "main" or manifest.get("revision") != sha
-                or not SEMVER.fullmatch(str(manifest.get("version", "")))
-                or not isinstance(manifest.get("assets"), list)
-                or len(manifest["assets"]) != 1
-                or not isinstance(manifest["assets"][0], dict)):
-            raise Failure("invalid_catalog")
-        asset = manifest["assets"][0]
+        validate_manifest(manifest, sha)
         target = native_target()
+        for entry in manifest["assets"]:
+            guard(catalog / sha, directory=True)
+            guard(catalog / sha / entry["target"], directory=True)
+            file = catalog / sha / entry["target"] / "herdr-webapp"
+            meta = guard(file, executable=True)
+            if meta.st_size != entry["size"] or digest(file) != entry["sha256"]:
+                raise Failure("invalid_artifact")
+        asset = next(a for a in manifest["assets"] if a["target"] == target)
         if asset.get("target") != target or asset.get("url") != f"/main/client/{sha}/{target}/herdr-webapp":
             raise Failure("invalid_catalog")
         guard(catalog / sha, directory=True)
@@ -455,6 +666,8 @@ class Manager:
             raise Failure("invalid_artifact")
         if self.command([str(binary), "--build-revision"], timeout=10, capture=True) != sha:
             raise Failure("revision_mismatch")
+        if len(manifest["assets"]) == 3 and self.command([str(binary), "--version"], timeout=10, capture=True) != "herdr-webapp " + manifest["version"]:
+            raise Failure("version_mismatch")
         return binary, catalog, manifest
 
     def child(self, binary, catalog, sha, sock):
@@ -518,7 +731,7 @@ class Manager:
         _, body = get("/main/client/manifest.json")
         if json.loads(body) != manifest:
             raise Failure("catalog_mismatch")
-        asset = manifest["assets"][0]
+        asset = next(a for a in manifest["assets"] if a["target"] == native_target())
         _, binary = get(asset["url"], MAX_BINARY)
         if len(binary) != asset["size"] or hashlib.sha256(binary).hexdigest() != asset["sha256"]:
             raise Failure("download_mismatch")
@@ -644,12 +857,12 @@ class Manager:
             self.status("ready" if self.current else "unavailable", sha, "revision_backoff")
             return
         try:
-            self.status("building", sha)
-            if not (self.artifacts / sha).exists():
+            self.status("fetching" if self.args.source == "ci" else "building", sha)
+            if self.args.source == "ci" or not (self.artifacts / sha).exists():
                 self.build(sha)
             self.activate(sha)
             self.failures.pop(sha, None)
-        except (OSError, ValueError, Failure):
+        except (OSError, ValueError, Failure, http.client.HTTPException):
             count = failed["count"] + 1
             self.failures[sha] = {"count": count, "after": time.time() + min(3600, 60 * 2**count)}
             self.status("ready" if self.current else "unavailable", sha, "candidate_failed")
@@ -688,7 +901,7 @@ class Manager:
                     try:
                         attempted = self.update()
                         failures = 0
-                    except (OSError, ValueError, Failure):
+                    except (OSError, ValueError, Failure, http.client.HTTPException):
                         attempted = False
                         failures += 1
                         self.status("ready" if self.current else "unavailable", error="update_failed")
@@ -702,6 +915,9 @@ class Manager:
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--state-dir", required=True)
+    p.add_argument("--source", choices=("ci", "local"), default="ci",
+                   help="ci: anonymous published artifacts (default); local: trusted Git/npm/Cargo builds")
+    p.add_argument("--artifact-base-url", default="https://perapp.github.io/herdr-webapp")
     p.add_argument("--repository", default="https://github.com/perapp/herdr-webapp.git")
     p.add_argument("--branch", default="main")
     p.add_argument("--public-origin", required=True)

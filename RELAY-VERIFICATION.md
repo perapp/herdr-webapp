@@ -5,7 +5,27 @@ Tests used disposable Cores and owned GUI workstations; the live user Core and
 managed 0.0.2 LAN server were left untouched. A separate edge agent owns actual
 hosting/DNS/router deployment. Release publication is separate from these results.
 
-## Untagged opt-in main channel
+## CI-backed main distribution
+
+Main now defaults to acquiring complete three-platform catalogs published by
+`.github/workflows/main.yml` through this repository's GitHub Pages site.
+Standard native Linux x86-64, Linux ARM64 and macOS ARM64 jobs run `make check`,
+build release executables, and execute version/revision probes. Publication is
+all-or-nothing; the manager verifies descriptor identity, exact manifest digest,
+all platform hashes and native identity before the existing private-socket
+readiness/atomic activation gates. This is trusted HTTPS publisher metadata, not
+independently verified cryptographic attestation. CI does not install Core or run
+Core-dependent smoke; those checks use disposable local Cores separately.
+
+Stable release workflows/assets/tags are unchanged. Runtime needs Python and CA
+certificates, not build tools or GitHub credentials. Explicit local-build mode
+remains available, with no CI-to-local fallback. Existing native-only caches may
+restore offline during migration; new CI acquisitions require all three targets.
+See [operations](distribution/main-channel.md) for the publication contract and
+limitations. The following acceptance records describe the earlier local-build
+implementation and are historical, not current deployment configuration.
+
+## Historical untagged opt-in main channel
 
 These changes are **not in the immutable published v0.0.8 native catalog**.
 

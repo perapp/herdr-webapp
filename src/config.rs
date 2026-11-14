@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use rand::RngCore;
 use std::{
     net::IpAddr,
@@ -52,20 +52,40 @@ pub enum Mode {
     /// Connect local Herdr Core outbound to a hosted relay and display pairing QR.
     ConnectRelay(ConnectRelay),
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum MainSource {
+    Ci,
+    Local,
+}
+impl MainSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ci => "ci",
+            Self::Local => "local",
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 pub struct ServeRelay {
     /// Verified public client catalog, prepared with scripts/prepare-relay-release.py.
     #[arg(long, env = "HERDR_RELAY_RELEASE_DIR")]
     pub release_dir: Option<PathBuf>,
-    /// Explicitly opt in to fetching/building trusted main source locally.
+    /// Opt in to the main channel (anonymous CI artifacts by default).
     #[arg(long)]
     pub enable_main: bool,
-    /// Poll interval; builds run only for changed revisions (e.g. 5m, 30s).
+    /// CI downloads never fall back to builds; local explicitly executes trusted Git/npm/Cargo source.
+    #[arg(long, value_enum, default_value = "ci")]
+    pub main_source: MainSource,
+    /// Trusted public HTTPS publisher root, without a trailing slash.
+    #[arg(long, default_value = "https://perapp.github.io/herdr-webapp")]
+    pub main_artifact_base_url: String,
+    /// Poll interval; acquisitions run only for changed revisions (e.g. 5m, 30s).
     #[arg(long, default_value = "5m", value_parser = main_interval)]
     pub main_update_interval: u64,
     #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u16).range(1..=16))]
     pub main_build_jobs: u16,
-    /// Trusted Git repository. Never sourced from a web request.
+    /// CI: expected github.com repository identity; local: trusted Git source URL.
     #[arg(
         long,
         env = "HERDR_MAIN_REPOSITORY",
@@ -293,7 +313,7 @@ mod tests {
     fn main_channel_is_opt_in_with_bounded_controls() {
         let normal = Config::try_parse_from(["app", "serve-relay"]).unwrap();
         assert!(
-            matches!(normal.mode, Some(Mode::ServeRelay(o)) if !o.enable_main && o.main_update_interval == 300 && o.main_build_jobs == 2 && o.unix_socket.is_none())
+            matches!(normal.mode, Some(Mode::ServeRelay(o)) if !o.enable_main && o.main_source == MainSource::Ci && o.main_artifact_base_url == "https://perapp.github.io/herdr-webapp" && o.main_update_interval == 300 && o.main_build_jobs == 2 && o.unix_socket.is_none())
         );
         let opted = Config::try_parse_from([
             "app",
@@ -308,7 +328,21 @@ mod tests {
         assert!(
             matches!(opted.mode, Some(Mode::ServeRelay(o)) if o.enable_main && o.main_update_interval == 120 && o.main_build_jobs == 1)
         );
+        let local = Config::try_parse_from([
+            "app",
+            "serve-relay",
+            "--enable-main",
+            "--main-source",
+            "local",
+            "--main-artifact-base-url",
+            "https://publisher.example/project",
+        ])
+        .unwrap();
+        assert!(
+            matches!(local.mode, Some(Mode::ServeRelay(o)) if o.main_source == MainSource::Local)
+        );
         for (key, value) in [
+            ("--main-source", "unknown"),
             ("--main-update-interval", "0s"),
             ("--main-update-interval", "25h"),
             ("--main-update-interval", "bad"),

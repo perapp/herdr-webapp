@@ -211,10 +211,22 @@ adopted without moving its keys. Namespacing is not a security boundary against
 malicious main JavaScript: both applications have the same browser origin.
 
 Main catalogs use schema 2, protocol 1, `channel: "main"`, package `version`, full
-Git `revision`, and a nonempty subset of verified native target artifacts.
-Artifact paths are `/main/client/<revision>/<target>/herdr-webapp`; package
-versions need not change between revisions. Native build provenance and readiness
-must match the revision. Unsupported platforms never fall back to stable.
+Git `revision`, and verified native target artifacts. CI publication and new
+CI acquisition require the complete Linux x86-64, Linux ARM64 and Apple Silicon
+macOS set; explicitly selected local-build mode and legacy offline caches may
+contain a nonempty native-only subset. Artifact paths are
+`/main/client/<revision>/<target>/herdr-webapp`; package versions need not change
+between revisions. Native build provenance and readiness must match the revision.
+Unsupported platforms never fall back to stable. CI publication metadata is a
+separate descriptor, not an extension of the strict served catalog schema.
+
+The default main manager acquires the latest complete successful GitHub Pages
+publication over trusted configured HTTPS, without GitHub credentials or local
+compilation. It validates the repository/branch/workflow descriptor, manifest
+revision/digest, every platform's size/hash, and native executable identity before
+readiness and atomic activation. This is publisher trust, not independently
+verified cryptographic attestation. Failed downloads/publications preserve the
+previous main; stable release assets and tags are not changed.
 
 The public entry preserves `/main/` when proxying to its owner-only Unix socket.
 Candidate mode responses identify `entrypointProtocolVersion: 1`, channel, base

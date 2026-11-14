@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Offline supervisor tests. Git commits exist only in fresh private temp dirs."""
 import importlib.util
+import hashlib
+import http.server
+import threading
 import json
 import os
 from pathlib import Path
@@ -51,7 +54,9 @@ class Harness(m.Manager):
 class Tests(unittest.TestCase):
     def setUp(self):
         self.old_umask = os.umask(0o077)
-        self.temp = tempfile.TemporaryDirectory(prefix="mc-")
+        # macOS runner TMPDIR is too long for portable UDS paths; /tmp is
+        # canonicalized because the supervisor rejects symlink ancestors.
+        self.temp = tempfile.TemporaryDirectory(prefix="mc-", dir=Path("/tmp").resolve())
         self.root = Path(self.temp.name)
         self.managers = []
         self.disk_patch = mock.patch.object(m.shutil, "disk_usage", return_value=mock.Mock(free=9 * 1024**3))
@@ -65,7 +70,7 @@ class Tests(unittest.TestCase):
         os.umask(self.old_umask)
 
     def args(self, state=None):
-        return m.parser().parse_args(["--state-dir", str(state or self.root / "state"),
+        return m.parser().parse_args(["--source", "local", "--state-dir", str(state or self.root / "state"),
                                       "--public-origin", "https://relay.example"])
 
     def manager(self, cls=Harness, state=None):
@@ -521,6 +526,221 @@ class Tests(unittest.TestCase):
         with mock.patch.object(m, "request", side_effect=response):
             with self.assertRaises(m.Failure):
                 m.Manager.probe(x, x.state / "s.sock", A, manifest)
+
+
+class CITests(Tests):
+    # Reuse private state/process cleanup, not the local behavioral test cases.
+    def args(self, state=None):
+        args = super().args(state)
+        args.source = "ci"
+        args.allow_http_loopback = True
+        if hasattr(self, "base"):
+            args.artifact_base_url = self.base
+        return args
+
+    def setUp(self):
+        super().setUp()
+        self.files, self.headers = {}, []
+        self.http_status = 200
+        self.oversize_length = None
+        self.stall = False
+        self.release = threading.Event()
+        owner = self
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                owner.headers.append(dict(self.headers))
+                data = owner.files.get(self.path)
+                if data is None:
+                    self.send_error(404)
+                    return
+                self.send_response(owner.http_status)
+                self.send_header("Content-Length", str(owner.oversize_length or len(data)))
+                self.end_headers()
+                if owner.stall:
+                    owner.release.wait(2)
+                    return
+                try:
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            def log_message(self, *_args):
+                pass
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.base = f"http://127.0.0.1:{self.server.server_port}"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.publish()
+
+    def tearDown(self):
+        self.release.set()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        super().tearDown()
+
+    def publish(self, sha=A, edit=None):
+        assets = []
+        # Native deliberately last, not assets[0].
+        targets = sorted(m.TARGETS - {m.native_target()}) + [m.native_target()]
+        for target in targets:
+            binary = ("#!/bin/sh\nif [ \"$1\" = --build-revision ]; then printf '%s\\n' '" + sha
+                      + "'; else printf '%s\\n' 'herdr-webapp 0.0.8'; fi\n").encode()
+            url = f"/main/client/{sha}/{target}/herdr-webapp"
+            self.files[url] = binary
+            assets.append({"target": target, "url": url, "size": len(binary),
+                           "sha256": hashlib.sha256(binary).hexdigest()})
+        manifest = {"schemaVersion": 2, "protocolVersion": 1, "channel": "main", "version": "0.0.8",
+                    "revision": sha, "assets": assets}
+        if edit:
+            edit(manifest)
+        raw = json.dumps(manifest).encode()
+        self.files["/main/client/manifest.json"] = raw
+        self.files["/main/publication.json"] = json.dumps({"schemaVersion": 1, "repository": "perapp/herdr-webapp",
+            "branch": "main", "revision": sha, "workflow": ".github/workflows/main.yml", "runId": 42,
+            "manifestSha256": hashlib.sha256(raw).hexdigest()}).encode()
+        return manifest
+
+    def ci_manager(self):
+        x = self.manager(m.Manager)
+        # Only owned relay/probe seams are fake; downloads and native probes run.
+        x.child = lambda *_args: x.spawn(["python3", "-c", "import time;time.sleep(100)"])
+        x.probe = lambda *_args: None
+        return x
+
+    def test_ci_complete_native_order_anonymous_no_build_tools(self):
+        x = self.ci_manager()
+        real = x.command
+        def command(argv, *args, **kwargs):
+            self.assertNotIn(Path(argv[0]).name, {"git", "gh", "cargo", "npm", "node"})
+            return real(argv, *args, **kwargs)
+        with mock.patch.object(x, "command", side_effect=command), mock.patch.dict(os.environ,
+                {"GH_TOKEN": "do-not-send", "GITHUB_TOKEN": "do-not-send", "https_proxy": "http://invalid"}):
+            x.update()
+        self.assertEqual(x.current[2], A)
+        self.assertEqual(len(x.artifact(A)[2]["assets"]), 3)
+        self.assertTrue(all(not ({k.lower() for k in h} & {"authorization", "cookie", "proxy-authorization"}) for h in self.headers))
+
+    def test_ci_corrupt_keeps_old_activation(self):
+        x = self.ci_manager()
+        x.update()
+        old = m.read_json(x.state / "active.json")
+        manifest = self.publish(B)
+        self.files[manifest["assets"][0]["url"]] = b"corrupt"
+        x.update()
+        self.assertEqual(m.read_json(x.state / "active.json"), old)
+        self.assertFalse((x.artifacts / B).exists())
+
+    def test_ci_invalid_metadata(self):
+        x = self.ci_manager()
+        for edit in [lambda v: v["assets"].pop(),
+                     lambda v: v.update(revision=B),
+                     lambda v: v["assets"][0].update(size=m.MAX_BINARY + 1),
+                     lambda v: v.update(protocolVersion=True),
+                     lambda v: v["assets"][0].update(url="https://untrusted.invalid/binary"),
+                     lambda v: v.update(extra=1)]:
+            self.publish(edit=edit)
+            with self.assertRaises(m.Failure):
+                x.fetch()
+        self.publish()
+        self.files["/main/client/manifest.json"] += b" "
+        with self.assertRaises(m.Failure):
+            x.fetch()
+        for raw in [b'{"x":1,"x":2}', b'{"x":NaN}', b'{"x":Infinity}']:
+            with self.assertRaises(m.Failure):
+                m.strict_json(raw)
+
+    def test_ci_rejects_redirect_size_timeout_and_shutdown(self):
+        x = self.ci_manager()
+        self.http_status = 302
+        with self.assertRaises(m.Failure):
+            x.fetch()
+        self.http_status = 200
+        self.oversize_length = 65537
+        with self.assertRaises(m.Failure):
+            x.fetch()
+        self.oversize_length = None
+        self.stall = True
+        real_timer = threading.Timer
+        with mock.patch.object(m.threading, "Timer", side_effect=lambda _seconds, f: real_timer(0.05, f)):
+            with self.assertRaises((OSError, m.Failure, ValueError)):
+                x.fetch()
+        self.stall = False
+        self.release.set()
+        x.stopping = True
+        with self.assertRaises(m.Failure):
+            x.fetch()
+
+    def test_ci_publication_strict_and_complete_total_bound(self):
+        x = self.ci_manager()
+        raw = self.files["/main/publication.json"]
+        for edit in [lambda v: v.update(runId=True), lambda v: v.update(runId=0),
+                     lambda v: v.update(schemaVersion=True), lambda v: v.update(repository="foreign/repo"),
+                     lambda v: v.update(workflow="other.yml"), lambda v: v.update(unknown="bad")]:
+            value = json.loads(raw)
+            edit(value)
+            self.files["/main/publication.json"] = json.dumps(value).encode()
+            with self.assertRaises(m.Failure):
+                x.fetch()
+        self.files["/main/publication.json"] = raw[:-1] + b',"runId":42}'
+        with self.assertRaises(m.Failure):
+            x.fetch()
+        self.publish(edit=lambda v: [a.update(size=m.MAX_BINARY) for a in v["assets"]])
+        with self.assertRaises(m.Failure):
+            x.fetch()
+
+    def test_ci_native_version_mismatch_never_publishes(self):
+        x = self.ci_manager()
+        self.publish(edit=lambda v: v.update(version="0.0.9"))
+        x.update()
+        self.assertIsNone(x.current)
+        self.assertFalse((x.artifacts / A).exists())
+        self.assertEqual(x.failures[A]["count"], 1)
+
+    def test_ci_immutable_sha_conflict(self):
+        x = self.ci_manager()
+        x.update()
+        old = (x.artifacts / A / "catalog/manifest.json").read_bytes()
+        self.publish(edit=lambda v: v.update(version="0.0.9"))
+        with self.assertRaises(m.Failure):
+            x.fetch()
+        self.assertEqual((x.artifacts / A / "catalog/manifest.json").read_bytes(), old)
+
+    def test_ci_legacy_native_offline_boot(self):
+        args = self.args()
+        args.source = "local"
+        x = Harness(args)
+        self.managers.append(x)
+        x.update()
+        x.close()
+        self.managers.remove(x)
+        y = self.ci_manager()
+        with mock.patch.object(y, "download", side_effect=AssertionError("offline boot downloaded")):
+            y.boot()
+        self.assertEqual(y.current[2], A)
+
+    def test_ci_no_local_fallback_on_network_error(self):
+        x = self.ci_manager()
+        with mock.patch.object(x, "download", side_effect=TimeoutError), \
+                mock.patch.object(x, "fetch_local", side_effect=AssertionError), \
+                mock.patch.object(x, "build_local", side_effect=AssertionError):
+            with self.assertRaises(TimeoutError):
+                x.update()
+
+    def test_ci_url_defaults_and_http_restriction(self):
+        a = m.parser().parse_args(["--state-dir", str(self.root / "unused"), "--public-origin", "https://relay.example"])
+        self.assertEqual(a.source, "ci")
+        m.validate_args(a)
+        for url in ["http://example.com", "https://user:pass@example.com", "https://example.com/?a=b",
+                    "https://example.com/#fragment", "https://example.com/..", "https://example.com/%2f"]:
+            a.artifact_base_url = url
+            with self.assertRaises(m.Failure):
+                m.validate_args(a)
+
+
+# Inherited cases intentionally exercise the legacy local source only.
+for _name in tuple(vars(Tests)):
+    if _name.startswith("test_"):
+        setattr(CITests, _name, None)
 
 
 if __name__ == "__main__":

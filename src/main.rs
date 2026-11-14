@@ -139,6 +139,8 @@ async fn main() -> anyhow::Result<()> {
                 });
                 Some(relay_main::MainConfig {
                     state_dir: std::path::absolute(state_dir)?,
+                    source: options.main_source,
+                    artifact_base_url: options.main_artifact_base_url.clone(),
                     repository: options.main_repository.clone(),
                     branch: options.main_branch.clone(),
                     interval_seconds: options.main_update_interval,

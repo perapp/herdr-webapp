@@ -24,6 +24,8 @@ use std::{
 #[derive(Clone)]
 pub struct MainConfig {
     pub state_dir: PathBuf,
+    pub source: crate::config::MainSource,
+    pub artifact_base_url: String,
     pub repository: String,
     pub branch: String,
     pub interval_seconds: u64,
@@ -62,6 +64,35 @@ impl MainService {
                 && !config.repository.chars().any(char::is_control),
             "invalid main source configuration"
         );
+        let base = url::Url::parse(&config.artifact_base_url)?;
+        ensure!(
+            base.username().is_empty()
+                && base.password().is_none()
+                && base.query().is_none()
+                && base.fragment().is_none()
+                && !config.artifact_base_url.ends_with('/')
+                && !config.artifact_base_url.contains(['%', '\\'])
+                && !config.artifact_base_url.chars().any(char::is_whitespace)
+                && (base.scheme() == "https"
+                    || (config.allow_http_loopback
+                        && base.scheme() == "http"
+                        && matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")))),
+            "invalid main artifact publisher URL"
+        );
+        if config.source == crate::config::MainSource::Ci {
+            let repo = url::Url::parse(&config.repository)?;
+            ensure!(
+                repo.scheme() == "https"
+                    && repo.host_str() == Some("github.com")
+                    && repo.username().is_empty()
+                    && repo.password().is_none()
+                    && repo.query().is_none()
+                    && repo.fragment().is_none()
+                    && repo.port().is_none()
+                    && config.branch == "main",
+                "CI requires a public GitHub repository identity and main branch"
+            );
+        }
         let service = Arc::new(Self {
             config,
             pid: AtomicU32::new(0),
@@ -86,6 +117,10 @@ impl MainService {
                 .arg(include_str!("../distribution/main-channel.py"))
                 .arg("--state-dir")
                 .arg(&self.config.state_dir)
+                .arg("--source")
+                .arg(self.config.source.as_str())
+                .arg("--artifact-base-url")
+                .arg(&self.config.artifact_base_url)
                 .arg("--repository")
                 .arg(&self.config.repository)
                 .arg("--branch")
@@ -207,6 +242,7 @@ impl MainService {
             if let Some(phase) = value["phase"].as_str().filter(|s| {
                 [
                     "starting",
+                    "checking",
                     "fetching",
                     "building",
                     "verifying",
@@ -496,6 +532,8 @@ mod proxy_tests {
         let service = Arc::new(MainService {
             config: MainConfig {
                 state_dir: dir.path().to_owned(),
+                source: crate::config::MainSource::Ci,
+                artifact_base_url: "https://perapp.github.io/herdr-webapp".into(),
                 repository: String::new(),
                 branch: "main".into(),
                 interval_seconds: 300,

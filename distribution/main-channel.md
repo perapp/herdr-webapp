@@ -1,143 +1,150 @@
 # Opt-in main channel
 
-One public HTTPS origin can host two independent relay channels:
+One HTTPS origin hosts stable at `/` and development main at `/main/`.
+`/run` and `/main/run` launch the corresponding connector. `/main/_status`
+reports sanitized availability and revision. No channel-specific Caddy route,
+DNS record, certificate, webhook or permanent access key is needed.
 
-| URL | Channel |
-| --- | --- |
-| `/`, `/run`, `/client/…` | Installed stable entry point and approved release catalog |
-| `/main/`, `/main/run`, `/main/client/…` | Last verified locally built main revision |
-| `/main/_status` | Sanitized build/availability status |
+## Hosted use
 
-No channel-specific Caddy route, DNS record, certificate, webhook or webhook
-secret is required. Forward the whole hostname to the same entry point.
-`--public-origin` remains exactly `https://host[:port]`, never a URL with a path.
+On a computer already running Herdr Core:
 
-## Start
+```sh
+curl -fsSL https://herdr-webapp.perapp.dev/main/run | sh
+```
 
-Normal startup does **not** create main state, poll Git, build source or start a
-main child. `/main` is reserved and redirects to `/main/`; disabled main returns
-an explicit unavailable response, never stable HTML.
+Requires curl and Python 3.9+. Scan the terminal QR with your phone. The private
+link grants full trusted-user shell access; do not share it. Main and stable
+have separate identity/pairing state, browser preferences and connector caches.
+Stopping a connector does not stop Core or its terminals.
+
+The CI catalog provides GNU/Linux x86-64, GNU/Linux ARM64 and Apple Silicon macOS
+connectors. Each binary is built and tested on its target architecture before
+publication. Check the workflow's runner OS for system-library compatibility;
+a GNU target name alone does not promise support for every older glibc system.
+Unsupported targets fail explicitly, never silently substitute stable.
+
+## Self-hosting
+
+Normal startup does not poll, create main state or spawn an updater. To opt in:
 
 ```sh
 ./run.sh serve-relay --public-origin https://relay.example.com \
-  --release-dir /srv/herdr/stable-catalog
-
-./run.sh serve-relay --public-origin https://relay.example.com \
   --release-dir /srv/herdr/stable-catalog --enable-main \
-  --main-state-dir /srv/herdr/main --main-build-jobs 1 \
+  --main-source ci --main-state-dir /srv/herdr/main \
+  --main-artifact-base-url https://perapp.github.io/herdr-webapp \
   --main-update-interval 5m
 ```
 
-Keep existing `--bind`, `--port`, `--turn-url`, `--turn-secret-file` and
-`--turn-ttl-seconds` configuration. The private main child inherits the canonical
-public origin and TURN settings, not the public listener. It cannot recursively
-enable another updater. The TURN secret stays in its private file, not argv.
+`ci` is the default main source. Preserve existing bind/port/TURN configuration.
+`--public-origin` is an authority-only origin, never a URL containing `/main`.
+The main child receives the public origin, channel base and TURN file path,
+listens only on a private owner-only Unix socket, and cannot recursively enable
+another updater. The TURN secret is never an argument value.
 
-The source defaults to `https://github.com/perapp/herdr-webapp.git`, branch
-`main`. `--main-repository` and `--main-branch` are trusted operator configuration;
-HTTP requests cannot select source code. Use existing Git credential helpers or
-a dedicated read-only repository deploy key. For SSH credentials with an HTTPS
-configured source, a private Git `url.…insteadOf` rule can select SSH. Verify
-host keys; do not disable TLS/SSH verification, embed tokens in URLs, persist a
-forwarded agent, or copy a broad personal OAuth token into the runtime.
+The entry executable embeds the Python manager. CI-backed runtime needs
+**Python 3.11+ and system CA certificates**, not Git, Rust, Cargo, Node, npm, Make,
+`gh`, an SSH key or a GitHub token. Use a private writable persistent state volume
+owned by the service UID, with a short container path such as `/main-state`.
+The stable release catalog and TURN secret can remain mounted read-only.
+The container root can remain read-only.
 
-## Build environment and resources
+## CI publication and trust
 
-Opt-in operation requires **Python 3.11+, Git, Rust 1.90+, Cargo, Node.js 22+,
-npm, and a native C compiler/linker**. Make is needed for the repository's normal
-`make release`/verification workflow. The supervisor performs the same frontend
-before embedded-Rust ordering using locked npm/Cargo installation. No GitHub
-Actions workflow is started by polling or by ordinary pushes to main.
+`.github/workflows/main.yml` builds the exact main commit on standard GitHub
+Linux and macOS runners. Expensive superseded builds are cancelled; publication
+requires successful completion of the entire three-target set. Stable release
+workflows, Git tags, release assets and stable `latest` are not modified.
 
-The current binary-only runtime container is not a build environment. Add build
-tools and a persistent private writable volume; keep the stable catalog mounted
-read-only. Run source/build state as the service UID, not world-writable storage.
-Use a short state directory: private Unix socket paths must fit within 100 bytes.
-The default state is `$XDG_STATE_HOME/herdr-webapp/main` or
-`~/.local/state/herdr-webapp/main`.
+GitHub Actions artifacts are intermediate job inputs, **not anonymous download
+endpoints**. The publisher deploys an atomic static GitHub Pages site at
+`https://perapp.github.io/herdr-webapp/`, containing:
 
-Allow several GiB for the toolchain, dependency downloads and release build.
-A two-GiB free-space reserve is required before/during builds. Three successful
-SHA artifacts are retained, with draining generations temporarily pinned. Build
-workspaces/caches are disposable managed state; this is not a filesystem quota.
-Use filesystem quotas and service/container CPU, memory, swap, process and disk
-limits. On a small host, start with **one build job**, CPU 200%, memory 3 GiB and
-bounded swap, after checking capacity. Never reclaim unrelated data automatically.
-Use `KillMode=control-group` or container process isolation for abnormal-shutdown
-cleanup. Resource exhaustion can still affect stable; process separation is not
-resource isolation.
+- `main/publication.json`: repository, branch, workflow, run ID, source revision
+  and SHA-256 of the exact manifest bytes.
+- `main/client/manifest.json`: the complete schema-2 catalog.
+- `main/client/<revision>/<target>/herdr-webapp`: raw SHA-addressed executables.
 
-**Building main executes trusted repository code**, including npm and Rust build
-scripts. It is not a sandbox. Main and stable share one browser origin: separate
-storage names prevent accidental collisions, not access by malicious same-origin
-JavaScript. Enable this only for a source repository you trust with that origin.
+The descriptor identifies `perapp/herdr-webapp`, branch `main` and workflow
+`.github/workflows/main.yml`. The configured repository is the expected publisher
+identity; a custom publisher requires corresponding trusted configuration.
+This is **trusted GitHub Pages HTTPS publication**, not independent signature or
+cryptographic-attestation verification. Trust the repository, its Actions
+publisher and the configured Pages origin with execution of downloaded code.
+The public browser origin also supplies trusted JavaScript.
 
-## Polling, activation and recovery
+Intermediate artifacts have short retention and successful-run inputs are cleaned
+up. Standard public-repository runners are used; no larger/premium runners or
+paid cache-capacity increase is required. Artifact/cache storage and concurrency
+still have limits. Pages holds the currently published complete set; an older
+provider URL may expire after another deployment. The relay retains its own
+verified rollback artifacts independently of CI artifact retention.
 
-At startup the manager restores a previously verified artifact independently of
-network availability, then checks the configured branch. Polling defaults to
-five minutes with bounded retry/backoff. Unchanged active revisions do not build.
-Failed revisions are remembered; rapid updates are serialized, not built in
-parallel. Force-updated branch tips are identities, not semver-ordered releases.
+## Verification and activation
 
-Each candidate uses an exact Git SHA, builds frontend then Rust, and embeds that
-SHA. The manager verifies provenance, main channel/base/origin/protocol identity,
-HTML/assets, API, catalog/download bytes and WebSocket behavior on a private
-owner-only Unix socket. It atomically records activation only after verification.
-The old main continues serving while a candidate builds or fails. Child crashes
-have bounded restart backoff. Main failures never intentionally stop stable.
+The manager polls the latest **successfully published complete** catalog, which
+may lag the branch tip. It never builds source or falls back to compilation in CI
+mode. Failed/cancelled/incomplete CI runs do not change the publication. An
+unchanged revision is not downloaded or activated again.
 
-The public entry streams requests and WebSocket upgrades to the fixed private
-endpoint, without buffering terminal traffic or trusting forwarding headers.
-The private main backend uses a shared admission bucket; it does not infer a
-client identity from untrusted `X-Forwarded-For`.
+Before activation the manager requires the exact three-target set, a consistent
+source revision, bounded sizes, safe paths, strict JSON and matching checksums for
+**all** binaries. Downloads stream into private staging with time/disk bounds;
+URLs cannot supply credentials, redirects or arbitrary artifact destinations.
+The native executable must report the advertised package version and compiled
+Git revision. Foreign binaries are tested natively in CI, not executed by the
+hosting server.
 
-Old signaling processes drain for a finite period before stopping. Registries
-are in memory: activation is **not seamless session migration**. Connector and
-browser reconnect create fresh sessions; ambiguous input/uploads are not queued
-or replayed, and reconnect must not open the phone keyboard without a gesture.
+The candidate starts on a fresh private socket. Health, mode/channel/origin,
+entry-point protocol, relative assets, API routing, catalog/native download bytes,
+a real WebSocket challenge and wrong/duplicate Origin rejection are verified.
+Only then is routing switched atomically. Existing main keeps serving throughout
+acquisition or candidate failure; stable is independent. Old sockets drain for a
+finite period. Registries are in memory: this is **not seamless migration**.
+Clients reconnect without queuing/replaying ambiguous input or uploads.
 
-For rollback, stop main tracking before changing managed activation records and
-restore an intact retained artifact; do not edit or overwrite immutable binaries.
-Disabling `--enable-main` stops the owned manager/children and reserves `/main/`
-as unavailable. Stable release files remain untouched. Remove managed main state
-only after the manager has stopped; never delete a live lock to bypass ownership.
+Startup restores a verified cached artifact before contacting the network. A
+legacy native-only local-build cache can be restored during migration, but every
+new CI acquisition must contain all three platforms. Existing SHA bytes are never
+overwritten with different data. Three revisions are retained, with draining
+generations briefly pinned. Failed candidates preserve the current instance;
+this does not promise automatic recovery from every corrupt cache or repeatedly
+crashing active revision.
 
-## Matching connectors
+## Resources, rollback and disabling
 
-Run the main launcher at **`https://relay.example.com/main/run`**. It uses a
-separate endpoint-keyed supervisor cache and pairing state. Stable launcher state
-and existing pairings remain at their original locations. Browser identity/UI
-storage and native signaling transcripts are channel-specific too.
+Keep service/container CPU, memory, process and disk limits. Three complete
+catalogs, in-memory snapshots and temporarily draining generations need more
+space than one executable. Downloads enforce a two-GiB free-space reserve and
+bounded file/aggregate sizes; these guards are not filesystem quotas. No unrelated
+host data is pruned. A lean runtime no longer needs compilation-sized allowances.
 
-Main manifests use schema 2, package version plus full Git revision, and
-immutable `/main/client/<sha>/<target>/herdr-webapp` URLs. Native executable and
-readiness provenance must match the advertised revision. Revisions may change
-without a package-version bump. Stable schema-1 three-platform catalogs and
-immutable version URLs are unchanged; main never overwrites them.
+For rollback, stop main tracking and restore an intact retained artifact using
+an operator-controlled activation procedure; do not overwrite immutable binaries
+or delete a live lock. Removing `--enable-main` stops the owned manager/children
+and reserves `/main/` as unavailable, never as stable HTML. Stable catalog files
+remain unchanged. Remove managed state only after the manager has stopped.
 
-**Only the server's supported native platform is built automatically.** A Linux
-x86-64 server does not produce Apple Silicon or Linux ARM64 builds. The launcher
-explicitly rejects unavailable targets and lists those available; it never
-silently substitutes a stable connector. Native GNU/Linux target naming also
-does not guarantee compatibility with older glibc versions than the build host.
-Cross-platform import/build production is future work, not faked support.
-A developer on another supported platform can build the same trusted revision
-locally and run its connector directly (without the download supervisor):
+## Optional local-build source
 
-```sh
-# In a clean trusted checkout at the desired main revision:
-HERDR_BUILD_REVISION="$(git rev-parse HEAD)" make release
-./target/release/herdr-webapp connect-relay \
-  --relay-url https://relay.example.com/main
-```
+`--main-source local` explicitly retains the previous trusted-source build mode.
+Only this mode uses `--main-repository`, `--main-branch` and
+`--main-build-jobs`. Provision Python, Git, Rust 1.90+, Cargo, Node 22.12+, npm and
+a native C toolchain, plus private writable build/cache space and compilation
+resource limits. Make is needed for normal repository verification workflows.
+Private sources need an operator-managed credential mechanism; never put tokens
+in URLs or mount a broad OAuth token/forwarded SSH agent into the runtime.
+
+Local mode executes trusted repository build scripts and produces only the
+server's native platform. It is not a sandbox. It is never an automatic fallback
+when CI downloads fail.
 
 ## Verification limits
 
-Run `make check`, `make release`, `make smoke`, plus isolated dual-channel browser
-acceptance. Local Git fixtures cover polling/build/activation failure paths;
-actual desktop and phone-sized browser tests cover input/reconnect. These do not
-prove behavior on physical iOS/Android keyboards or actual cellular/cross-NAT
-networks. Never test by restarting a user's Core or terminating user terminals.
-Keep private pairing links/QRs, credentials, TURN authentication and SDP out of
-reports and logs.
+Run `make check`, `make release`, `make smoke`, isolated multi-channel browser
+acceptance and public CI/catalog/launcher checks. Never test by restarting a
+user's Core or terminating their terminals. Phone-sized Chromium does not prove
+physical iOS/Android IME behavior or cellular/cross-NAT connectivity.
+Storage namespaces prevent accidental stable/main collisions, not malicious
+same-origin JavaScript access. Keep private links/QRs, credentials, SDP and TURN
+authentication out of reports and logs.

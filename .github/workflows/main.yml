@@ -1,0 +1,187 @@
+name: Main native Pages publisher
+run-name: Main ${{ github.sha }}
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+# Do not cancel an active Pages deployment. Only superseded native jobs cancel.
+jobs:
+  native:
+    if: github.repository == 'perapp/herdr-webapp' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-15
+    # Official standard runner labels (not large/premium runners):
+    # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    concurrency:
+      group: main-native-${{ github.ref }}-${{ matrix.target }}
+      cancel-in-progress: true
+    env:
+      HERDR_BUILD_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assert native runner architecture
+        run: python3 -B scripts/main-ci.py host --target '${{ matrix.target }}'
+      - name: Short canonical macOS temporary paths for Unix sockets
+        if: runner.os == 'macOS'
+        run: echo 'TMPDIR=/private/tmp' >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Rust 1.90 with formatting and lint tools
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.90.0
+          test "$(rustc -vV | sed -n 's/^host: //p')" = '${{ matrix.target }}'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Registry/toolchain cache only; no large debug/release target caches.
+          # Standard repository cache quota/eviction, no paid storage increases.
+          cache-targets: 'false'
+          cache-on-failure: 'false'
+          shared-key: main-${{ matrix.target }}
+      # Hosted runners have no pinned hc bootstrap. Isolated-core smoke and
+      # post-deploy public/native browser acceptance are run separately by the operator.
+      - name: Full frontend, Rust, distribution checks and native release
+        run: |
+          make check
+          python3 -B scripts/test_main_ci.py
+          make release
+      - name: Execute and stamp this native binary
+        run: |
+          python3 -B scripts/main-ci.py stamp \
+            --target '${{ matrix.target }}' \
+            --binary target/release/herdr-webapp \
+            --revision "$HERDR_BUILD_REVISION" --run-id '${{ github.run_id }}' \
+            --output native-output
+      - uses: actions/upload-artifact@v4
+        with:
+          name: main-native-${{ matrix.target }}
+          path: native-output/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: true
+  publish:
+    needs: native
+    if: github.repository == 'perapp/herdr-webapp' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    # Queued publishers can be superseded; an in-flight deployment is never killed.
+    concurrency:
+      group: main-pages-publication
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Skip superseded source revision
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          head=$(gh api repos/perapp/herdr-webapp/git/ref/heads/main --jq '.object.sha')
+          if [ "$head" = "$EXPECTED_SHA" ]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            echo 'Skipping superseded main build.'
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.head.outputs.current == 'true'
+        with:
+          pattern: main-native-*
+          path: native-inputs
+          merge-multiple: false
+      - name: Assemble complete private site
+        if: steps.head.outputs.current == 'true'
+        run: |
+          python3 -B scripts/main-ci.py assemble --inputs native-inputs --output pages-site \
+            --revision '${{ github.sha }}' --run-id '${{ github.run_id }}'
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.head.outputs.current == 'true'
+        with:
+          name: main-pages-${{ github.run_id }}-${{ github.run_attempt }}
+          path: pages-site
+          retention-days: 1
+      - name: Recheck head immediately before atomic deployment
+        id: final-head
+        if: steps.head.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          head=$(gh api repos/perapp/herdr-webapp/git/ref/heads/main --jq '.object.sha')
+          if [ "$head" = "$EXPECTED_SHA" ]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            echo 'Skipping superseded main build.'
+          fi
+      - uses: actions/deploy-pages@v4
+        id: deployment
+        if: steps.final-head.outputs.current == 'true'
+        with:
+          artifact_name: main-pages-${{ github.run_id }}-${{ github.run_attempt }}
+    outputs:
+      deployed: ${{ steps.deployment.outcome == 'success' }}
+  cleanup:
+    needs: [native, publish]
+    if: needs.publish.outputs.deployed == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Best-effort delete only this run's three intermediate native artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const names = new Set([
+              'main-native-x86_64-unknown-linux-gnu',
+              'main-native-aarch64-unknown-linux-gnu',
+              'main-native-aarch64-apple-darwin'
+            ]);
+            try {
+              const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                ...context.repo, run_id: context.runId, per_page: 100
+              });
+              for (const artifact of artifacts) {
+                if (names.has(artifact.name)) {
+                  await github.rest.actions.deleteArtifact({...context.repo, artifact_id: artifact.id});
+                }
+              }
+            } catch (_) {
+              core.warning('Intermediate cleanup unavailable; one-day retention still applies.');
+            }

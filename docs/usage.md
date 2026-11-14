@@ -114,19 +114,21 @@ Main has separate pairing, browser preferences and connector cache/state from
 stable; pair once for each channel. Core and its terminals are not restarted.
 To return to stable, stop the main launcher and run the `/run` command above.
 
-The hosted service checks main every five minutes and builds only changed
-revisions. It keeps the last usable main build serving while a new one builds;
-activation can briefly interrupt connections. The launcher verifies and follows
-the matching main connector revision automatically.
+GitHub Actions builds and tests all three native platforms on main pushes.
+The hosted service checks the latest complete successful publication every five
+minutes, keeping the last usable main build serving during CI or download
+failures. Activation can briefly interrupt connections. The launcher verifies
+and follows the matching connector revision automatically.
 
-**Hosted main downloads currently support GNU/Linux x86-64 with glibc 2.39+
-only.** There is no silent fallback to a stable connector. Stable downloads also
-support Linux ARM64 and Apple Silicon macOS.
+Hosted main supports GNU/Linux x86-64 (Ubuntu 22.04 / glibc 2.35+), GNU/Linux
+ARM64 (Ubuntu 24.04 / glibc 2.39+) and Apple Silicon macOS (built/tested on the
+standard macOS 15 ARM runner). There is no silent fallback to stable. Stable
+Linux release builds retain their Ubuntu 22.04 / glibc 2.35 baseline.
 
 ### Build a main connector locally (including macOS ARM64 / Linux ARM64)
 
-If your platform has no hosted main download, build the revision currently served
-by the main endpoint. Install Git, curl, Python 3.9+, Rust 1.90+, Node.js 22.12+
+For a custom build, or a separately hosted native-only local-build channel,
+build the revision currently served by the main endpoint. Install Git, curl, Python 3.9+, Rust 1.90+, Node.js 22.12+
 (or 24+), npm, Make and a native C compiler first. In a **new checkout**:
 
 ```sh
@@ -147,20 +149,22 @@ and restart only the connector when you want to update. Do not stop Core.
 
 ### Host your own stable + main service
 
-`serve-relay --enable-main` keeps the stable root available while fetching and
-building trusted main revisions locally for **`/main/`** and **`/main/run`**.
-No per-commit GitHub Actions builds, extra hostname, certificate or Caddy route
-is required. Without the flag, there is no updater, polling or build process.
+`serve-relay --enable-main` keeps stable available while polling verified CI
+catalogs for **`/main/`** and **`/main/run`**. The default `--main-source ci`
+uses public GitHub Pages publication: no GitHub login/token, extra hostname,
+certificate or Caddy route is needed. Without `--enable-main`, no updater starts.
 
-Use `--main-state-dir`, `--main-update-interval 5m` and `--main-build-jobs 1`
-for an explicitly provisioned build environment. Main downloads are immutable
-by Git SHA and **native-host-platform only**; unsupported connector platforms
-fail explicitly. Stable catalogs and existing client state remain separate.
-Main JavaScript shares the stable browser origin, so enabling it trusts that
-source with the origin—not merely an isolated URL path.
+Use a private persistent `--main-state-dir` and `--main-update-interval 5m`.
+Runtime needs Python 3.11+ and CA certificates, not a build toolchain. Downloads
+are immutable by Git SHA; all three targets must verify before activation.
+`--main-repository` identifies the expected HTTPS github.com OWNER/REPO publisher,
+and `--main-branch` must be `main` in CI mode. Explicit `--main-source local`
+retains trusted native-only builds for custom deployments; it is never an
+automatic fallback. Stable catalogs and existing client state remain separate.
+Main JavaScript shares stable's browser origin, so trust it with that origin.
 
-See [main channel operations](../distribution/main-channel.md) for dependencies,
-private Git access, resource/disk limits, lifecycle, compatibility and rollback.
+See [main channel operations](../distribution/main-channel.md) for publication
+trust, optional local builds, resource limits, lifecycle and rollback.
 
 ## Install a release
 

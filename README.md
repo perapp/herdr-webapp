@@ -20,12 +20,12 @@ curl -fsSL https://herdr-webapp.perapp.dev/run | sh
 curl -fsSL https://herdr-webapp.perapp.dev/main/run | sh
 ```
 
-Stable and main keep separate pairings and client state. Main checks for new
-commits every five minutes; the launcher follows verified connector updates.
+Stable and main keep separate pairings and client state. GitHub Actions builds
+main for GNU/Linux x86-64/ARM64 and Apple Silicon macOS; the server checks for
+complete verified builds every five minutes. The launcher follows updates.
 
-Stable supports GNU/Linux x86-64/ARM64 and Apple Silicon macOS. **Hosted main
-currently provides GNU/Linux x86-64 builds requiring glibc 2.39+.** For other
-supported platforms, [build a matching main connector](docs/usage.md#build-a-main-connector-locally-including-macos-arm64--linux-arm64).
+Main Linux builds require glibc 2.35+ (x86-64) or 2.39+ (ARM64). See the
+[usage guide](docs/usage.md#use-the-main-branch) for details and source builds.
 
 **QR links grant full shell access. Keep them private.** Connections use encrypted
 WebRTC; the hosting origin is trusted to supply the application. Stopping the
