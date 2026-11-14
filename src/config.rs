@@ -18,6 +18,9 @@ pub struct Config {
     /// Display the project license and locally vendored dependency notices.
     #[arg(long, global = true)]
     pub licenses: bool,
+    /// Report compiled source provenance (used by verified main-channel builds).
+    #[arg(long, global = true, hide = true)]
+    pub build_revision: bool,
     /// Internal verified-candidate helper; never accepted from the HTTP API.
     #[arg(long, hide = true)]
     pub update_helper: Option<PathBuf>,
@@ -54,6 +57,34 @@ pub struct ServeRelay {
     /// Verified public client catalog, prepared with scripts/prepare-relay-release.py.
     #[arg(long, env = "HERDR_RELAY_RELEASE_DIR")]
     pub release_dir: Option<PathBuf>,
+    /// Explicitly opt in to fetching/building trusted main source locally.
+    #[arg(long)]
+    pub enable_main: bool,
+    /// Poll interval; builds run only for changed revisions (e.g. 5m, 30s).
+    #[arg(long, default_value = "5m", value_parser = main_interval)]
+    pub main_update_interval: u64,
+    #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u16).range(1..=16))]
+    pub main_build_jobs: u16,
+    /// Trusted Git repository. Never sourced from a web request.
+    #[arg(
+        long,
+        env = "HERDR_MAIN_REPOSITORY",
+        default_value = "https://github.com/perapp/herdr-webapp.git"
+    )]
+    pub main_repository: String,
+    #[arg(long, default_value = "main")]
+    pub main_branch: String,
+    /// Dedicated owner-only persistent checkout, build cache and artifact directory.
+    #[arg(long, env = "HERDR_MAIN_STATE_DIR")]
+    pub main_state_dir: Option<PathBuf>,
+    /// Internal child only; the public Origin remains scheme/authority, without a path.
+    #[arg(long, hide = true, default_value = "/")]
+    pub channel_base_path: String,
+    #[arg(long, hide = true)]
+    pub channel_revision: Option<String>,
+    /// Internal backend; never binds a public TCP listener.
+    #[arg(long, hide = true)]
+    pub unix_socket: Option<PathBuf>,
     /// TURN REST shared-secret file, owner-only; never pass the secret in argv.
     #[arg(long, env = "HERDR_RELAY_TURN_SECRET_FILE")]
     pub turn_secret_file: Option<PathBuf>,
@@ -88,6 +119,21 @@ pub struct ConnectRelay {
     /// Explicitly revoke all stored browser pairings before connecting.
     #[arg(long)]
     pub reset_pairings: bool,
+}
+
+fn main_interval(value: &str) -> std::result::Result<u64, String> {
+    let (number, scale) = match value.as_bytes().last() {
+        Some(b's') => (&value[..value.len() - 1], 1),
+        Some(b'm') => (&value[..value.len() - 1], 60),
+        Some(b'h') => (&value[..value.len() - 1], 3600),
+        _ => (value, 1),
+    };
+    number
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(scale))
+        .filter(|n| (1..=86400).contains(n))
+        .ok_or_else(|| "main interval must be 1s..24h".into())
 }
 
 fn home() -> Result<PathBuf> {
@@ -242,6 +288,35 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(connector.mode, Some(Mode::ConnectRelay(options)) if options.force_turn));
+    }
+    #[test]
+    fn main_channel_is_opt_in_with_bounded_controls() {
+        let normal = Config::try_parse_from(["app", "serve-relay"]).unwrap();
+        assert!(
+            matches!(normal.mode, Some(Mode::ServeRelay(o)) if !o.enable_main && o.main_update_interval == 300 && o.main_build_jobs == 2 && o.unix_socket.is_none())
+        );
+        let opted = Config::try_parse_from([
+            "app",
+            "serve-relay",
+            "--enable-main",
+            "--main-update-interval",
+            "2m",
+            "--main-build-jobs",
+            "1",
+        ])
+        .unwrap();
+        assert!(
+            matches!(opted.mode, Some(Mode::ServeRelay(o)) if o.enable_main && o.main_update_interval == 120 && o.main_build_jobs == 1)
+        );
+        for (key, value) in [
+            ("--main-update-interval", "0s"),
+            ("--main-update-interval", "25h"),
+            ("--main-update-interval", "bad"),
+            ("--main-build-jobs", "0"),
+            ("--main-build-jobs", "17"),
+        ] {
+            assert!(Config::try_parse_from(["app", "serve-relay", key, value]).is_err());
+        }
     }
     #[test]
     fn token_is_private_and_reused() {

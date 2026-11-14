@@ -24,7 +24,10 @@ use tokio::{
     sync::{Mutex, Semaphore, mpsc},
     task::JoinSet,
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message, client::IntoClientRequest},
+};
 use url::Url;
 use webrtc::{
     api::APIBuilder,
@@ -51,27 +54,8 @@ pub struct ConnectorConfig {
     pub reset_pairings: bool,
     pub no_dashboard: bool,
 }
-fn origin_url(input: &str, allow_loopback: bool) -> Result<Url> {
-    let mut url = Url::parse(input).context("invalid relay URL")?;
-    ensure!(
-        url.username().is_empty()
-            && url.password().is_none()
-            && url.query().is_none()
-            && url.fragment().is_none()
-            && url.path() == "/",
-        "relay URL must be an origin without credentials"
-    );
-    let local = url.host_str().is_some_and(|h| {
-        h == "localhost"
-            || h.parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback())
-    });
-    ensure!(
-        url.scheme() == "https" || (url.scheme() == "http" && allow_loopback && local),
-        "relay requires HTTPS (HTTP allowed only for explicit loopback development)"
-    );
-    url.set_path("/");
-    Ok(url)
+fn origin_url(input: &str, allow_loopback: bool) -> Result<crate::relay_channel::RelayEndpoint> {
+    crate::relay_channel::RelayEndpoint::parse(input, allow_loopback)
 }
 fn transcript(origin: &str, machine: &str, session: &str, seq: u64, body: &str) -> String {
     format!("herdr-signal-v1\n{origin}\n{machine}\n{session}\n{seq}\n{body}")
@@ -507,10 +491,12 @@ where
 }
 
 pub async fn run(config: ConnectorConfig) -> Result<()> {
-    let url = origin_url(&config.relay_url, config.allow_http_loopback)?;
-    let origin = url.origin().ascii_serialization();
+    let endpoint = origin_url(&config.relay_url, config.allow_http_loopback)?;
+    let origin = endpoint.url();
+    let url = Url::parse(&endpoint.root_url())?;
     relay_crypto::ensure_private_dir(&config.state_dir)?;
     let _state_lock = relay_crypto::lock_private(&config.state_dir.join("connector.lock"))?;
+    endpoint.bind_state(&config.state_dir)?;
     let identity = Arc::new(Identity::load_or_create(
         &config.state_dir.join("identity.json"),
     )?);
@@ -531,14 +517,18 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
     socket_url
         .set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
         .map_err(|_| anyhow::anyhow!("invalid relay scheme"))?;
-    socket_url.set_path("/relay/socket");
+    socket_url.set_path(&endpoint.path("/relay/socket"));
     // Do not expose pairing credentials to captured/non-interactive logs. Tests can
     // read owner-only pairing.json; interactive sessions get the pinned native QR.
     let dashboard = if std::io::stdout().is_terminal() {
-        let fragment =
-            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&pairings.lock().await.capability)?);
+        let mut capability = serde_json::to_value(&pairings.lock().await.capability)?;
+        if endpoint.base_path == "/main/" {
+            capability["channel"] = json!("main");
+            capability["basePath"] = json!("/main/");
+        }
+        let fragment = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&capability)?);
         Some(crate::dashboard::Dashboard::start(
-            &format!("{origin}/#pair={fragment}"),
+            &format!("{}#pair={fragment}", endpoint.root_url()),
             &config.core_socket.to_string_lossy(),
             config.no_dashboard,
             crate::dashboard::Mode::Relay,
@@ -549,7 +539,13 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
     let mut backoff = 1u64;
     let mut stop = Box::pin(shutdown_signal());
     loop {
-        let connected = tokio::select! { _ = &mut stop => break, result = connect_async(socket_url.as_str()) => result };
+        let mut request = socket_url.as_str().into_client_request()?;
+        // HTTP Origin remains authority-only; signed transcripts use endpoint.url().
+        request
+            .headers_mut()
+            .insert("Origin", endpoint.origin.parse()?);
+        let connected =
+            tokio::select! { _ = &mut stop => break, result = connect_async(request) => result };
         if let Ok((socket, _)) = connected {
             if let Some(card) = &dashboard {
                 card.log("Relay connected; authenticating registration.");
@@ -635,12 +631,18 @@ where
         }
     }
     if let Some(path) = &config.ready_file {
-        relay_crypto::write_private(
-            path,
-            &serde_json::to_vec(
-                &json!({"schemaVersion":1,"pid":std::process::id(),"version":version,"protocolVersion":1,"ready":true}),
-            )?,
-        )?;
+        let mut ready = json!({"schemaVersion":1,"pid":std::process::id(),"version":version,"protocolVersion":1,"ready":true});
+        if crate::relay_channel::RelayEndpoint::parse(
+            &config.relay_url,
+            config.allow_http_loopback,
+        )?
+        .base_path
+            == "/main/"
+        {
+            ready["channel"] = json!("main");
+            ready["revision"] = json!(crate::build_revision().unwrap_or(""));
+        }
+        relay_crypto::write_private(path, &serde_json::to_vec(&ready)?)?;
     }
     if let Some(card) = dashboard {
         card.log(
@@ -770,6 +772,10 @@ mod tests {
     #[test]
     fn relay_origin_policy() {
         assert!(origin_url("https://example.com", false).is_ok());
+        let main = origin_url("https://example.com/main/", false).unwrap();
+        assert_eq!(main.origin, "https://example.com");
+        assert_eq!(main.url(), "https://example.com/main");
+        assert_eq!(main.path("/relay/socket"), "/main/relay/socket");
         assert!(origin_url("http://example.com", true).is_err());
         assert!(origin_url("http://127.0.0.1:7777", true).is_ok());
         assert!(origin_url("https://user@example.com", false).is_err());
@@ -810,6 +816,17 @@ mod tests {
                 "m",
                 "s",
                 &mut last
+            )
+            .is_err()
+        );
+        assert!(
+            verify_envelope(
+                &value,
+                &identity.public_key(),
+                "https://r/main",
+                "m",
+                "s",
+                &mut 0
             )
             .is_err()
         );

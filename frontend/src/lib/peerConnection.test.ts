@@ -97,6 +97,15 @@ afterEach(() => {
 });
 
 describe('PeerConnection signaling authentication and epochs', () => {
+  it('uses main network routes and signed context while retaining authority-only browser Origin', async () => {
+    vi.stubGlobal('location', new URL(origin + '/main/'));
+    const { socket } = setup(); await join(socket); ice(socket); accept(socket); await flush();
+    expect(socket.url.href).toBe(`${origin.replace('https:', 'wss:')}/main/relay/socket`);
+    expect(location.origin).toBe(origin);
+    const auth = socket.signals()[0];
+    expect(sign).toHaveBeenCalledWith(computer.identity, authTranscript(origin + '/main', 'machine', 'session-1', 'browser-key', auth.nonce));
+    expect(verify).toHaveBeenCalledWith(computer.publicKey, signalTranscript(origin + '/main', 'machine', 'session-1', 1, JSON.stringify({ kind: 'accepted', protocolVersion: 1, version: '1.2.3' })), 'connector-signature');
+  });
   it('supports the minimum 30-second TURN lifetime without a one-second reconnect loop', async () => {
     const { socket } = setup(true); await join(socket); accept(socket);
     socket.receive({ type: 'ice', sessionId: 'session-1', iceServers, expiresAt: Math.floor(Date.now() / 1000) + 30 });

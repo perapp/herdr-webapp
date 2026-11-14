@@ -44,6 +44,19 @@ describe('pairing capability', () => {
     const expected = createHash('sha256').update(base64urlDecode(p.publicKey)).digest('base64url');
     expect(p.machineId).toBe(expected);
   });
+  it('binds main pairing capabilities to their channel while retaining legacy root pairings', async () => {
+    const p = await pairing();
+    const main = { ...p, channel: 'main', basePath: '/main/' };
+    try {
+      vi.stubGlobal('location', new URL('https://relay.test/'));
+      expect(await parsePairing(fragment(p))).toEqual(p);
+      await expect(parsePairing(fragment(main))).rejects.toThrow('different relay channel');
+      vi.stubGlobal('location', new URL('https://relay.test/main/'));
+      expect(await parsePairing(fragment(main))).toEqual(p);
+      await expect(parsePairing(fragment(p))).rejects.toThrow('different relay channel');
+      await expect(parsePairing(fragment({ ...main, basePath: '/' }))).rejects.toThrow('different relay channel');
+    } finally { vi.unstubAllGlobals(); vi.stubGlobal('crypto', webcrypto); }
+  });
   it('rejects expired, malformed, oversized, wrong-key and wrong-secret payloads', async () => {
     const p = await pairing();
     const other = await pairing();

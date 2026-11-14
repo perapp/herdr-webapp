@@ -1,3 +1,4 @@
+import { channelContext, channelPath } from './channel';
 import { authTranscript, signalTranscript, generateIdentity, randomNonce, pairProof, sign, verify, saveComputer } from './peerCrypto';
 import type { Pairing, Computer, BrowserIdentity } from './peerCrypto';
 import { PeerService } from './peerService';
@@ -46,8 +47,8 @@ export class PeerConnection {
         dispose(); this.update({ status: 'Pairing expired', error: 'Scan a fresh QR code from your computer.' }); return;
       }
       const identity = this.identity ||= computer?.identity || await generateIdentity(); guard();
-      const origin = location.origin;
-      const endpoint = new URL('/relay/socket', origin); endpoint.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const origin = channelContext();
+      const endpoint = new URL(channelPath('/relay/socket'), location.origin); endpoint.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       socket = new WebSocket(endpoint);
       let sessionId = '';
       let incoming = 0;

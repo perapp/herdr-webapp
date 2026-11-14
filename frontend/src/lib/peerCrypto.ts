@@ -1,3 +1,4 @@
+import { channelBase, storageKey } from './channel';
 // Relay v1 wire encodings and transcripts are deliberately independent of transport.
 export interface Pairing {
   v: 1;
@@ -58,6 +59,11 @@ export async function parsePairing(fragment: string): Promise<Pairing> {
   const data: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(base64urlDecode(encoded)));
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Invalid pairing');
   const p = data as Record<string, unknown>;
+  if (channelBase() === '/main/'
+    ? p.channel !== 'main' || p.basePath !== '/main/'
+    : (p.channel !== undefined && p.channel !== 'stable') || (p.basePath !== undefined && p.basePath !== '/')) {
+    throw new Error('Pairing belongs to a different relay channel; scan its QR at the matching channel URL');
+  }
   if (p.v !== 1 || typeof p.machineId !== 'string' || typeof p.publicKey !== 'string' ||
       typeof p.secret !== 'string' || typeof p.expiresAt !== 'number' ||
       !Number.isSafeInteger(p.expiresAt) || p.expiresAt <= Date.now() / 1000) throw new Error('Invalid or expired pairing');
@@ -110,7 +116,7 @@ const DB_NAME = 'herdr-relay-identities-v1';
 const STORE = 'computers';
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
+    const request = indexedDB.open(storageKey(DB_NAME), 1);
     request.onupgradeneeded = () => request.result.createObjectStore(STORE, { keyPath: 'machineId' });
     request.onerror = () => reject(request.error);
     request.onblocked = () => reject(new Error('Computer database blocked'));

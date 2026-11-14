@@ -1,4 +1,5 @@
 import { record } from './schema';
+import { storageKey } from './channel';
 import { request } from './api';
 import type { TerminalInfo } from './schema';
 
@@ -111,7 +112,7 @@ export function validateFavorites(value: unknown): Favorites {
 export interface FavoritesResult { favorites: Favorites; saved: boolean }
 export function loadFavorites(): FavoritesResult {
   try {
-    const raw = localStorage.getItem(FAVORITES_KEY);
+    const raw = localStorage.getItem(storageKey(FAVORITES_KEY));
     if (raw !== null && raw.length > MAX_STORAGE_LENGTH) return { favorites: emptyFavorites(), saved: false };
     return { favorites: validateFavorites(raw === null ? {} : JSON.parse(raw)), saved: true };
   } catch { return { favorites: emptyFavorites(), saved: false }; }
@@ -122,7 +123,7 @@ export function saveFavorites(agent: AgentKind, ids: readonly string[]): Favorit
   if (!current.saved) return current;
   const favorites = validateFavorites({ ...current.favorites, [agent]: ids });
   try {
-    localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
+    localStorage.setItem(storageKey(FAVORITES_KEY), JSON.stringify(favorites));
     return { favorites, saved: true };
   } catch { return { favorites: current.favorites, saved: false }; }
 }

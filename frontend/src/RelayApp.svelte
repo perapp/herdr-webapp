@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { channelPath } from './lib/channel';
   import { onMount } from 'svelte';
   import App from './App.svelte';
   import { parsePairing, listComputers, forgetComputer } from './lib/peerCrypto';
@@ -15,7 +16,7 @@
   let connection = $state<PeerConnection>();
   let mounted = true;
   let copied = $state(false);
-  const command = `curl -fsSL '${location.origin}/run' | sh`;
+  const command = `curl -fsSL '${location.origin}${channelPath('/run')}' | sh`;
   async function refresh() { computers = await listComputers(); }
   function connect(target: PeerTarget) {
     connection?.stop(); setApplicationTransport(disconnectedTransport);

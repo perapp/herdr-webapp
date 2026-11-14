@@ -39,6 +39,10 @@ const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Clone)]
 pub struct RelayConfig {
     pub public_origin: String,
+    pub base_path: String,
+    pub revision: Option<String>,
+    pub unix_socket: Option<std::path::PathBuf>,
+    pub main: Option<crate::relay_main::MainConfig>,
     pub bind: IpAddr,
     pub port: u16,
     pub allow_insecure_loopback: bool,
@@ -54,6 +58,10 @@ impl Default for RelayConfig {
     fn default() -> Self {
         Self {
             public_origin: String::new(),
+            base_path: "/".into(),
+            revision: None,
+            unix_socket: None,
+            main: None,
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 8080,
             allow_insecure_loopback: false,
@@ -68,7 +76,35 @@ impl Default for RelayConfig {
     }
 }
 impl RelayConfig {
+    fn context(&self) -> String {
+        if self.base_path == "/" {
+            self.public_origin.clone()
+        } else {
+            format!(
+                "{}{}",
+                self.public_origin,
+                self.base_path.trim_end_matches('/')
+            )
+        }
+    }
     fn validate(&self) -> Result<()> {
+        ensure!(
+            matches!(self.base_path.as_str(), "/" | "/main/"),
+            "unsupported channel base path"
+        );
+        ensure!(
+            if self.base_path == "/main/" {
+                self.main.is_none()
+                    && self
+                        .revision
+                        .as_deref()
+                        .is_some_and(crate::relay_main::valid_revision)
+                    && self.unix_socket.is_some()
+            } else {
+                self.revision.is_none() && self.unix_socket.is_none()
+            },
+            "invalid internal main channel configuration"
+        );
         // Restrict to ASCII origin syntax also safe inside the bootstrap shell literal.
         ensure!(
             !self.public_origin.is_empty()
@@ -98,7 +134,7 @@ impl RelayConfig {
                 || (uri.scheme_str() == Some("http")
                     && self.allow_insecure_loopback
                     && loopback
-                    && self.bind.is_loopback()),
+                    && (self.bind.is_loopback() || self.unix_socket.is_some())),
             "HTTPS required except explicit loopback development mode"
         );
         ensure!(
@@ -218,6 +254,8 @@ pub fn router(config: RelayConfig) -> Result<Router> {
 }
 fn routes(state: Arc<Relay>) -> Router {
     Router::new()
+        // A fallback alone does not create the empty-tail route under nest().
+        .route("/", get(asset))
         .route("/relay/socket", get(upgrade))
         .route("/api/mode", get(mode))
         .route(
@@ -230,27 +268,35 @@ fn routes(state: Arc<Relay>) -> Router {
         .layer(middleware::from_fn(headers))
         .with_state(state)
 }
-pub async fn run(
-    config: RelayConfig,
-    catalog: Option<Arc<crate::relay_catalog::ReleaseCatalog>>,
-) -> Result<()> {
+pub async fn run(config: RelayConfig, catalog: Option<Router>) -> Result<()> {
     config.validate()?;
     let addr = SocketAddr::new(config.bind, config.port);
+    let unix_socket = config.unix_socket.clone();
+    // A failed public bind must not leave a build supervisor behind.
+    let tcp_listener = if unix_socket.is_none() {
+        Some(tokio::net::TcpListener::bind(addr).await?)
+    } else {
+        None
+    };
+    let main = config
+        .main
+        .clone()
+        .map(crate::relay_main::MainService::start)
+        .transpose()?;
+    let base_path = config.base_path.clone();
     let state = Arc::new(Relay {
         config,
         registry: Mutex::new(Registry::default()),
         shutdown: watch::channel(false).0,
     });
-    let app = routes(state.clone()).merge(match catalog {
-        Some(c) => crate::relay_catalog::router(c),
-        None => crate::relay_catalog::unavailable_router(),
-    });
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
+    let app = routes(state.clone())
+        .merge(catalog.unwrap_or_else(crate::relay_catalog::unavailable_router));
+    let app = if base_path == "/main/" {
+        Router::new().nest("/main/", app)
+    } else {
+        app.merge(crate::relay_main::router(main.clone()))
+    };
+    let shutdown = async move {
         #[cfg(unix)]
         {
             let mut term =
@@ -261,20 +307,49 @@ pub async fn run(
         #[cfg(not(unix))]
         let _ = tokio::signal::ctrl_c().await;
         let _ = state.shutdown.send(true);
-    })
-    .await?;
+        if let Some(main) = main {
+            main.shutdown().await;
+        }
+    };
+    if let Some(path) = unix_socket {
+        use std::os::unix::fs::PermissionsExt;
+        ensure!(
+            path.as_os_str().len() <= 100,
+            "internal socket path too long"
+        );
+        let listener = tokio::net::UnixListener::bind(&path)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        // The private endpoint has a shared admission bucket. Never trust public
+        // forwarding headers as client identity. Only this UID can reach it.
+        let app = app.layer(axum::Extension(ConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            0,
+        )))));
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown)
+            .await?;
+        let _ = std::fs::remove_file(path);
+    } else {
+        let listener = tcp_listener.expect("public listener bound before starting supervisor");
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown)
+        .await?;
+    }
     Ok(())
 }
 async fn mode(State(s): State<Arc<Relay>>) -> Json<Value> {
     Json(
-        json!({"mode":"relay","version":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"publicOrigin":s.config.public_origin,"launcherUrl":"/run"}),
+        json!({"mode":"relay","version":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"entrypointProtocolVersion":1,"publicOrigin":s.config.public_origin,"channel":if s.config.base_path == "/" {"stable"} else {"main"},"basePath":s.config.base_path,"revision":s.config.revision,"buildRevision":crate::build_revision(),"launcherUrl":format!("{}run", s.config.base_path)}),
     )
 }
 async fn bootstrap(State(s): State<Arc<Relay>>) -> Response {
     (
         [(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")],
         include_str!("../distribution/run-relay.sh")
-            .replace("__HERDR_RELAY_ORIGIN__", &s.config.public_origin),
+            .replace("__HERDR_RELAY_ORIGIN__", &s.config.context()),
     )
         .into_response()
 }
@@ -285,8 +360,19 @@ async fn launcher() -> Response {
     )
         .into_response()
 }
-async fn asset(uri: Uri) -> Response {
-    let path = uri.path().trim_start_matches('/');
+async fn asset(State(s): State<Arc<Relay>>, uri: Uri) -> Response {
+    // Resolve only this child's configured prefix when present. Stable requests
+    // must never use this normalization to fall through from reserved /main/.
+    let raw = uri.path();
+    let path = if s.config.base_path == "/main/" {
+        raw.strip_prefix("/main/")
+            .unwrap_or_else(|| raw.trim_start_matches('/'))
+    } else {
+        raw.trim_start_matches('/')
+    };
+    if path == "main" || path.starts_with("main/") || path.starts_with("main%") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     if path.starts_with("api/") || path.starts_with("client/") || path.starts_with("relay/") {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -503,7 +589,7 @@ fn handle(
             );
             let transcript = format!(
                 "herdr-register-v1\n{}\n{machine_id}\n{nonce}\n{version}",
-                s.config.public_origin
+                s.config.context()
             );
             crate::relay_crypto::verify(&public_key, transcript.as_bytes(), &signature)?;
             let mut r = s.registry.lock().unwrap();
@@ -794,6 +880,52 @@ mod tests {
             HeaderValue::from_static("https://relay.example"),
         );
         assert!(!valid_origin(&h, "https://relay.example"));
+    }
+    #[tokio::test]
+    async fn main_nested_fallback_serves_relative_assets_but_not_root_routes() {
+        let app = Router::new().nest(
+            "/main/",
+            router(RelayConfig {
+                base_path: "/main/".into(),
+                revision: Some("a".repeat(40)),
+                unix_socket: Some("/private-test.sock".into()),
+                ..config()
+            })
+            .unwrap(),
+        );
+        let response = app
+            .clone()
+            .oneshot(Request::get("/main/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(html.contains("./assets/"));
+        let asset = html
+            .split("src=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/main/{}", asset.trim_start_matches("./")))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = app
+            .oneshot(Request::get("/api/mode").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
     #[tokio::test]
     async fn public_routes() {

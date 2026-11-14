@@ -1,6 +1,6 @@
 #!/bin/sh
-# Served at /run. The server replaces the exact __HERDR_RELAY_ORIGIN__ token
-# with a validated HTTPS origin (ASCII hostname/IP + optional port, no shell syntax).
+# Served at /run or /main/run. The server substitutes the canonical channel URL
+# into __HERDR_RELAY_ORIGIN__ (origin or origin/main, no shell syntax).
 set -eu
 umask 077
 origin='__HERDR_RELAY_ORIGIN__'
@@ -10,7 +10,14 @@ case "$origin" in
 esac
 # Defense in depth: the substituted origin is data, never evaluated shell code.
 case "$origin" in
-    *[!a-zA-Z0-9.:/\[\]-]*|https://|https://*/) printf '%s\n' 'Invalid relay origin.' >&2; exit 1 ;;
+    *[!a-zA-Z0-9.:/\[\]-]*|https://|https://*/) printf '%s\n' 'Invalid relay endpoint.' >&2; exit 1 ;;
+esac
+authority=${origin#https://}
+case "$authority" in
+    */main) authority=${authority%/main} ;;
+esac
+case "$authority" in
+    ''|*/*) printf '%s\n' 'Invalid relay endpoint path.' >&2; exit 1 ;;
 esac
 command -v python3 >/dev/null 2>&1 || { printf '%s\n' 'Python 3.9 or newer is required.' >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { printf '%s\n' 'curl is required.' >&2; exit 1; }

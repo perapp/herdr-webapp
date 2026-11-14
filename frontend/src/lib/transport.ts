@@ -1,3 +1,4 @@
+import { channelInput, channelPath } from './channel';
 // Structural facades retain native local behavior; relay mode never falls back to HTTP.
 export interface SocketLike {
   readonly readyState: number;
@@ -28,11 +29,11 @@ export const disconnectedTransport: ApplicationTransport = {
 let active: ApplicationTransport | undefined;
 export function setApplicationTransport(transport: ApplicationTransport | undefined): void { active = transport; }
 export function transportRequest(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  return active ? active.request(input, init) : fetch(input, init);
+  return active ? active.request(input, init) : fetch(channelInput(input), init);
 }
 export function transportEvents(path: string): EventSourceLike {
-  return active ? active.events(path) : new EventSource(path);
+  return active ? active.events(path) : new EventSource(channelPath(path));
 }
 export function transportSocket(url: string | URL): SocketLike {
-  return active ? active.socket(url) : new WebSocket(url);
+  return active ? active.socket(url) : new WebSocket(channelInput(url) as string | URL);
 }

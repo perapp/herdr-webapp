@@ -44,7 +44,7 @@ class LauncherTests(unittest.TestCase):
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
-                if self.path == '/client/manifest.json':
+                if self.path in ('/client/manifest.json', '/main/client/manifest.json'):
                     body = json.dumps(owner.manifest).encode()
                 elif self.path == '/redirect':
                     self.send_response(302)
@@ -93,11 +93,15 @@ class LauncherTests(unittest.TestCase):
             child.stdout.close()
             child.stderr.close()
 
-    def publish(self, release, behavior='good'):
+    def publish(self, release, behavior='good', revision=None):
         body = ('''#!{python}
 import json, os, pathlib, signal, sys, time
 release = {release!r}
 behavior = {behavior!r}
+revision = {revision!r}
+if sys.argv[1:] == ['--build-revision']:
+    print(revision if behavior != 'revision' else '0' * 40)
+    sys.exit(0)
 if sys.argv[1:] == ['--version']:
     print('herdr-webapp ' + release)
     sys.exit(0)
@@ -122,7 +126,8 @@ ready = pathlib.Path(sys.argv[sys.argv.index('--ready-file') + 1])
 if behavior != 'timeout':
     tmp = ready.with_suffix('.tmp')
     tmp.write_text(json.dumps(dict(schemaVersion=1, protocolVersion=1, version=release,
-        pid=os.getpid() if behavior != 'pid' else os.getppid(), ready=True)))
+        pid=os.getpid() if behavior != 'pid' else os.getppid(), ready=True,
+        **(dict(channel='main', revision=revision if behavior != 'readyrevision' else '0' * 40) if revision else {{}}))))
     tmp.chmod(0o600 if behavior != 'mode' else 0o644)
     if behavior == 'symlink':
         ready.symlink_to(tmp)
@@ -133,11 +138,13 @@ if behavior == 'signalexit':
     os.kill(os.getpid(), signal.SIGUSR1)
 while True:
     time.sleep(0.05)
-'''.format(python=sys.executable, release=release, behavior=behavior, events=str(self.events))).encode()
-        url = '/client/' + release + '/' + launcher.target() + '/herdr-webapp'
+'''.format(python=sys.executable, release=release, behavior=behavior, revision=revision, events=str(self.events))).encode()
+        url = ('/main/client/' + revision if revision else '/client/' + release) + '/' + launcher.target() + '/herdr-webapp'
         self.assets[url] = body
         self.manifest = dict(schemaVersion=1, protocolVersion=1, version=release,
                              assets=[dict(target=launcher.target(), url=url, size=len(body), sha256=hashlib.sha256(body).hexdigest())])
+        if revision:
+            self.manifest.update(schemaVersion=2, channel='main', revision=revision)
 
     def launch(self):
         child = subprocess.Popen([sys.executable, str(SCRIPT), '--relay-url', self.url,
@@ -261,6 +268,103 @@ while True:
         import io
         with self.assertRaises(launcher.Error):
             launcher.Client(self.url, 1).stream('/redirect', 100, io.BytesIO())
+
+    def test_main_origin_paths_manifest_and_no_stable_fallback(self):
+        self.publish('0.0.8', revision='a' * 40)
+        endpoint = launcher.origin(self.url + '/main/', True)
+        self.assertEqual(endpoint, self.url + '/main')
+        asset = launcher.Client(endpoint, 1).manifest(launcher.target())
+        self.assertEqual(asset['revision'], 'a' * 40)
+        self.assertTrue(asset['url'].startswith('/main/client/'))
+        for bad in ('/main/../', '/main//', '/%6dain', '/main?x', '/main#', '//main', '/main/other'):
+            with self.assertRaises(launcher.Error):
+                launcher.origin(self.url + bad, True)
+        client = launcher.Client(endpoint, 1)
+        for mutation in ({'revision': 'a' * 39}, {'revision': 'A' * 40}, {'channel': 'stable'}, {'schemaVersion': 1}):
+            old = self.manifest
+            self.manifest = dict(old, **mutation)
+            with self.assertRaises(launcher.Error):
+                client.manifest(launcher.target())
+            self.manifest = old
+        self.manifest['assets'][0]['url'] = '/client/0.0.8/' + launcher.target() + '/herdr-webapp'
+        with self.assertRaises(launcher.Error):
+            client.manifest(launcher.target())
+        self.manifest['assets'] = []
+        with self.assertRaisesRegex(launcher.Incompatible, 'available targets:'):
+            client.manifest(launcher.target())
+
+    def test_main_same_version_revision_updates_and_force_push(self):
+        self.url += '/main'
+        self.publish('0.0.8', revision='f' * 40)
+        child = self.launch()
+        def revision_ready(revision):
+            files = list((self.root / 'cache').glob('*/current.json'))
+            return bool(files) and json.loads(files[0].read_text()).get('revision') == revision
+        eventually(lambda: revision_ready('f' * 40))
+        self.publish('0.0.8', revision='1' * 64)
+        eventually(lambda: revision_ready('1' * 64))
+        self.assertEqual(len(list((self.root / 'cache').glob('*/client-*'))), 2)
+        self.publish('0.0.8', revision='f' * 40)
+        eventually(lambda: revision_ready('f' * 40))
+        child.terminate()
+        child.wait(5)
+        self.assertEqual(len(list((self.root / 'state').glob('*/pairing-test'))), 1)
+        # Offline startup uses the exact private revision cache, not stable's version key.
+        self.manifest = None
+        again = self.launch()
+        eventually(lambda: self.log().count('start 0.0.8') >= 4)
+        self.assertIsNone(again.poll())
+
+    def test_main_revision_probe_and_readiness_fail_closed(self):
+        self.url += '/main'
+        for behavior in ('revision', 'readyrevision'):
+            with self.subTest(behavior=behavior):
+                self.publish('0.0.8', behavior, revision='a' * 40)
+                child = self.launch()
+                self.assertEqual(child.wait(5), 1)
+                self.assertEqual(list((self.root / 'cache').glob('*/current.json')), [])
+
+    def test_main_same_version_bad_revision_readiness_rolls_back(self):
+        self.url += '/main'
+        self.publish('0.0.8', revision='a' * 40)
+        child = self.launch()
+        self.wait_ready('0.0.8')
+        pairing = next((self.root / 'state').glob('*/pairing-test'))
+        inode = pairing.stat().st_ino
+        before = self.log().count('start 0.0.8')
+        self.publish('0.0.8', 'readyrevision', revision='b' * 40)
+        eventually(lambda: self.log().count('start 0.0.8') >= before + 2)
+        current = next((self.root / 'cache').glob('*/current.json'))
+        self.assertEqual(json.loads(current.read_text())['revision'], 'a' * 40)
+        self.assertEqual(pairing.stat().st_ino, inode)
+        self.assertIsNone(child.poll())
+
+    def test_main_cache_state_identity_and_bootstrap(self):
+        from types import SimpleNamespace
+        args = dict(allow_http_loopback=True, cache_dir=self.root / 'cache', state_dir=self.root / 'state', network_timeout=1)
+        stable = launcher.Supervisor(SimpleNamespace(relay_url=self.url, **args))
+        main = launcher.Supervisor(SimpleNamespace(relay_url=self.url + '/main/', **args))
+        self.assertNotEqual(stable.cache, main.cache)
+        self.assertNotEqual(stable.state, main.state)
+        self.assertEqual(main.relay, self.url + '/main')
+        self.assertEqual(stable.cache.name, hashlib.sha256(self.url.encode()).hexdigest()[:32])
+        tools = self.root / 'tools'
+        tools.mkdir()
+        downloaded = self.root / 'download-url'
+        invoked = self.root / 'python-args'
+        curl = tools / 'curl'
+        curl.write_text('#!/bin/sh\nfor last do :; done\nprintf "%s" "$last" > "$DOWNLOADED"\nwhile [ "$1" != --output ]; do shift; done\nshift\nprintf "stub" > "$1"\n')
+        curl.chmod(0o700)
+        python = tools / 'python3'
+        python.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$INVOKED"\n')
+        python.chmod(0o700)
+        wrapper = self.root / 'run-main.sh'
+        wrapper.write_text(SCRIPT.with_name('run-relay.sh').read_text().replace('__HERDR_RELAY_ORIGIN__', 'https://example.com/main'))
+        env = dict(os.environ, PATH=str(tools) + ':' + os.environ['PATH'], DOWNLOADED=str(downloaded), INVOKED=str(invoked))
+        result = subprocess.run(['sh', str(wrapper)], env=env, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(downloaded.read_text(), 'https://example.com/main/client/launcher.py')
+        self.assertTrue(invoked.read_text().endswith('--relay-url\nhttps://example.com/main\n'))
 
     def test_private_files_and_lock_links(self):
         private = self.root / 'private'

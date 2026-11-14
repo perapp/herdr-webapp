@@ -1,3 +1,4 @@
+import { storageKey } from './channel';
 export const fontSizeKey = 'herdr.terminal-font-size';
 export const defaultFontSize = 13;
 export const minFontSize = 8;
@@ -13,7 +14,7 @@ let initialized = false;
 let current = defaultFontSize;
 const listeners = new Set<(size: number) => void>();
 function read(): number {
-  try { return parseFontSize(localStorage.getItem(fontSizeKey)); }
+  try { return parseFontSize(localStorage.getItem(storageKey(fontSizeKey))); }
   catch { return defaultFontSize; }
 }
 export function initializeFontSize(): number {
@@ -22,7 +23,7 @@ export function initializeFontSize(): number {
 }
 function publish(): void { for (const listener of listeners) listener(current); }
 function storageChanged(event: StorageEvent): void {
-  if (event.key !== fontSizeKey && event.key !== null) return;
+  if (event.key !== storageKey(fontSizeKey) && event.key !== null) return;
   current = read(); publish();
 }
 export function watchFontSize(listener: (size: number) => void): () => void {
@@ -39,6 +40,6 @@ export function setFontSize(size: number): boolean {
   if (!valid(size)) return false;
   initializeFontSize(); current = size;
   let saved = true;
-  try { localStorage.setItem(fontSizeKey, String(size)); } catch { saved = false; }
+  try { localStorage.setItem(storageKey(fontSizeKey), String(size)); } catch { saved = false; }
   publish(); return saved;
 }

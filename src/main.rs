@@ -5,10 +5,13 @@ mod config;
 mod core;
 mod dashboard;
 mod dashboard_graphics;
+mod main_catalog;
 mod peer_service;
 mod relay_catalog;
+mod relay_channel;
 mod relay_connector;
 mod relay_crypto;
+mod relay_main;
 mod relay_pairings;
 mod relay_server;
 mod relay_wire;
@@ -46,9 +49,17 @@ pub struct App {
 }
 pub type Shared = Arc<App>;
 
+pub fn build_revision() -> Option<&'static str> {
+    option_env!("HERDR_BUILD_REVISION").filter(|s| relay_main::valid_revision(s))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
+    if config.build_revision {
+        println!("{}", build_revision().unwrap_or("unversioned"));
+        return Ok(());
+    }
     if config.licenses {
         print!(
             "{}\nLocally modified dependency: webrtc-ice 0.17.3\n{}",
@@ -63,11 +74,49 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::anyhow!("serve-relay requires --public-origin https://host")
             })?;
             let origin = relay_crypto::origin(origin, options.allow_http_loopback)?;
+            let is_main = options.channel_base_path == "/main/";
+            anyhow::ensure!(
+                !options.enable_main || !is_main,
+                "main child cannot recursively enable main"
+            );
+            if is_main {
+                anyhow::ensure!(
+                    options.channel_revision.as_deref() == build_revision()
+                        && build_revision().is_some(),
+                    "main child revision must match compiled source provenance"
+                );
+                if let Ok(parent) = std::env::var("HERDR_MAIN_PARENT_PID") {
+                    let expected: u32 = parent.parse()?;
+                    anyhow::ensure!(
+                        expected > 1 && unsafe { libc::getppid() } as u32 == expected,
+                        "main parent identity changed"
+                    );
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            if unsafe { libc::getppid() } as u32 != expected {
+                                std::process::exit(0);
+                            }
+                        }
+                    });
+                }
+            }
             let catalog = options
                 .release_dir
                 .as_ref()
-                .map(|path| {
-                    relay_catalog::ReleaseCatalog::load(path, relay_crypto::VERSION).map(Arc::new)
+                .map(|path| -> anyhow::Result<Router> {
+                    if is_main {
+                        Ok(main_catalog::router(Arc::new(
+                            main_catalog::MainCatalog::load(
+                                path,
+                                options.channel_revision.as_deref().unwrap_or_default(),
+                            )?,
+                        )))
+                    } else {
+                        Ok(relay_catalog::router(Arc::new(
+                            relay_catalog::ReleaseCatalog::load(path, relay_crypto::VERSION)?,
+                        )))
+                    }
                 })
                 .transpose()?;
             let turn_secret = options
@@ -78,9 +127,46 @@ async fn main() -> anyhow::Result<()> {
                     Ok(String::from_utf8(bytes)?.trim().to_owned())
                 })
                 .transpose()?;
+            let main = if options.enable_main {
+                let state_dir = options.main_state_dir.clone().unwrap_or_else(|| {
+                    let base = std::env::var_os("XDG_STATE_HOME")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| {
+                            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                                .join(".local/state")
+                        });
+                    base.join("herdr-webapp/main")
+                });
+                Some(relay_main::MainConfig {
+                    state_dir: std::path::absolute(state_dir)?,
+                    repository: options.main_repository.clone(),
+                    branch: options.main_branch.clone(),
+                    interval_seconds: options.main_update_interval,
+                    build_jobs: options.main_build_jobs,
+                    public_origin: origin.clone(),
+                    turn_urls: options.turn_urls.clone(),
+                    turn_secret_file: options
+                        .turn_secret_file
+                        .as_ref()
+                        .map(std::path::absolute)
+                        .transpose()?,
+                    turn_ttl_seconds: options.turn_ttl_seconds,
+                    allow_http_loopback: options.allow_http_loopback,
+                })
+            } else {
+                None
+            };
             return relay_server::run(
                 relay_server::RelayConfig {
                     public_origin: origin,
+                    base_path: options.channel_base_path.clone(),
+                    revision: options.channel_revision.clone(),
+                    unix_socket: options
+                        .unix_socket
+                        .as_ref()
+                        .map(std::path::absolute)
+                        .transpose()?,
+                    main,
                     bind: config.bind,
                     port: config.port.unwrap_or(8080),
                     allow_insecure_loopback: options.allow_http_loopback,
@@ -95,7 +181,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(config::Mode::ConnectRelay(options)) => {
             use sha2::{Digest, Sha256};
-            let origin = relay_crypto::origin(&options.relay_url, options.allow_http_loopback)?;
+            let endpoint = relay_channel::RelayEndpoint::parse(
+                &options.relay_url,
+                options.allow_http_loopback,
+            )?;
+            let origin = endpoint.url();
             let state_dir = match &options.state_dir {
                 Some(path) => std::path::absolute(path)?,
                 None => {

@@ -193,3 +193,32 @@ Connector readiness marker is atomic 0600 JSON:
 Write readiness only after identity/state validation, successful Core handshake and
 relay registration. Do not place credentials in argv or readiness files. Core is
 never restarted. Stop connector children on supervisor shutdown; no orphan copies.
+
+## Opt-in main-channel context
+
+The root channel retains the exact v1 origin-only transcripts and schema-1
+release catalog. Main uses the same public HTTPS **Origin**, with a separate
+`/main/` base path. In the registration/auth/signaling transcript context line,
+main uses canonical `https://host[:port]/main`; HTTP `Origin` headers still carry
+only `https://host[:port]`. Do not weaken exact-Origin validation to accept paths.
+
+Main pairing fragments additionally identify `channel: "main"` and
+`basePath: "/main/"`; a fragment for the other channel is rejected. Default
+connector identities, launcher caches and browser storage namespaces include
+channel context. Explicit native state-directory overrides are pinned to one
+endpoint to prevent accidental identity/pairing reuse. Legacy root state is
+adopted without moving its keys. Namespacing is not a security boundary against
+malicious main JavaScript: both applications have the same browser origin.
+
+Main catalogs use schema 2, protocol 1, `channel: "main"`, package `version`, full
+Git `revision`, and a nonempty subset of verified native target artifacts.
+Artifact paths are `/main/client/<revision>/<target>/herdr-webapp`; package
+versions need not change between revisions. Native build provenance and readiness
+must match the revision. Unsupported platforms never fall back to stable.
+
+The public entry preserves `/main/` when proxying to its owner-only Unix socket.
+Candidate mode responses identify `entrypointProtocolVersion: 1`, channel, base
+path, public origin, revision and signaling protocol. Incompatible candidates
+cannot replace the currently serving main process. Stable catalogs/version URLs
+are never overwritten. Old main sockets drain finitely; activation requires
+fresh signaling sessions and makes no seamless-migration or input-replay promise.

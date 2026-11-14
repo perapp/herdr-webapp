@@ -23,6 +23,8 @@ import urllib.request
 PROTOCOL = 1
 MAX_MANIFEST = 128 * 1024
 MAX_BINARY = 256 * 1024 * 1024
+REVISION = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
+TARGETS = ('x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu', 'aarch64-apple-darwin')
 VERSION = re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 
 
@@ -47,7 +49,7 @@ def origin(value, allow_http=False):
         port = u.port
         if not host or u.username is not None or u.password is not None:
             raise ValueError()
-        if u.path not in ('', '/') or u.query or u.fragment:
+        if u.path not in ('', '/', '/main', '/main/') or '?' in value or '#' in value:
             raise ValueError()
         if any(c.isspace() for c in value) or not re.fullmatch(r'[A-Za-z0-9.:[\]-]+', u.netloc):
             raise ValueError()
@@ -61,9 +63,9 @@ def origin(value, allow_http=False):
         authority = '[' + host.lower() + ']' if ':' in host else host.lower()
         if port is not None and port != (443 if u.scheme == 'https' else 80):
             authority += ':' + str(port)
-        return u.scheme + '://' + authority
+        return u.scheme + '://' + authority + ('/main' if u.path.startswith('/main') else '')
     except ValueError:
-        raise Error('relay URL must be an HTTPS origin (HTTP requires explicit loopback development mode)') from None
+        raise Error('relay URL must be an HTTPS origin or /main endpoint (HTTP requires explicit loopback development mode)') from None
 
 
 def target():
@@ -124,6 +126,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 class Client:
     def __init__(self, relay, timeout=15):
         self.relay = relay
+        endpoint = urllib.parse.urlsplit(relay)
+        self.authority = urllib.parse.urlunsplit((endpoint.scheme, endpoint.netloc, '', '', ''))
+        self.base = '/main' if endpoint.path == '/main' else ''
         self.timeout = timeout
         # Ignore environment proxy configuration; never forward trusted-user traffic to a proxy.
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
@@ -138,7 +143,7 @@ class Client:
         size = 0
         digest = hashlib.sha256()
         try:
-            with self.opener.open(self.relay + path, timeout=self.timeout) as response:
+            with self.opener.open(self.authority + path, timeout=self.timeout) as response:
                 if response.status != 200:
                     raise Error('unexpected HTTP status')
                 while True:
@@ -159,17 +164,30 @@ class Client:
     def manifest(self, wanted):
         import io
         output = io.BytesIO()
-        self.stream('/client/manifest.json', MAX_MANIFEST, output)
+        self.stream(self.base + '/client/manifest.json', MAX_MANIFEST, output)
         try:
             data = json.loads(output.getvalue())
-            if type(data['schemaVersion']) is not int or data['schemaVersion'] != 1:
+            if type(data['schemaVersion']) is not int or data['schemaVersion'] != (2 if self.base else 1):
                 raise Incompatible('unsupported manifest schema')
             if type(data['protocolVersion']) is not int or data['protocolVersion'] != PROTOCOL:
                 raise Incompatible('relay protocol is not compatible with this launcher')
             version(data['version'])
+            if self.base and (data.get('channel') != 'main' or not isinstance(data.get('revision'), str) or not REVISION.fullmatch(data['revision'])):
+                raise Incompatible('invalid main channel release identity')
             assets = data['assets']
             if not isinstance(assets, list) or len(assets) > 32:
                 raise Error('invalid assets')
+            if self.base:
+                seen = set()
+                for item in assets:
+                    if not isinstance(item, dict) or item.get('target') not in TARGETS or item['target'] in seen:
+                        raise Error('invalid main platform assets')
+                    seen.add(item['target'])
+                    expected_path = '/main/client/' + data['revision'] + '/' + item['target'] + '/herdr-webapp'
+                    if item.get('url') != expected_path or not isinstance(item.get('sha256'), str) or not re.fullmatch('[0-9a-f]{64}', item['sha256']) or type(item.get('size')) is not int or not 0 < item['size'] <= MAX_BINARY:
+                        raise Error('invalid main artifact')
+                if wanted not in seen:
+                    raise Incompatible('main channel does not support this platform; available targets: ' + (', '.join(sorted(seen)) or '(none)'))
             matches = [a for a in assets if isinstance(a, dict) and a.get('target') == wanted]
             if len(matches) != 1:
                 raise Error('no unique artifact for this platform')
@@ -180,9 +198,9 @@ class Client:
                 raise Error('invalid artifact size')
             # Validate URL even when the artifact is already cached.
             url = a['url']
-            if not isinstance(url, str) or not re.fullmatch(r'/client/[A-Za-z0-9._/-]+', url) or '..' in url.split('/'):
+            if not isinstance(url, str) or not re.fullmatch(self.base + r'/client/[A-Za-z0-9._/-]+', url) or '..' in url.split('/'):
                 raise Error('invalid same-origin artifact path')
-            return dict(a, version=data['version'])
+            return dict(a, version=data['version'], **({'channel': 'main', 'revision': data['revision']} if self.base else {}))
         except (KeyError, TypeError, ValueError, UnicodeError):
             raise Error('malformed relay manifest') from None
 
@@ -199,8 +217,8 @@ def digest_file(path):
     return size, digest.hexdigest()
 
 
-def probe(path, expected):
-    child = subprocess.Popen([str(path), '--version'], stdin=subprocess.DEVNULL,
+def probe(path, expected, flag='--version'):
+    child = subprocess.Popen([str(path), flag], stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
         text = bytearray()
@@ -221,20 +239,30 @@ def probe(path, expected):
             child.wait(timeout=max(0.01, until - time.monotonic()))
         except subprocess.TimeoutExpired:
             raise Error('client version probe timed out') from None
-        if child.returncode != 0 or text.strip() != ('herdr-webapp ' + expected).encode():
+        if child.returncode != 0 or text.strip() != (('herdr-webapp ' if flag == '--version' else '') + expected).encode():
             raise Error('client version probe mismatch')
     finally:
         stop(child)
         child.stdout.close()
 
 
+def release_identity(asset):
+    return asset['version'] + ('-' + asset['revision'] if asset.get('channel') == 'main' else '')
+
+
+def probe_release(path, asset):
+    probe(path, asset['version'])
+    if asset.get('channel') == 'main':
+        probe(path, asset['revision'], '--build-revision')
+
+
 def install(client, cache, asset):
-    path = cache / ('client-' + asset['version'])
+    path = cache / ('client-' + release_identity(asset))
     expected = (asset['size'], asset['sha256'])
     if path.exists() or path.is_symlink():
         if digest_file(path) != expected:
             raise Error('cached executable checksum mismatch')
-        probe(path, asset['version'])
+        probe_release(path, asset)
         return path
     fd, tmp = tempfile.mkstemp(prefix='.download-', dir=cache)
     try:
@@ -244,7 +272,7 @@ def install(client, cache, asset):
             output.flush()
             os.fsync(output.fileno())
             os.fchmod(output.fileno(), 0o700)
-        probe(Path(tmp), asset['version'])
+        probe_release(Path(tmp), asset)
         os.replace(tmp, path)
         return path
     finally:
@@ -282,6 +310,9 @@ class Supervisor:
         raise KeyboardInterrupt()
 
     def start(self, path, release):
+        if isinstance(release, str):  # Stable API compatibility for existing callers.
+            release = {'version': release}
+        probe_release(path, release)
         fd, ready = tempfile.mkstemp(prefix='.ready-', dir=self.state)
         os.close(fd)
         os.unlink(ready)
@@ -302,7 +333,8 @@ class Supervisor:
                 if (not isinstance(data, dict) or type(data.get('schemaVersion')) is not int or data.get('schemaVersion') != 1
                         or type(data.get('pid')) is not int or data.get('pid') != self.child.pid
                         or type(data.get('protocolVersion')) is not int or data.get('protocolVersion') != PROTOCOL
-                        or data.get('ready') is not True or data.get('version') != release):
+                        or data.get('ready') is not True or data.get('version') != release['version']
+                        or (release.get('channel') == 'main' and (data.get('channel') != 'main' or data.get('revision') != release['revision']))):
                     raise Error('connector readiness did not match the launched child')
                 return
             raise Error('connector readiness timed out')
@@ -353,6 +385,8 @@ class Supervisor:
             try:
                 saved = read_json(self.cache / 'current.json')
                 version(saved['version'])
+                if self.client.base and (saved.get('channel') != 'main' or not isinstance(saved.get('revision'), str) or not REVISION.fullmatch(saved['revision'])):
+                    raise Error('invalid saved main release')
                 if (not isinstance(saved['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', saved['sha256'])
                         or type(saved['size']) is not int or not 0 < saved['size'] <= MAX_BINARY):
                     raise Error('invalid saved release')
@@ -370,18 +404,18 @@ class Supervisor:
                 if saved is None:
                     raise
                 asset = saved
-            if saved and version(asset['version']) < version(saved['version']):
+            if saved and not self.client.base and version(asset['version']) < version(saved['version']):
                 asset = saved
             try:
                 candidate = install(self.client, self.cache, asset)
-                self.start(candidate, asset['version'])
+                self.start(candidate, asset)
             except Error:
-                if not saved or saved['version'] == asset['version']:
+                if not saved or release_identity(saved) == release_identity(asset):
                     raise
-                self.failed.add(asset['version'])
+                self.failed.add(release_identity(asset))
                 asset = saved
                 candidate = install(self.client, self.cache, saved)
-                self.start(candidate, saved['version'])
+                self.start(candidate, saved)
             self.current = candidate
             self.save(asset)
             self.prune()
@@ -393,16 +427,17 @@ class Supervisor:
                 if time.monotonic() >= next_poll:
                     try:
                         update = self.client.manifest(wanted)
-                        if version(update['version']) > version(asset['version']) and update['version'] not in self.failed:
+                        changed = release_identity(update) != release_identity(asset) if self.client.base else version(update['version']) > version(asset['version'])
+                        if changed and release_identity(update) not in self.failed:
                             candidate = install(self.client, self.cache, update)  # old child stays live throughout download/probe
                             stop(self.child)
                             try:
-                                self.start(candidate, update['version'])
+                                self.start(candidate, update)
                             except Error:
-                                self.failed.add(update['version'])
+                                self.failed.add(release_identity(update))
                                 # Recheck cached bytes before every rollback execution too.
                                 rollback = install(self.client, self.cache, asset)
-                                self.start(rollback, asset['version'])
+                                self.start(rollback, asset)
                                 print('Relay client update failed; restored previous client.', file=sys.stderr)
                             else:
                                 self.previous, self.current = self.current, candidate
@@ -446,6 +481,9 @@ def main():
     args = p.parse_args()
     try:
         code = Supervisor(args).run()
+    except Incompatible as error:
+        print('Relay launcher incompatible: ' + str(error), file=sys.stderr)
+        return 1
     except (Error, OSError, ValueError):
         print('Relay launcher failed. Check relay compatibility, connectivity and private cache/state permissions.', file=sys.stderr)
         return 1

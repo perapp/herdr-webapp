@@ -5,6 +5,46 @@ Tests used disposable Cores and owned GUI workstations; the live user Core and
 managed 0.0.2 LAN server were left untouched. A separate edge agent owns actual
 hosting/DNS/router deployment. Release publication is separate from these results.
 
+## Untagged opt-in main channel
+
+These changes are **not in the immutable published v0.0.8 native catalog**.
+
+- `make check` (353 tests), `make release` and `make smoke` pass. Focused
+  coverage includes the real private Unix-socket WebSocket proxy, 18 manager
+  tests (scratch Git force updates/coalescing/retry/rollback/offline recovery,
+  resource guards and readiness), 15 launcher tests and channel/client tests.
+- Actual native readiness found and fixed two integration faults: Axum 0.8
+  requires the trailing slash when nesting the channel root, and readiness must
+  resolve Vite's `./assets/` URLs against `/main/`. Regression tests cover both.
+- Actual manager/native preflight passes root-path isolation, channel HTML and
+  relative JS/CSS, mode/protocol identity, schema-2 manifest/native byte hashes,
+  a real WebSocket upgrade plus first challenge, and wrong/duplicate Origin 403.
+- One private TLS origin fronts root and `/main/`: native clients strictly
+  validate its private CA; only owned Chromium uses a fixture certificate-error
+  exception. Both channels are paired in one Chromium profile with separate default native endpoint state, IndexedDB
+  identities and appearance keys. Each channel at **1280×900 and 390×844** passes
+  real shell input, reload/resume and forced signaling reconnect: all twelve
+  shell sentinels retain one shell PID, and the disposable Core PID is preserved.
+  The main phone screenshot was also visually inspected. This is not physical
+  iOS/Android IME/keyboard or cellular acceptance.
+- Disabled runtime starts with build tools absent, creates no main state and
+  spawns no updater children; reserved main routes do not serve stable content.
+- The test executable compiles synthetic revision `aaaa…` solely as fixture
+  identity, **not Git provenance**. Ubuntu 24.04/glibc 2.39 separately executes
+  that binary with the approved immutable v8 catalog, main disabled, and no
+  container network; version/provenance, mode/bootstrap/catalog and disabled
+  main checks pass. The build workstation itself is Ubuntu 26.04/glibc 2.43;
+  real deployment artifacts must repeat the Ubuntu 24 runtime checks.
+- Ignored evidence: `dist/verification/main-channel/evidence/acceptance.json`,
+  four terminal-only screenshots, per-run preflight/cleanup reports, and
+  `dist/verification/main-channel/ubuntu24-runtime-result.json`.
+- **Remaining boundaries:** no live production main build yet, no different
+  compiled-revision browser migration proof, no physical keyboard-autofocus or
+  end-to-end disconnected-input no-replay claim. Main production enablement
+  awaits private-Git credential approval and build-runtime changes. The requested
+  `herdr-webapp-run` restart target has not been found on this Core; the existing
+  managed 0.0.2 LAN server remains untouched. No tag/new stable release is made.
+
 ## Unreleased follow-up: missed graphics probes and compact text QR
 
 The following changes are local, **not in the published v0.0.8 artifacts**:

@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 export default defineConfig({
+  base: './',
   plugins: [svelte()],
   server: {
     // Keep fetch, EventSource and WebSocket same-origin. The backend must also

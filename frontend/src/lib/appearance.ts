@@ -1,3 +1,4 @@
+import { storageKey } from './channel';
 export type AppearancePreference = 'system' | 'light' | 'dark';
 export interface Appearance { preference: AppearancePreference; dark: boolean }
 export const appearanceKey = 'herdr.appearance';
@@ -11,7 +12,7 @@ let preference: AppearancePreference = 'system';
 let media: MediaQueryList | undefined;
 const listeners = new Set<(appearance: Appearance) => void>();
 function readPreference(): AppearancePreference {
-  try { return parseAppearance(localStorage.getItem(appearanceKey)); }
+  try { return parseAppearance(localStorage.getItem(storageKey(appearanceKey))); }
   catch { return 'system'; }
 }
 /** Called before mounting to avoid a flash of the wrong saved colour scheme. */
@@ -29,7 +30,7 @@ function publish(): void {
   for (const listener of listeners) listener(appearance);
 }
 function storageChanged(event: StorageEvent): void {
-  if (event.key !== appearanceKey && event.key !== null) return;
+  if (event.key !== storageKey(appearanceKey) && event.key !== null) return;
   preference = readPreference(); publish();
 }
 export function watchAppearance(listener: (appearance: Appearance) => void): () => void {
@@ -51,7 +52,7 @@ export function watchAppearance(listener: (appearance: Appearance) => void): () 
 export function setAppearance(value: AppearancePreference): boolean {
   initializeAppearance(); preference = value;
   let saved = true;
-  try { localStorage.setItem(appearanceKey, value); } catch { saved = false; }
+  try { localStorage.setItem(storageKey(appearanceKey), value); } catch { saved = false; }
   publish();
   return saved;
 }

@@ -95,6 +95,23 @@ HTTP requires `--allow-http-loopback` on both relay and connector with a loopbac
 origin/bind; production requires HTTPS. No edge, DNS or router changes are made by
 these commands automatically.
 
+## Opt-in main channel
+
+`serve-relay --enable-main` keeps the stable root available while fetching and
+building trusted main revisions locally for **`/main/`** and **`/main/run`**.
+No per-commit GitHub Actions builds, extra hostname, certificate or Caddy route
+is required. Without the flag, there is no updater, polling or build process.
+
+Use `--main-state-dir`, `--main-update-interval 5m` and `--main-build-jobs 1`
+for an explicitly provisioned build environment. Main downloads are immutable
+by Git SHA and **native-host-platform only**; unsupported connector platforms
+fail explicitly. Stable catalogs and existing client state remain separate.
+Main JavaScript shares the stable browser origin, so enabling it trusts that
+source with the origin—not merely an isolated URL path.
+
+See [main channel operations](distribution/main-channel.md) for dependencies,
+private Git access, resource/disk limits, lifecycle, compatibility and rollback.
+
 ## Install a release
 
 [**Download the installer**](https://github.com/perapp/herdr-webapp/releases/latest/download/install.sh)

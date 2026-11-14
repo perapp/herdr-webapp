@@ -1,3 +1,4 @@
+import { channelPath } from './lib/channel';
 import { mount } from 'svelte';
 import App from './App.svelte';
 import RelayApp from './RelayApp.svelte';
@@ -16,7 +17,7 @@ initializeAppearance();
 async function boot() {
   const root = document.getElementById('app')!;
   try {
-    const response = await fetch('/api/mode', { credentials: 'same-origin', cache: 'no-store' });
+    const response = await fetch(channelPath('/api/mode'), { credentials: 'same-origin', cache: 'no-store' });
     if (response.status !== 404) {
       if (!response.ok) throw new Error('Mode check failed');
       const mode = await response.json();
