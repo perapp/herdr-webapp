@@ -47,6 +47,16 @@ startup fails. Laptop identity and pairings persist; Core and its terminals are
 never restarted. This is **not** zero-interruption updating or continuous
 end-to-end health rollback. Stopping the launcher stops its connector, not Core.
 
+The interactive connection card generates a crisp **PNG QR** and displays it inline
+when an attached terminal positively answers a Kitty graphics query (including
+Herdr App). Terminal names/environment variables are not treated as proof. The
+card owns a bounded input reader while active, restores terminal modes on normal
+exit, and retains the complete private link plus a text QR fallback. Plain or
+non-TTY output never probes or emits image controls. Text QR fallback reports its
+actual row/column requirement rather than asking vaguely for a bigger window.
+The connector holds PNG data in memory without saving image files; private URLs
+and QR images remain terminal output, never public downloadable assets.
+
 Manual connector (already downloaded executable):
 
 ```sh
@@ -56,7 +66,7 @@ herdr-webapp connect-relay --relay-url https://your-relay.example
 Host the relay behind an HTTPS reverse proxy, without exposing a Core socket:
 
 ```sh
-python3 scripts/prepare-relay-release.py --version 0.0.5 --output /srv/herdr/catalog
+python3 scripts/prepare-relay-release.py --version 0.0.6 --output /srv/herdr/catalog
 herdr-webapp serve-relay --bind 0.0.0.0 --port 8080 \
   --public-origin https://your-relay.example --release-dir /srv/herdr/catalog \
   --turn-secret-file /private/turn-secret \

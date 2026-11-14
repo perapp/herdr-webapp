@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod core;
 mod dashboard;
+mod dashboard_graphics;
 mod peer_service;
 mod relay_catalog;
 mod relay_connector;
@@ -127,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
                 allow_http_loopback: options.allow_http_loopback,
                 force_turn: options.force_turn,
                 reset_pairings: options.reset_pairings,
+                no_dashboard: config.no_dashboard,
             })
             .await;
         }
@@ -204,6 +206,7 @@ async fn main() -> anyhow::Result<()> {
         &format!("{origin}/#token={token}"),
         &socket.display().to_string(),
         config.no_dashboard,
+        dashboard::Mode::Local,
     )?);
     let mut status = core.state.subscribe();
     let logger = dashboard.clone();

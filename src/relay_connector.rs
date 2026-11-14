@@ -49,6 +49,7 @@ pub struct ConnectorConfig {
     pub allow_http_loopback: bool,
     pub force_turn: bool,
     pub reset_pairings: bool,
+    pub no_dashboard: bool,
 }
 fn origin_url(input: &str, allow_loopback: bool) -> Result<Url> {
     let mut url = Url::parse(input).context("invalid relay URL")?;
@@ -539,7 +540,8 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
         Some(crate::dashboard::Dashboard::start(
             &format!("{origin}/#pair={fragment}"),
             &config.core_socket.to_string_lossy(),
-            false,
+            config.no_dashboard,
+            crate::dashboard::Mode::Relay,
         )?)
     } else {
         None
@@ -560,6 +562,7 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
                 pairings.clone(),
                 core.clone(),
                 &config,
+                dashboard.as_ref(),
                 &mut stop,
             )
             .await;
@@ -591,6 +594,7 @@ async fn relay_connection<S>(
     pairings: Arc<Mutex<Pairings>>,
     core: Arc<Core>,
     config: &ConnectorConfig,
+    dashboard: Option<&crate::dashboard::Dashboard>,
     stop: &mut std::pin::Pin<Box<impl std::future::Future<Output = ()>>>,
 ) -> Result<bool>
 where
@@ -637,6 +641,11 @@ where
                 &json!({"schemaVersion":1,"pid":std::process::id(),"version":version,"protocolVersion":1,"ready":true}),
             )?,
         )?;
+    }
+    if let Some(card) = dashboard {
+        card.log(
+            "Relay registration authenticated; Core ready. Scan the pairing QR in your browser.",
+        );
     }
     let (outgoing, mut output) = mpsc::channel(64);
     let endpoint = Arc::new(Endpoint {

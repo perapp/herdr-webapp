@@ -5,6 +5,31 @@ Tests used disposable Cores and owned GUI workstations; the live user Core and
 managed 0.0.2 LAN server were left untouched. A separate edge agent owns actual
 hosting/DNS/router deployment. Release publication is separate from these results.
 
+## 0.0.6 terminal QR follow-up
+
+These dashboard changes are prepared for **v0.0.6**, not part of the published
+v0.0.5 executable or catalog. Publication/deployment require the approved release
+pipeline and explicit catalog handoff; the following records local acceptance:
+
+- Inline PNG QR rendering requires a positive, fresh-ID Kitty graphics reply;
+  terminal names/environment variables are not used as capability evidence.
+  Plain/non-TTY output does not probe. The complete private URL and text fallback
+  remain available, with exact cell requirements when the text QR cannot fit.
+- PNGs retain a four-module quiet zone. Kitty receives only a column scale, so
+  the image stays square rather than stretching with terminal cell proportions.
+  Log updates leave the image alone; resize and exit use ID-scoped cleanup.
+- Disposable-PTY acceptance verified duplicate capability replies, a real resize,
+  just two image transmissions (initial/resize), and exact termios restoration.
+- An owned GUI workstation ran installed Herdr App **0.1.14** against an isolated
+  Core on private headless Weston/Xwayland. First-run help was disabled only in
+  the fixture's `HERDR_APP_HOME/shared.json` (`frame.welcomed: skipped`). The
+  actual on-screen PNG was visually inspected and ZXing decoded its screenshot
+  to the exact synthetic URL. The `.invalid` URL grants no access. This is desktop
+  rendering/decoder evidence, **not physical phone-camera acceptance**.
+- `make check` passed **310 tests** (plus one intentionally ignored interactive
+  synthetic-preview fixture); `make release` and `make smoke` passed. Existing
+  managed LAN 0.0.2 and public relay 0.0.5 were not restarted or replaced.
+
 ## Release provenance
 
 The immutable `v0.0.3` tag (`3f908d6`) was not published: its Ubuntu 22.04 CI

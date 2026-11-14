@@ -1,6 +1,6 @@
 [package]
 name = "herdr-webapp"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
@@ -28,6 +28,7 @@ axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = "0.29"
 qrcode = { version = "0.14", default-features = false }
+png = "0.18"
 futures-util = "0.3"
 libc = "0.2"
 mime_guess = "2"
