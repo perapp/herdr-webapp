@@ -13,7 +13,7 @@ export class PeerConnection {
   private retry: ReturnType<typeof setTimeout> | undefined;
   private attempts = 0;
   private identity: BrowserIdentity | undefined;
-  constructor(private target: PeerTarget, private update: (state: ConnectionState) => void, private forceTurn = false) {}
+  constructor(private target: PeerTarget, private update: (state: ConnectionState) => void, private forceTurn = false, private onSignalingOpen?: () => void) {}
   start(): void { this.stopped = false; void this.connect(); }
   stop(): void { this.stopped = true; this.epoch++; clearTimeout(this.retry); this.cleanup?.(); this.cleanup = undefined; }
   private async connect(): Promise<void> {
@@ -50,6 +50,7 @@ export class PeerConnection {
       const origin = channelContext();
       const endpoint = new URL(channelPath('/relay/socket'), location.origin); endpoint.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       socket = new WebSocket(endpoint);
+      socket.onopen = () => { if (current() && !ended) this.onSignalingOpen?.(); };
       let sessionId = '';
       let incoming = 0;
       let outgoing = 0;

@@ -105,6 +105,16 @@ acquisition or candidate failure; stable is independent. Old sockets drain for a
 finite period. Registries are in memory: this is **not seamless migration**.
 Clients reconnect without queuing/replaying ambiguous input or uploads.
 
+Once loaded, the main frontend checks its source revision against `/main/api/mode`
+on signaling reconnect and visible foreground return, without continuous polling.
+An unchanged revision reconnects normally. A changed revision reloads when safe;
+pairing, IME composition, uploads, selected files and unsent drafts defer it behind
+an **Update ready** action. Explicit reload may acknowledge discarding a draft,
+not silently interrupt critical work. A per-target session guard bounds automatic
+reload attempts if assets remain stale; storage/network failures do not force a
+reload. Pairings/preferences survive, with no input replay or keyboard focus.
+Already-open pre-feature tabs require one initial manual refresh.
+
 Startup restores a verified cached artifact before contacting the network. A
 legacy native-only local-build cache can be restored during migration, but every
 new CI acquisition must contain all three platforms. Existing SHA bytes are never

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { channelPath } from './lib/channel';
-  import { onMount } from 'svelte';
+  import { onMount, setContext } from 'svelte';
+  import { MainReload, reloadContext, trackReloadActivity } from './lib/mainReload';
+  import type { ReloadState } from './lib/mainReload';
   import App from './App.svelte';
   import { parsePairing, listComputers, forgetComputer } from './lib/peerCrypto';
   import type { Computer } from './lib/peerCrypto';
@@ -8,7 +10,22 @@
   import type { PeerTarget, ConnectionState } from './lib/peerConnection';
   import { disconnectedTransport, setApplicationTransport } from './lib/transport';
 
-  let { pairingFragment = null, relayVersion = '' }: { pairingFragment?: string | null; relayVersion?: string } = $props();
+  let { pairingFragment = null, relayVersion = '', serverMode, sourceRevision = '' }: { pairingFragment?: string | null; relayVersion?: string; serverMode?: unknown; sourceRevision?: string } = $props();
+  let update = $state<ReloadState>({ ready: false, critical: false, dirty: false });
+  // Bootstrap provenance intentionally stays fixed for this page's lifetime.
+  const updater = (() => new MainReload({ mode: serverMode, sourceRevision, main: location.pathname === '/main' || location.pathname.startsWith('/main/'),
+    fetch: signal => fetch(channelPath('/api/mode'), { credentials: 'same-origin', cache: 'no-store', signal }),
+    storage: { getItem: key => sessionStorage.getItem(key), setItem: (key, value) => sessionStorage.setItem(key, value) },
+    reload: () => location.reload(), changed: state => { update = state; }, visible: () => document.visibilityState === 'visible' }))();
+  setContext(reloadContext, updater);
+  // The one-use capability is only durable after authenticated saveComputer succeeds.
+  const paired = (() => pairingFragment ? updater.busy() : undefined)();
+  let captureActivity = () => {};
+  function reloadUpdate() {
+    if (update.critical) return;
+    if (update.dirty && !confirm('Reload and discard unsent form drafts or selected files? Nothing will be replayed.')) return;
+    updater.manual();
+  }
   let computers = $state<Computer[]>([]);
   let connectionState = $state<ConnectionState>({ status: 'Your terminals, wherever you are.' });
   let selected = $state('');
@@ -23,22 +40,30 @@
     selected = target.pairing?.machineId || target.computer?.machineId || '';
     connection = new PeerConnection(target, next => {
       if (!mounted) return;
+      // Snapshot before App teardown; removed drafts must not become falsely safe.
+      captureActivity();
+      if (next.status === 'Pairing expired') paired?.();
       // Relay App is unmounted on loss: no stale terminal, HTTP or upload can replay.
       setApplicationTransport(next.service || disconnectedTransport);
       connectionState = next;
-      if (next.service) void refresh();
-    }, forceTurn);
+      if (next.service) { paired?.(); void refresh(); }
+    }, forceTurn, () => { void updater.check(); });
     connection.start();
   }
   function choose(id: string) { const computer = computers.find(item => item.machineId === id); if (computer) connect({ computer }); }
   async function forget() {
     connection?.stop(); setApplicationTransport(disconnectedTransport); connection = undefined;
     const id = selected; selected = ''; connectionState = { status: 'Computer forgotten on this browser.' };
-    await forgetComputer(id); await refresh();
+    await forgetComputer(id); await refresh(); paired?.();
   }
   async function copy() { try { await navigator.clipboard.writeText(command); copied = true; } catch { copied = false; } }
   onMount(() => {
     mounted = true;
+    const activity = trackReloadActivity(document, updater);
+    captureActivity = activity.capture;
+    const foreground = () => { if (document.visibilityState === 'visible') void updater.check(); };
+    document.addEventListener('visibilitychange', foreground);
+    void updater.check(); // Also catch old assets racing a newly activated mode response.
     setApplicationTransport(disconnectedTransport);
     void (async () => {
       try {
@@ -49,12 +74,18 @@
           const pairing = await parsePairing(fragment);
           if (mounted) connect({ pairing });
         } else if (computers.length === 1) choose(computers[0].machineId);
-      } catch { connectionState = { status: 'Unable to pair', error: 'The pairing link is invalid or expired, or secure browser storage is unavailable. Scan a fresh QR code.' }; }
+      } catch { paired?.(); connectionState = { status: 'Unable to pair', error: 'The pairing link is invalid or expired, or secure browser storage is unavailable. Scan a fresh QR code.' }; }
     })();
-    return () => { mounted = false; connection?.stop(); setApplicationTransport(disconnectedTransport); };
+    return () => { mounted = false; updater.stop(); activity.stop(); document.removeEventListener('visibilitychange', foreground); connection?.stop(); setApplicationTransport(disconnectedTransport); };
   });
 </script>
 
+{#if update.ready}
+  <aside class="revision-update" role="status">
+    <span>Update ready{update.critical ? ' · Finish pairing, upload or text composition first.' : update.dirty ? ' · Reload discards unsent form drafts and selected files.' : ''}</span>
+    <button disabled={update.critical} onclick={reloadUpdate}>Reload</button>
+  </aside>
+{/if}
 {#if connectionState.service}
   <App peerMode={true} peerVersion={connectionState.version} {relayVersion} peerRoute={connectionState.route} onForget={forget} computers={computers.map(c => ({ id: c.machineId, name: c.name || `Computer ${c.machineId.slice(0, 8)}` }))} selectedComputer={selected} onChooseComputer={choose} />
 {:else}
@@ -83,6 +114,8 @@
   </main>
 {/if}
 <style>
+  .revision-update { position: fixed; z-index: 1000; top: env(safe-area-inset-top, 0px); left: 50%; transform: translateX(-50%); width: min(95%, 36rem); display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .4rem .7rem; border: 1px solid var(--muted); border-radius: .5rem; background: var(--raised); color: var(--ink); font-size: .8rem; }
+  .revision-update button { min-height: 44px; flex-shrink: 0; }
   .install-command { white-space: pre-wrap; overflow-wrap: anywhere; padding: .8rem; background: var(--raised); border-radius: .5rem; font-size: .8rem; color: var(--ink); }
   select { width: 100%; padding: .7rem; margin: .4rem 0; }
   h2 { font-size: 1rem; margin-top: 1.7rem; }

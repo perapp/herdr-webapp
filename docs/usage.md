@@ -120,6 +120,14 @@ minutes, keeping the last usable main build serving during CI or download
 failures. Activation can briefly interrupt connections. The launcher verifies
 and follows the matching connector revision automatically.
 
+The main browser checks for a changed revision on reconnect and when returning
+to the foreground. It reloads automatically when safe, not on ordinary network
+interruptions. Pending pairing, input composition, uploads or unsent drafts defer
+the reload and show **Update ready**. Finish pending work, or explicitly reload
+with the displayed draft-discard warning. Pairing/preferences remain stored;
+input and uploads are never replayed and the phone keyboard is not opened.
+Tabs opened before this feature need one manual refresh to install it.
+
 Hosted main supports GNU/Linux x86-64 (Ubuntu 22.04 / glibc 2.35+), GNU/Linux
 ARM64 (Ubuntu 24.04 / glibc 2.39+) and Apple Silicon macOS (built/tested on the
 standard macOS 15 ARM runner). There is no silent fallback to stable. Stable

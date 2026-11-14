@@ -5,6 +5,27 @@ Tests used disposable Cores and owned GUI workstations; the live user Core and
 managed 0.0.2 LAN server were left untouched. A separate edge agent owns actual
 hosting/DNS/router deployment. Release publication is separate from these results.
 
+## Main browser revision updates
+
+- `make check` (408 passed, one intentionally ignored), `make release` and
+  disposable-Core `make smoke` pass; frontend coverage includes 19 revision/activity
+  cases and signaling-open lifecycle coverage.
+- Real isolated HTTPS desktop (1280×900) and phone-sized (390×844) browsers pass
+  A→B backend switching with exactly one application-initiated navigation, new
+  hashed JS bytes and matching B mode identity. Same-revision backend reconnect
+  and actual background/foreground return produce zero reloads.
+- A real unsent workspace-name draft defers the update behind **Update ready**;
+  explicit Reload plus discard acknowledgment loads B. Input works afterward,
+  pairing and Core/shell PIDs survive, disconnected input is not replayed, and
+  terminal focus is not acquired without a gesture. Cleanup confirms owned GUI,
+  Core, children and scratch removal.
+- These binaries embed **synthetic `aaaa…`/`bbbb…` identities**, not Git provenance.
+  Upload/IME critical-section coverage is unit-tested, including delaying IME
+  release until final input handlers run. Phone-sized Chromium is not a physical
+  iOS/Android keyboard or cellular test. Existing pre-feature tabs need one manual
+  refresh; no code can retrofit this listener into an already loaded old page.
+- Ignored reports/screenshots: `dist/verification/browser-update/evidence/`.
+
 ## CI-backed main distribution
 
 Main now defaults to acquiring complete three-platform catalogs published by

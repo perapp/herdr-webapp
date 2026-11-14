@@ -25,6 +25,7 @@ class Socket {
   static instances: Socket[] = [];
   readyState = Socket.OPEN;
   sent: Array<Record<string, unknown>> = [];
+  onopen?: () => void;
   onmessage?: (event: MessageEvent) => void;
   onerror?: () => void;
   onclose?: () => void;
@@ -97,6 +98,21 @@ afterEach(() => {
 });
 
 describe('PeerConnection signaling authentication and epochs', () => {
+  it('notifies revision checks only at live signaling open, not connected route updates', async () => {
+    const opened = vi.fn(), states: ConnectionState[] = [];
+    const connection = new PeerConnection({ computer }, state => states.push(state), false, opened);
+    connections.push(connection); connection.start();
+    const socket = Socket.instances.at(-1)!;
+    socket.onopen?.(); expect(opened).toHaveBeenCalledOnce();
+    await join(socket); ice(socket); accept(socket); await flush();
+    services[0].ready(); await flush();
+    expect(states.filter(state => state.service)).toHaveLength(2);
+    expect(opened).toHaveBeenCalledOnce();
+    socket.onclose?.(); socket.onopen?.(); expect(opened).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(500);
+    const retry = Socket.instances.at(-1)!; retry.onopen?.(); expect(opened).toHaveBeenCalledTimes(2);
+    connection.stop(); retry.onopen?.(); expect(opened).toHaveBeenCalledTimes(2);
+  });
   it('uses main network routes and signed context while retaining authority-only browser Origin', async () => {
     vi.stubGlobal('location', new URL(origin + '/main/'));
     const { socket } = setup(); await join(socket); ice(socket); accept(socket); await flush();

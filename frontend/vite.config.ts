@@ -3,6 +3,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 export default defineConfig({
   base: './',
+  define: { __HERDR_SOURCE_REVISION__: JSON.stringify(/^[a-f0-9]{40}$/.test(process.env.HERDR_BUILD_REVISION || '') ? process.env.HERDR_BUILD_REVISION : '') },
   plugins: [svelte()],
   server: {
     // Keep fetch, EventSource and WebSocket same-origin. The backend must also

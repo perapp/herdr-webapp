@@ -22,7 +22,7 @@ async function boot() {
       if (!response.ok) throw new Error('Mode check failed');
       const mode = await response.json();
       if (mode.mode === 'relay') {
-        mount(RelayApp, { target: root, props: { pairingFragment, relayVersion: typeof mode.version === 'string' ? mode.version : '' } });
+        mount(RelayApp, { target: root, props: { pairingFragment, serverMode: mode, sourceRevision: __HERDR_SOURCE_REVISION__, relayVersion: typeof mode.version === 'string' ? mode.version : '' } });
         pairingFragment = null; token = ''; return;
       }
       if (mode.mode !== 'local') throw new Error('Unsupported server mode');

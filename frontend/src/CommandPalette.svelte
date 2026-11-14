@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy, getContext } from 'svelte';
+  import { reloadContext } from './lib/mainReload';
+  import type { ReloadSafety } from './lib/mainReload';
+  const reloadSafety = getContext<ReloadSafety | undefined>(reloadContext);
+  const draftKey = {};
+  onDestroy(() => reloadSafety?.detach(draftKey));
   import { COMMANDS, COMMAND_SOURCE_LABELS, fetchLiveCommands, mergeCommands, isCommandText, loadFavorites, saveFavorites } from './lib/commands';
   import type { AgentKind, Favorites, LiveCommands } from './lib/commands';
   import { errorMessage } from './lib/api';
@@ -60,7 +65,7 @@
     return () => controller.abort();
   });
 
-  function dismiss() { dialog.close(); close(); }
+  function dismiss() { reloadSafety?.draft(draftKey, false); dialog.close(); close(); }
   function favorite(id: string) {
     const ids = favorites[agent].includes(id) ? favorites[agent].filter(value => value !== id) : [...favorites[agent], id];
     const result = saveFavorites(agent, ids);
@@ -76,7 +81,7 @@
     dialog.close();
     let accepted = false;
     try { accepted = insert(event, draft, run); } catch { /* Reopen rather than losing the draft. */ }
-    if (accepted) { close(); return; }
+    if (accepted) { reloadSafety?.draft(draftKey, false); close(); return; }
     dialog.showModal();
     error = 'Nothing was sent. The connection or agent may have changed. Close Commands, check the active terminal and connection, then reopen Commands before trying again.';
   }
@@ -130,7 +135,7 @@
   <div class="command-list" role="group" aria-label={`${agent} commands`}>
     {#each filtered as command (command.id)}
       <div class="command-row" class:command-chosen={draftAgent === agent && draft === command.text}>
-        <button class="command-select" onclick={() => { draft = command.text; draftAgent = agent; manuallyEdited = false; error = ''; }}>
+        <button class="command-select" onclick={() => { draft = command.text; reloadSafety?.draft(draftKey, !!draft); draftAgent = agent; manuallyEdited = false; error = ''; }}>
           <code>{command.text}</code><span>{command.description}</span>
           {#if command.source}<small class="command-source">{COMMAND_SOURCE_LABELS[command.source]}</small>{/if}
         </button>
@@ -144,7 +149,7 @@
   <footer class="command-footer">
     <label for="command-draft">Command to insert · editable</label>
     <input id="command-draft" class="command-draft" spellcheck="false" autocapitalize="off" autocomplete="off"
-      value={draft} oninput={event => { draft = event.currentTarget.value; draftAgent = agent; manuallyEdited = true; error = ''; }} placeholder="/command arguments" />
+      value={draft} oninput={event => { draft = event.currentTarget.value; reloadSafety?.draft(draftKey, !!draft); draftAgent = agent; manuallyEdited = true; error = ''; }} placeholder="/command arguments" />
     <p class="command-note">Insert adds text only. Run adds text and presses Enter. Your current terminal draft is not cleared; use an empty terminal prompt.</p>
     <p class="command-error" role="alert">{error || (!connected ? 'Disconnected. Reconnect to insert or run.' : draft && !valid ? 'Use a command for this agent: one line, up to 512 argument characters, no terminal controls.' : '')}</p>
     <div class="command-actions"><button onclick={dismiss}>Cancel</button><button disabled={!connected || (loading && !builtinDraft) || !valid} onclick={event => send(event, false)}>Insert</button><button class="primary" disabled={!connected || (loading && !builtinDraft) || !valid} onclick={event => send(event, true)}>Run ↵</button></div>

@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, getContext } from 'svelte';
+  import { reloadContext } from './lib/mainReload';
+  import type { ReloadSafety } from './lib/mainReload';
+  const reloadSafety = getContext<ReloadSafety | undefined>(reloadContext);
   import { transportSocket } from './lib/transport';
   import type { SocketLike } from './lib/transport';
   import { Terminal } from '@xterm/xterm';
@@ -40,6 +43,7 @@
   async function chooseImage(file: File | undefined, event: Event) {
     if (!file || !event.isTrusted || uploadBusy || !attached) return;
     const insert = prepareImageInsertion(event);
+    const finishUpload = reloadSafety?.busy();
     uploadController = new AbortController();
     uploadBusy = true; uploadError = ''; uploadStatus = `Uploading ${file.name}…`;
     try {
@@ -52,7 +56,7 @@
       uploadStatus = 'Image reference inserted. Add your message, then send it in Pi.';
     } catch (e) {
       if (!uploadController.signal.aborted) { uploadError = errorMessage(e); uploadStatus = ''; }
-    } finally { uploadBusy = false; }
+    } finally { uploadBusy = false; finishUpload?.(); }
   }
 
   onMount(() => {
