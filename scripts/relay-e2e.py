@@ -24,7 +24,8 @@ BROWSER_LABELS = {'observer installed', 'reload observer installed', 'terminal a
                   'peer connected', 'shell sentinel', 'acceptance condition',
                   'selected ICE pair missing', 'oversized SCTP frame', 'unexpected relay route',
                   'both peers must select relay', 'wrong TURN transport selected',
-                  'upload reconnected peer', 'pairing fragment persisted', 'browser operation failed'}
+                  'upload reconnected peer', 'pairing fragment persisted', 'browser operation failed',
+                  'upload ready', 'mixed TURN transport configuration'}
 
 
 class Failure(Exception):
@@ -299,18 +300,22 @@ class Harness:
             {'id': 'e2e-space', 'name': 'Acceptance', 'tabs': [{'id': 'e2e-tab', 'name': 'Terminal',
              'root': {'id': 'e2e-root', 'type': 'row', 'children': [{'id': 'e2e-pane', 'type': 'block',
              'content': {'terminal': terminal}}]}}]}], 'acceptanceExtension': {'preserve': True}}})
-        turn = self.start_turn() if self.args.transport != 'direct' else []
+        external = self.args.relay_origin
+        force_turn = self.args.transport != 'direct'
         self.phase = 'relay readiness'
-        origin = f'http://127.0.0.1:{self.args.port}'
-        self.spawn([str(self.args.binary), 'serve-relay', '--bind', '127.0.0.1', '--port',
-                    str(self.args.port), '--public-origin', origin, '--allow-http-loopback', *turn], 'relay')
+        origin = external or f'http://127.0.0.1:{self.args.port}'
+        if not external:
+            turn = self.start_turn() if force_turn else []
+            self.spawn([str(self.args.binary), 'serve-relay', '--bind', '127.0.0.1', '--port',
+                        str(self.args.port), '--public-origin', origin, '--allow-http-loopback', *turn], 'relay')
         state = self.root / 'connector'
         state.mkdir(mode=0o700)
         ready = self.root / 'ready.json'
         self.spawn([str(self.args.binary), 'connect-relay', '--relay-url', origin,
                     '--core-socket', self.env['HC_SOCKET'], '--state-dir', str(state),
-                    '--ready-file', str(ready), '--allow-http-loopback',
-                    *(['--force-turn'] if turn else [])], 'connector')
+                    '--ready-file', str(ready),
+                    *([] if external else ['--allow-http-loopback']),
+                    *(['--force-turn'] if force_turn else [])], 'connector')
         deadline = time.monotonic() + 45
         while not ready.is_file():
             require(all(p.poll() is None for p in self.children), 'relay or connector exited')
@@ -320,7 +325,7 @@ class Harness:
         private(self.workspace / 'job.json', json.dumps({'origin': origin, 'pairing': pairing,
                 'transport': self.args.transport, 'proofDir': str(self.root)}))
         # Explicit exception confined to this disposable browser; NEVER native TLS.
-        browser_flags = ['--ignore-certificate-errors'] if self.args.transport == 'tls' else []
+        browser_flags = ['--ignore-certificate-errors'] if self.args.transport == 'tls' and not external else []
         self.gui_call('launch', 'chromium', *browser_flags, 'about:blank')
         paired = self.browser('pair')
         require((self.root / 'shell-proof').read_text() == 'relay-shell-proof\n', 'shell file proof failed')
@@ -340,7 +345,7 @@ class Harness:
         large = self.browser('large')
         require((self.root / 'large-proof').read_text() == 'large-proof\n', 'large output shell proof failed')
         require(all(p.poll() is None for p in self.children), 'child exited during acceptance')
-        report = {'ok': True, 'transport': self.args.transport, 'pairs': paired['pairs'],
+        report = {'ok': True, 'transport': self.args.transport, 'externalRelay': bool(external), 'pairs': paired['pairs'],
                   'checks': ['shell-file', 'upload-bytes', 'no-enter', '20-sequential-uploads',
                              'reload', 'resume', '400k-output'], 'receivedBytes': large['receivedBytes']}
         if self.args.artifacts:
@@ -387,9 +392,16 @@ def main():
     parser.add_argument('--gui-cli', type=lambda p: Path(p).expanduser().resolve(), required=True)
     parser.add_argument('--transport', choices=['direct', 'udp', 'tcp', 'tls'], default='direct')
     parser.add_argument('--port', type=int, default=9001)
+    parser.add_argument('--relay-origin', help='Existing canonical HTTPS relay; no local relay/coturn or browser certificate exception')
     parser.add_argument('--artifacts', type=lambda p: Path(p).expanduser().resolve())
     args = parser.parse_args()
     require(1 <= args.port <= 65535, 'invalid port')
+    if args.relay_origin is not None:
+        import urllib.parse
+        parsed = urllib.parse.urlsplit(args.relay_origin)
+        require(parsed.scheme == 'https' and parsed.hostname and not parsed.username and not parsed.password
+                and not parsed.path and not parsed.query and not parsed.fragment,
+                'relay origin must be bare HTTPS without credentials, path, query or fragment')
     old_umask = os.umask(0o077)
     harness = None
     def interrupted(*_):

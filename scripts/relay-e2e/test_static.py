@@ -1,4 +1,5 @@
 """Offline checks only: no Core, browser, server, or containers are started."""
+import ast
 import hashlib
 import hmac
 import importlib.util
@@ -139,6 +140,27 @@ class OfflineTests(unittest.TestCase):
             root = Path(directory)
             object.__new__(runner.Harness).make_tls(root)
             self.assertEqual({p.name for p in root.iterdir()}, {'ca.pem', 'leaf.pem', 'leaf.key'})
+
+    def test_external_mode_keeps_local_services_inside_local_branch(self):
+        tree = ast.parse((Path(__file__).parent.parent / 'relay-e2e.py').read_text())
+        harness = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Harness')
+        execute = next(n for n in harness.body if isinstance(n, ast.FunctionDef) and n.name == 'execute')
+        local = next(n for n in execute.body if isinstance(n, ast.If) and ast.unparse(n.test) == 'not external')
+        def starts(node):
+            return [n for n in ast.walk(node) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and (n.func.attr == 'start_turn' or (n.func.attr == 'spawn' and n.args
+                         and isinstance(n.args[-1], ast.Constant) and n.args[-1].value == 'relay'))]
+        self.assertEqual(len(starts(execute)), 2)
+        self.assertEqual(len(starts(local)), 2)
+        flags = next(n for n in execute.body if isinstance(n, ast.Assign)
+                     and any(isinstance(t, ast.Name) and t.id == 'browser_flags' for t in n.targets))
+        self.assertIsInstance(flags.value, ast.IfExp)
+        self.assertIn('not external', ast.unparse(flags.value.test))
+
+    def test_browser_rejects_mixed_turn_transports(self):
+        source = (Path(__file__).parent / 'browser.py').read_text()
+        self.assertIn("value['turnTransports'] == [transport]", source)
+        self.assertIn('p.getConfiguration().iceServers', source)
 
     def test_turn_bad_realm_fails_closed(self):
         fake = TurnSocket('udp', bad_realm=True)

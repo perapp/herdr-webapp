@@ -49,10 +49,41 @@ After the edge agent deployed the approved catalog, independent checks passed at
   committed its current-version record. All private bootstrap state, children and
   Core were removed afterward.
 
-The hosting agent reports TURN locally authenticated but router forwarding still
-requires the user's router SSH authentication. These checks do **not** prove
-public TURN, cross-NAT/cellular terminal transport or physical phone keyboards.
+At this initial bootstrap check, router forwarding still awaited user SSH
+authentication. The subsequent LAN-hairpin acceptance below closes that specific
+forwarding/peer-traffic gate, not cellular or physical-phone acceptance.
 The original managed LAN 0.0.2 server still returns HTTP 200 and was not upgraded.
+
+## Public relay / TURN LAN-hairpin peer acceptance
+
+After the hosting agent configured WAN UDP/TCP 3478 and UDP 49160–49259 forwarding,
+we ran the approved CI 0.0.5 executable against the real public HTTPS relay and
+public TURN hostname from this LAN. Each phase used a fresh disposable Core,
+shell, connector identity and owned isolated Chromium workstation; no user's Core
+or terminals were used. No local relay/coturn or certificate exception was used.
+
+The hosting agent temporarily advertised only UDP, then only TCP, retaining its
+normal configuration snapshot and safety restore timer. Both browser and native
+connector used relay-only ICE policy; the helper also asserted the advertised
+TURN configuration contained only the requested transport, excluding a hidden
+native UDP fallback in the TCP phase. Both phases passed:
+
+- Selected candidates `relay`/`relay`; browser `relayProtocol=udp` or `tcp` as
+  requested. Candidate protocol remains UDP: this is TURN-over-TCP, not ICE-TCP.
+- Trusted browser input created independently checked native shell proof files.
+- 21 distinct image files matched source bytes; uploads did not press Enter and
+  all sequential uploads preserved the peer epoch.
+- Browser reload and authenticated fresh-peer resume both produced shell proofs.
+- 400,000 output characters crossed the credit window; each run observed 403,227
+  terminal bytes and independently checked native shell completion.
+
+All owned Cores, browser workstations, native children, pairing material and
+private scratch state were cleaned up. Sanitized reports are ignored under
+`dist/verification/relay-public-hairpin/`. Normal dual-transport restoration is
+owned by the hosting agent, which confirmed byte-for-byte runtime-unit restoration,
+public `/healthz` readiness, and removal of the temporary safety timer/snapshot.
+This is **LAN hairpin** via
+public hostnames, not external-network/cellular or physical iOS/Android proof.
 
 ## Automated checks
 
@@ -63,7 +94,8 @@ Latest `make check`, `make release` and `make smoke` completed successfully:
 - Seven vendored TURN stream/TLS tests: framing, cancellation/close, malformed
   frames, certificate/name/IP verification, plaintext rejection and time bounds.
 - 13 existing distribution tests, 10 relay-launcher tests, 10 catalog tests and
-  ten offline acceptance-harness tests.
+  twelve offline acceptance-harness tests (including external-mode isolation and
+  mixed-transport rejection).
 - Existing standalone local/federated smoke: durable authentication, exact Origin,
   topology/CAS/unknown-field preservation, native commands/uploads, terminal input,
   credit/resize/observer behavior, reconnect and logout. All against isolated Cores.
@@ -136,11 +168,13 @@ five documented upstream files differ, plus the new adapter and patch notes.
 1. Native TCP/TLS is implemented and locally verified, but does not add ICE-TCP,
    TURN-over-DTLS, HTTP proxies or virtual-network TCP support. Real restrictive
    networks still need public acceptance and correctly exposed TURN listeners.
-2. No public/cellular/cross-NAT acceptance, real router/coturn deployment or
-   physical phone keyboard testing has been performed in this task.
-3. Publish/verify the matching three-platform release before advertising `/run`.
-   Test actual published connector upgrade and failed-start rollback with retained
-   pairing/Core terminals. Local offline supervisor fixtures are not that evidence.
+2. Public HTTPS/bootstrap and LAN-hairpin UDP/TCP peer traffic passed against the
+   deployed router/coturn. External-network/cellular/cross-NAT and physical phone
+   keyboard testing are still outstanding.
+3. Matching three-platform v0.0.5 release/catalog publication is verified. Actual
+   published relay-connector upgrade and failed-start rollback with retained
+   pairing/Core terminals remain to be exercised with a later connector release.
+   Local offline supervisor fixtures are not that evidence.
 4. Public enrollment is not operator-approved account admission. An actor owning
    both endpoint roles can obtain session TURN credentials; decide admission and
    finite quotas before exposing resources. Behind a proxy, backend socket-IP

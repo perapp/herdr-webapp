@@ -17,6 +17,22 @@ TLS TURN over TCP**, with plaintext TCP/UDP, DTLS and CLI listeners disabled.
 Neither substitutes a UDP TURN URL if native stream transport fails. The finite
 UDP relay-allocation port range is separate from the TURN control listener.
 
+## Existing public relay / LAN-hairpin acceptance
+
+Use `--relay-origin https://your-relay.example` with an approved executable via
+`--binary /private/catalog/0.0.5/x86_64-unknown-linux-gnu/herdr-webapp`. This mode
+still creates its own Core, shell, connector, pairing and GUI; it does **not**
+start/reconfigure a relay or coturn, and it never bypasses browser certificates.
+Coordinate any deployed ICE configuration change with its operator beforehand.
+
+For `--transport udp` or `tcp`, both endpoints are forced to relay. The browser
+asserts that the relay advertises only the requested TURN transport, as well as
+inspecting both selected candidate types and its selected relay protocol. This
+avoids calling browser-TCP/native-UDP success a native TCP test. Run separate
+UDP-only and TCP-only phases, then have the operator restore normal configuration.
+An external hostname from the same LAN can exercise router hairpin forwarding,
+but does not establish cellular, external-network or physical-phone acceptance.
+
 ## Prerequisites
 
 - Linux/Pasta networking; literal host loopback must be reachable from the GUI.

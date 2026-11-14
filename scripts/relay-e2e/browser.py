@@ -129,10 +129,15 @@ class Browser:
             (selected.has(r.id)||(!selected.size&&r.nominated))){
             const l=stats.get(r.localCandidateId),q=stats.get(r.remoteCandidateId);
             pairs.push({local:l?.candidateType,remote:q?.candidateType,protocol:l?.protocol,relayProtocol:l?.relayProtocol});
-          }});return {pairs,receivedBytes:window.__e2e.receivedBytes,maxFrame:window.__e2e.maxFrame};
+          }});
+          const turnTransports=[...new Set(p.getConfiguration().iceServers.flatMap(s=>Array.isArray(s.urls)?s.urls:[s.urls])
+            .filter(u=>/^turns?:/i.test(u)).map(u=>/^turns:/i.test(u)?'tls':/[?&]transport=tcp(?:&|$)/i.test(u)?'tcp':'udp'))];
+          return {pairs,turnTransports,receivedBytes:window.__e2e.receivedBytes,maxFrame:window.__e2e.maxFrame};
         })()''')
         assert value and value['pairs'], 'selected ICE pair missing'
         assert value['maxFrame'] <= 16384, 'oversized SCTP frame'
+        if transport != 'direct':
+            assert value['turnTransports'] == [transport], 'mixed TURN transport configuration'
         for pair in value['pairs']:
             if transport == 'direct':
                 assert pair['local'] != 'relay' and pair['remote'] != 'relay', 'unexpected relay route'
@@ -234,7 +239,8 @@ if __name__ == '__main__':
                    'peer connected', 'shell sentinel', 'acceptance condition',
                    'selected ICE pair missing', 'oversized SCTP frame', 'unexpected relay route',
                    'both peers must select relay', 'wrong TURN transport selected',
-                   'upload reconnected peer', 'pairing fragment persisted', 'upload ready'}
+                   'upload reconnected peer', 'pairing fragment persisted', 'upload ready',
+                   'mixed TURN transport configuration'}
         label = str(error) if isinstance(error, AssertionError) and str(error) in allowed else 'browser operation failed'
         (ROOT / 'result.json').write_text(json.dumps({'ok': False, 'assertion': label}))
         sys.exit(1)
