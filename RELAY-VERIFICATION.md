@@ -1,4 +1,4 @@
-# Relay implementation verification — source 0.0.5
+# Relay implementation verification — source 0.0.8
 
 This records implementation/local acceptance, **not public deployment approval**.
 Tests used disposable Cores and owned GUI workstations; the live user Core and
@@ -16,9 +16,34 @@ kernel-owned `PENDIN` flag when canonical input is restored. Version 0.0.8 allow
 only that flag to differ on macOS, retaining strict configured-mode/echo/signal,
 control-character, speed and shared-file-flag restoration checks.
 
-These dashboard changes are prepared for **v0.0.8**, not part of the published
-v0.0.5 executable or catalog. Publication/deployment require the approved release
-pipeline and explicit catalog handoff; the following records local acceptance:
+These dashboard changes are **published and deployed as v0.0.8**. They were not
+part of the earlier v0.0.5 executable/catalog. Verification and provenance:
+
+- Immutable tag `v0.0.8`: `81f8a9ceabfe2bb5509aa84039f33432d70bc5f4`.
+  Release CI **43589940697** passed all three platform builds and publication.
+- Approved three-platform catalog: ignored `dist/relay-catalog/0.0.8/`;
+  prepared manifest SHA-256
+  `b3b62238d0dc0fcceb60d04cd9b2a5c163df1c8e98ed9907856e99bbf9a6b85f`.
+  All private catalog permissions, archive checksums and native exact-version
+  probe passed. Edge staged the catalog's exact CI x86_64 binary, retaining
+  v0.0.5 rollback artifacts; no TURN/router changes were made.
+- Independent trusted-HTTPS verification after activation confirmed API version
+  0.0.8, bootstrap endpoints, exact approved manifest data and all three raw
+  executable sizes/SHA-256, with redirects rejected. Manifest JSON whitespace
+  is server serialization, not part of the artifact identity.
+- Fresh isolated public v0.0.8 peer acceptance passed shell-file proof, 21 exact
+  native uploads without Enter, reload/resume and 403227 bytes of large output.
+  Selected pair: local prflx / remote host, UDP. This is public-origin/LAN
+  acceptance, not cellular or physical-phone evidence.
+- An actual public v0.0.5 supervisor/browser pairing fixture automatically reached
+  healthy cached v0.0.8 with exact identity bytes and its nonzero persisted pairing
+  digest retained; no fresh pairing capability was supplied. **Full upgrade
+  acceptance remains incomplete**: the extended monitor omitted the original
+  GUI owner PID, so safety checks rejected its browser helper before post-upgrade
+  shell/Core-PID proof. No application failure was established; native v8 hash
+  was not captured within that fixture. Cleanup confirmed no owned processes
+  remained. Sanitized evidence: ignored
+  `dist/verification/relay-upgrade/report-v8.json`.
 
 - Inline PNG QR rendering requires a positive, fresh-ID Kitty graphics reply;
   terminal names/environment variables are not used as capability evidence.
@@ -205,10 +230,12 @@ five documented upstream files differ, plus the new adapter and patch notes.
 2. Public HTTPS/bootstrap and LAN-hairpin UDP/TCP peer traffic passed against the
    deployed router/coturn. External-network/cellular/cross-NAT and physical phone
    keyboard testing are still outstanding.
-3. Matching three-platform v0.0.5 release/catalog publication is verified. Actual
-   published relay-connector upgrade and failed-start rollback with retained
-   pairing/Core terminals remain to be exercised with a later connector release.
-   Local offline supervisor fixtures are not that evidence.
+3. Matching three-platform v0.0.8 release/catalog publication and deployment are
+   verified. Published v0.0.5 → v0.0.8 supervisor activation and identity/pairing
+   retention passed partial checks, but post-upgrade browser/Core-terminal proof
+   was blocked by the verification fixture's GUI owner mismatch. Full published
+   upgrade acceptance and failed-start rollback remain open; local offline
+   supervisor fixtures are not substitutes.
 4. Public enrollment is not operator-approved account admission. An actor owning
    both endpoint roles can obtain session TURN credentials; decide admission and
    finite quotas before exposing resources. Behind a proxy, backend socket-IP
