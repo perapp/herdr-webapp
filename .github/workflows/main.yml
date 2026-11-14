@@ -61,6 +61,13 @@ jobs:
           shared-key: main-${{ matrix.target }}
       # Hosted runners have no pinned hc bootstrap. Isolated-core smoke and
       # post-deploy public/native browser acceptance are run separately by the operator.
+      - name: Use preinstalled OpenSSL 3 for macOS TLS fixtures
+        if: runner.os == 'macOS'
+        run: |
+          prefix=$(brew --prefix openssl@3)
+          test -x "$prefix/bin/openssl"
+          "$prefix/bin/openssl" version | grep '^OpenSSL 3\.'
+          echo "$prefix/bin" >> "$GITHUB_PATH"
       - name: Full frontend, Rust, distribution checks and native release
         run: |
           make check
@@ -68,9 +75,12 @@ jobs:
           make release
       - name: Execute and stamp this native binary
         run: |
+          # Cargo hard-links its output to target/release/deps; isolate a copy.
+          cp target/release/herdr-webapp native-build
+          chmod 700 native-build
           python3 -B scripts/main-ci.py stamp \
             --target '${{ matrix.target }}' \
-            --binary target/release/herdr-webapp \
+            --binary native-build \
             --revision "$HERDR_BUILD_REVISION" --run-id '${{ github.run_id }}' \
             --output native-output
       - uses: actions/upload-artifact@v4
@@ -129,6 +139,11 @@ jobs:
         run: |
           python3 -B scripts/main-ci.py assemble --inputs native-inputs --output pages-site \
             --revision '${{ github.sha }}' --run-id '${{ github.run_id }}'
+      - name: Guard immutable revision history before upload
+        if: steps.head.outputs.current == 'true'
+        run: |
+          python3 -B scripts/main-ci.py guard --output pages-site \
+            --run-id '${{ github.run_id }}' --attempt '${{ github.run_attempt }}'
       - uses: actions/upload-pages-artifact@v3
         if: steps.head.outputs.current == 'true'
         with:

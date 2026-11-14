@@ -234,6 +234,141 @@ class PublisherTests(unittest.TestCase):
                 ci.native(ci.TARGETS[1])
 
 
+class LedgerTests(unittest.TestCase):
+    def setUp(self):
+        PublisherTests.setUp(self)
+        PublisherTests.assemble(self)
+        self.publication = (self.output / 'main/publication.json').read_bytes()
+        self.manifest = (self.output / 'main/client/manifest.json').read_bytes()
+        self.candidate = ci.publication_manifest(self.publication, self.manifest)
+
+    def ledger(self, revisions=None):
+        return ci.json_bytes(dict(schemaVersion=1, repository=ci.REPOSITORY,
+                                  revisions=revisions or {REVISION: self.candidate[1]}))
+
+    def update(self, ledger=None, publication=None, manifest=None, candidate=None):
+        return ci.updated_ledger(candidate or self.candidate, ledger, publication, manifest)
+
+    def test_first_publication_and_guard_fetches(self):
+        with patch.object(ci, 'fetch_public', side_effect=[None, None]) as fetch:
+            ci.guard(self.output, RUN_ID, 2)
+        self.assertEqual(fetch.call_args_list, [
+            unittest.mock.call('main/revisions.json', RUN_ID, 2, ci.MAX_LEDGER),
+            unittest.mock.call('main/publication.json', RUN_ID, 2, 16384)])
+        self.assertEqual((self.output / 'main/revisions.json').read_bytes(), self.ledger())
+
+    def test_legacy_upgrade_and_idempotence(self):
+        seeded = self.update(publication=self.publication, manifest=self.manifest)
+        self.assertEqual(seeded, self.ledger())
+        self.assertEqual(self.update(seeded, self.publication, self.manifest), seeded)
+        next_candidate = ('b' * 40, 'c' * 64)
+        newer = self.update(seeded, self.publication, self.manifest, next_candidate)
+        self.assertEqual(json.loads(newer)['revisions'], {REVISION: self.candidate[1], 'b' * 40: 'c' * 64})
+
+    def test_same_and_historical_revision_changes_rejected(self):
+        for revision in (REVISION, 'b' * 40):
+            ledger = self.ledger({REVISION: self.candidate[1], 'b' * 40: 'c' * 64})
+            with self.assertRaises(ci.InvalidBuild):
+                self.update(ledger, self.publication, self.manifest, (revision, 'd' * 64))
+        with self.assertRaises(ci.InvalidBuild):
+            self.update(None, self.publication, self.manifest, (REVISION, 'd' * 64))
+
+    def test_corrupt_or_missing_history_cannot_reset(self):
+        cases = [
+            (self.ledger(), None, None),
+            (self.ledger({'b' * 40: 'c' * 64}), self.publication, self.manifest),
+            (self.ledger({REVISION: 'c' * 64}), self.publication, self.manifest),
+            (b'{}', self.publication, self.manifest),
+            (b'{"schemaVersion":1,"schemaVersion":1}', self.publication, self.manifest),
+            (None, self.publication, None),
+            (None, self.publication, self.manifest + b' '),
+            (None, b'{}', self.manifest),
+        ]
+        for ledger, publication, manifest in cases:
+            with self.subTest(ledger=ledger), self.assertRaises((ci.InvalidBuild, ValueError)):
+                self.update(ledger, publication, manifest)
+        with patch.object(ci, 'fetch_public', side_effect=[b'{}', self.publication, self.manifest]):
+            with self.assertRaises(ci.InvalidBuild):
+                ci.guard(self.output, RUN_ID, 1)
+        self.assertFalse((self.output / 'main/revisions.json').exists())
+
+    def test_transport_and_decode_errors_never_write_ledger(self):
+        for error in (TimeoutError('timeout'), OSError('TLS failure'), ci.http.client.HTTPException('truncated')):
+            with patch.object(ci, 'fetch_public', side_effect=error):
+                with self.assertRaises(type(error)):
+                    ci.guard(self.output, RUN_ID, 1)
+            self.assertFalse((self.output / 'main/revisions.json').exists())
+        for data in (b'\xff', b'{', b'NaN', b'[]'):
+            with patch.object(ci, 'fetch_public', side_effect=[data, self.publication, self.manifest]):
+                with self.assertRaises((ValueError, ci.InvalidBuild)):
+                    ci.guard(self.output, RUN_ID, 1)
+            self.assertFalse((self.output / 'main/revisions.json').exists())
+
+    def test_strict_legacy_catalog_and_ledger(self):
+        for change in ({'repository': 'other/repo'}, {'schemaVersion': True}, {'revision': 'A' * 40}, {'extra': 1}):
+            publication = json.loads(self.publication)
+            publication.update(change)
+            with self.assertRaises(ci.InvalidBuild):
+                self.update(None, ci.json_bytes(publication), self.manifest)
+        for change in ({'assets': []}, {'version': '1.2.3-rc.1'}, {'protocolVersion': True}, {'revision': 'b' * 40}):
+            manifest = json.loads(self.manifest)
+            manifest.update(change)
+            data = ci.json_bytes(manifest)
+            publication = json.loads(self.publication)
+            publication['manifestSha256'] = hashlib.sha256(data).hexdigest()
+            with self.assertRaises(ci.InvalidBuild):
+                self.update(None, ci.json_bytes(publication), data)
+        for revisions in ({'A' * 40: 'b' * 64}, {REVISION: 'B' * 64}, {REVISION: True}):
+            with self.assertRaises(ci.InvalidBuild):
+                self.update(self.ledger(revisions), self.publication, self.manifest)
+
+    def test_ledger_bounds_no_eviction(self):
+        with patch.object(ci, 'MAX_LEDGER', len(self.ledger()) - 1):
+            with self.assertRaises(ci.InvalidBuild):
+                self.update(self.ledger(), self.publication, self.manifest)
+            with self.assertRaises(ci.InvalidBuild):
+                self.update()
+        with patch.object(ci, 'MAX_REVISIONS', 1):
+            self.assertEqual(self.update(self.ledger(), self.publication, self.manifest), self.ledger())
+            with self.assertRaises(ci.InvalidBuild):
+                self.update(self.ledger(), self.publication, self.manifest, ('b' * 40, 'c' * 64))
+            with self.assertRaises(ci.InvalidBuild):
+                self.update(self.ledger({REVISION: self.candidate[1], 'b' * 40: 'c' * 64}), self.publication, self.manifest)
+
+
+class HTTPTests(unittest.TestCase):
+    def fetch(self, status=200, body=b'{}', headers=None, maximum=10):
+        connection = unittest.mock.MagicMock()
+        response = connection.getresponse.return_value
+        response.status = status
+        response.getheader.side_effect = lambda key, default=None: (headers or {}).get(key, default)
+        response.read1.side_effect = [body, b'']
+        with patch.object(ci.http.client, 'HTTPSConnection', return_value=connection) as constructor:
+            result = ci.fetch_public('main/revisions.json', RUN_ID, 2, maximum)
+        self.assertEqual(constructor.call_args.args, ('perapp.github.io',))
+        self.assertEqual(connection.request.call_args.args, ('GET', '/herdr-webapp/main/revisions.json?run=123&attempt=2'))
+        connection.close.assert_called_once()
+        return result
+
+    def test_direct_https_status_and_bounds(self):
+        self.assertEqual(self.fetch(), b'{}')
+        self.assertIsNone(self.fetch(status=404))
+        for status in (301, 302, 403, 429, 500):
+            with self.assertRaises(ci.InvalidBuild):
+                self.fetch(status=status)
+        for headers in ({'Content-Length': '11'}, {'Content-Length': '3'}, {'Content-Length': '-1'}, {'Content-Encoding': 'gzip'}):
+            with self.assertRaises(ci.InvalidBuild):
+                self.fetch(headers=headers)
+        with self.assertRaises(ci.InvalidBuild):
+            self.fetch(body=b'x' * 11)
+        with patch.object(ci.time, 'monotonic', side_effect=[0, 31]):
+            with self.assertRaises(ci.InvalidBuild):
+                self.fetch()
+        with patch.object(ci.http.client, 'HTTPSConnection', side_effect=OSError('TLS failure')):
+            with self.assertRaises(OSError):
+                ci.fetch_public('main/revisions.json', RUN_ID, 1, 10)
+
+
 class WorkflowContractTests(unittest.TestCase):
     def test_workflow_contract(self):
         workflow = Path(__file__).resolve().parents[1] / ci.WORKFLOW
@@ -254,6 +389,8 @@ class WorkflowContractTests(unittest.TestCase):
                          'artifact_name: main-pages-${{ github.run_id }}-${{ github.run_attempt }}'):
             self.assertIn(required, text)
         self.assertEqual(text.count('git/ref/heads/main'), 2)
+        self.assertLess(text.index('scripts/main-ci.py guard'), text.index('actions/upload-pages-artifact@v3'))
+        self.assertIn('--attempt \'${{ github.run_attempt }}\'', text)
         self.assertNotIn('package-release.sh', text)
         self.assertNotIn('contents: write', text)
         self.assertNotIn('secrets.', text)

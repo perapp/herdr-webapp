@@ -64,6 +64,8 @@ endpoints**. The publisher deploys an atomic static GitHub Pages site at
   and SHA-256 of the exact manifest bytes.
 - `main/client/manifest.json`: the complete schema-2 catalog.
 - `main/client/<revision>/<target>/herdr-webapp`: raw SHA-addressed executables.
+- `main/revisions.json`: a copy-forward manifest-digest ledger. Republishing an
+  existing revision with different bytes fails closed; history is not evicted.
 
 The descriptor identifies `perapp/herdr-webapp`, branch `main` and workflow
 `.github/workflows/main.yml`. The configured repository is the expected publisher
