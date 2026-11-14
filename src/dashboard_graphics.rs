@@ -465,7 +465,16 @@ mod tests {
         assert_eq!(after.c_iflag, before.c_iflag);
         assert_eq!(after.c_oflag, before.c_oflag);
         assert_eq!(after.c_cflag, before.c_cflag);
-        assert_eq!(after.c_lflag, before.c_lflag);
+        // Darwin marks queued input for reprocessing when ICANON is restored.
+        // PENDIN is kernel-owned transient state, not an unrestored input mode.
+        #[cfg(target_os = "macos")]
+        let kernel_flags = libc::PENDIN;
+        #[cfg(not(target_os = "macos"))]
+        let kernel_flags = 0;
+        assert_eq!(
+            after.c_lflag & !kernel_flags,
+            before.c_lflag & !kernel_flags
+        );
         assert_eq!(after.c_cc, before.c_cc);
         assert_eq!(unsafe { libc::cfgetispeed(&after) }, unsafe {
             libc::cfgetispeed(&before)

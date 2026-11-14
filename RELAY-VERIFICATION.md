@@ -5,14 +5,18 @@ Tests used disposable Cores and owned GUI workstations; the live user Core and
 managed 0.0.2 LAN server were left untouched. A separate edge agent owns actual
 hosting/DNS/router deployment. Release publication is separate from these results.
 
-## 0.0.7 terminal QR follow-up
+## 0.0.8 terminal QR follow-up
 
 The immutable v0.0.6 tag (`586f933`) was not published: macOS CI caught a
 const/mutable null-pointer mismatch in the disposable `openpty` test. Version
 0.0.7 uses mutable null pointers compatible with both macOS and Linux; this
-changes the fixture and version metadata, not the PNG runtime design.
+changes the fixture and version metadata, not the PNG runtime design. Its
+immutable tag (`bb780af`) also remains unpublished: Darwin sets the transient
+kernel-owned `PENDIN` flag when canonical input is restored. Version 0.0.8 allows
+only that flag to differ on macOS, retaining strict configured-mode/echo/signal,
+control-character, speed and shared-file-flag restoration checks.
 
-These dashboard changes are prepared for **v0.0.7**, not part of the published
+These dashboard changes are prepared for **v0.0.8**, not part of the published
 v0.0.5 executable or catalog. Publication/deployment require the approved release
 pipeline and explicit catalog handoff; the following records local acceptance:
 

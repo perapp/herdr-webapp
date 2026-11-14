@@ -66,7 +66,7 @@ herdr-webapp connect-relay --relay-url https://your-relay.example
 Host the relay behind an HTTPS reverse proxy, without exposing a Core socket:
 
 ```sh
-python3 scripts/prepare-relay-release.py --version 0.0.7 --output /srv/herdr/catalog
+python3 scripts/prepare-relay-release.py --version 0.0.8 --output /srv/herdr/catalog
 herdr-webapp serve-relay --bind 0.0.0.0 --port 8080 \
   --public-origin https://your-relay.example --release-dir /srv/herdr/catalog \
   --turn-secret-file /private/turn-secret \
