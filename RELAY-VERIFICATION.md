@@ -29,8 +29,8 @@ These changes are **not in the immutable published v0.0.8 native catalog**.
   iOS/Android IME/keyboard or cellular acceptance.
 - Disabled runtime starts with build tools absent, creates no main state and
   spawns no updater children; reserved main routes do not serve stable content.
-- The test executable compiles synthetic revision `aaaa…` solely as fixture
-  identity, **not Git provenance**. Ubuntu 24.04/glibc 2.39 separately executes
+- The initial four-viewport test executable compiles synthetic revision `aaaa…`
+  solely as fixture identity, **not Git provenance**. Ubuntu 24.04/glibc 2.39 separately executes
   that binary with the approved immutable v8 catalog, main disabled, and no
   container network; version/provenance, mode/bootstrap/catalog and disabled
   main checks pass. The build workstation itself is Ubuntu 26.04/glibc 2.43;
@@ -38,12 +38,48 @@ These changes are **not in the immutable published v0.0.8 native catalog**.
 - Ignored evidence: `dist/verification/main-channel/evidence/acceptance.json`,
   four terminal-only screenshots, per-run preflight/cleanup reports, and
   `dist/verification/main-channel/ubuntu24-runtime-result.json`.
+- A targeted generation-recovery follow-up uses the actual compiled/deployed
+  `c11492e` artifact (SHA-256 `5b3bbe18…f6e00b40`), not a synthetic revision.
+  After verifying the exact owned manager-parent chain and active private socket,
+  SIGTERM was sent only to that disposable main backend. The manager published a
+  new child/socket generation in **2.432 seconds**. Stable shell input completed
+  before main was ready. Main automatically reconnected with a new peer, accepted
+  shell input and survived reload without fresh pairing. Four sentinels retained
+  the same disposable Core/shell PIDs. Cleanup confirmed GUI release, Core stop,
+  scratch removal and no remaining owned non-zombie groups. Evidence:
+  `evidence/generation-2016434.json` and `evidence/cleanup-2016434.json` under
+  `dist/verification/main-channel/`. This is desktop recovery of the same
+  compiled revision, not migration between different code revisions.
 - **Remaining boundaries:** no live production main build yet, no different
   compiled-revision browser migration proof, no physical keyboard-autofocus or
   end-to-end disconnected-input no-replay claim. Main production enablement
   awaits private-Git credential approval and build-runtime changes. The requested
   `herdr-webapp-run` restart target has not been found on this Core; the existing
   managed 0.0.2 LAN server remains untouched. No tag/new stable release is made.
+
+### Production entry deployment (main tracking disabled)
+
+The untagged source entry `c11492e27a08073d0e3b3f805b6d277dc92b0bcb`
+was deployed in a separate source-addressed Ubuntu 24.04 image. Its executable
+is 16,574,512 bytes, SHA-256
+`5b3bbe18bd3f20e0e88e42a10e5b0e9ee1df76ba2c352df6e2cabd63f6e00b40`.
+Actual Ubuntu 24/glibc 2.39 runtime checks passed before activation. Only the
+entry service image changed; the immutable v8 catalog, TURN/Caddy configuration,
+credentials, volumes and resource limits were preserved, with the v8 image/unit
+retained for rollback. Live rollback was not exercised.
+
+Independent public HTTPS checks confirmed the exact build revision, bootstrap,
+canonical v8 manifest and all three raw native hashes. Main status is disabled
+and `/main/` returns 503. A fresh disposable Core/browser using the **published
+CI v8 native client** passed shell input, 21 byte-exact uploads without Enter,
+reload/resume and 403,227 output bytes. The selected pair was local prflx/remote
+host over UDP: LAN/hairpin evidence, not cellular acceptance. Its owned GUI/Core
+fixture was cleaned. The unrelated LAN 0.0.2 server was not restarted.
+
+Ignored deployment evidence: `dist/verification/main-channel/deployment.json`,
+`public-source-integrity.json`, and `public-c11492e/report-ff45b36d.json` in the
+same verification directory. Production main tracking remains blocked on the
+private-Git credential and constrained builder runtime, both pending approval.
 
 ## Unreleased follow-up: missed graphics probes and compact text QR
 
