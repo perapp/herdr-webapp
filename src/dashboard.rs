@@ -5,7 +5,7 @@ use crossterm::{
     ExecutableCommand, cursor,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use qrcode::{QrCode, render::unicode};
+use qrcode::{EcLevel, QrCode, render::unicode};
 use std::{
     collections::VecDeque,
     io::{self, IsTerminal, Write},
@@ -52,12 +52,10 @@ impl Dashboard {
         let interactive =
             !plain && io::stdout().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb");
         let code = QrCode::new(login.as_bytes())?;
-        let qr = code
-            .render::<unicode::Dense1x2>()
-            .dark_color(unicode::Dense1x2::Light)
-            .light_color(unicode::Dense1x2::Dark)
-            .quiet_zone(true)
-            .build();
+        // Prefer the smaller standard L matrix for the text fallback. PNG
+        // retains M's greater tolerance of camera blur or damaged modules.
+        // This preserves every URL byte and the full four-module quiet zone.
+        let qr = text_qr(login)?;
         let png = interactive
             .then(|| dashboard_graphics::png_bytes(&code))
             .transpose()?;
@@ -257,11 +255,12 @@ fn run(inner: &Inner, qr: &str, png: Option<&[u8]>, login: &str, socket: &str, m
     let mut layout = None;
     let mut previous_logs = Vec::new();
     let mut placed = false;
-    if let Some(probe) = &probe {
-        let _ = write_output(&probe.query());
-    }
     while !inner.stop.load(Ordering::Relaxed) {
         if let Some(probe) = &mut probe {
+            if probe.query_due() {
+                let _ = write_output(&probe.query());
+                probe.query_sent();
+            }
             probe.poll();
         }
         let supported = probe.as_ref().is_some_and(GraphicsProbe::supported);
@@ -306,6 +305,16 @@ fn run(inner: &Inner, qr: &str, png: Option<&[u8]>, login: &str, socket: &str, m
         let _ = write_output(&dashboard_graphics::delete(probe.image_id()));
     }
     // Probe drop restores input modes before Dashboard leaves the alternate screen.
+}
+fn text_qr(login: &str) -> Result<String> {
+    Ok(
+        QrCode::with_error_correction_level(login.as_bytes(), EcLevel::L)?
+            .render::<unicode::Dense1x2>()
+            .dark_color(unicode::Dense1x2::Light)
+            .light_color(unicode::Dense1x2::Dark)
+            .quiet_zone(true)
+            .build(),
+    )
 }
 fn write_output(bytes: &[u8]) -> io::Result<()> {
     let mut output = io::stdout().lock();
@@ -399,6 +408,35 @@ mod tests {
             .clamp(1, 120);
         std::thread::sleep(Duration::from_secs(seconds));
         drop(dashboard);
+    }
+    #[test]
+    fn compact_text_qr_preserves_url_and_quiet_zone_with_fewer_cells() {
+        let prefix = "https://qr-preview.invalid/#pair=";
+        let login = format!("{prefix}{}", "a".repeat(365 - prefix.len()));
+        let original = QrCode::new(login.as_bytes()).unwrap();
+        let compact = QrCode::with_error_correction_level(login.as_bytes(), EcLevel::L).unwrap();
+        assert!(compact.width() < original.width());
+        assert_eq!(original.width() + 8, 85);
+        assert_eq!(compact.width() + 8, 73);
+        let qr = text_qr(&login).unwrap();
+        let rows: Vec<_> = qr.lines().collect();
+        assert_eq!(rows.len(), (compact.width() + 8).div_ceil(2));
+        assert!(
+            rows.iter()
+                .all(|line| line.chars().count() == compact.width() + 8)
+        );
+        // Native PNG keeps its original M matrix; nothing is clipped or rescaled
+        // in text mode, and the containing frame still shows the entire URL.
+        let frame = Frame::new(
+            &qr,
+            &login,
+            "core.sock",
+            Mode::Relay,
+            (120, 60),
+            false,
+            false,
+        );
+        assert_eq!(frame.rows[frame.links.clone()].concat(), login);
     }
     #[test]
     fn fallback_reports_actual_cell_requirements() {

@@ -5,6 +5,39 @@ Tests used disposable Cores and owned GUI workstations; the live user Core and
 managed 0.0.2 LAN server were left untouched. A separate edge agent owns actual
 hosting/DNS/router deployment. Release publication is separate from these results.
 
+## Unreleased follow-up: missed graphics probes and compact text QR
+
+The following changes are local, **not in the published v0.0.8 artifacts**:
+
+- An owned, synthetic-only interactive pane received a matching positive Kitty
+  reply at approximately 3007 ms after initial startup. The previous one-shot
+  750 ms policy could permanently miss such support. Foreground process-group
+  and controlling-session checks all passed in this Linux fixture; this does
+  not establish the exact macOS launch topology from the user's screenshot.
+- The initial text fallback still appears after 750 ms, but an exact positive
+  reply for this dashboard's unpredictable image/query ID remains valid while
+  the dashboard owns input. Queries are retried at most every two seconds for
+  the first 30 seconds; they stop immediately after support is established.
+  Timing starts after the first flush. No environment-name inference, blanket
+  graphics deletion, shared `O_NONBLOCK` changes or relaxed TTY guards were added.
+  Positive proof is not continuous viewer-presence detection.
+- Text uses standard L error correction: a representative 365-byte link drops
+  from **85×43 to 73×37 cells**. Every URL byte and the four-module quiet zone
+  are preserved. Native PNG retains the original M matrix and its greater
+  tolerance of camera blur; the smaller text variant trades redundancy for size.
+- `make check` (312 tests), `make release` and `make smoke` passed locally.
+  Synthetic owned-PTY acceptance passed delayed 1200 ms proof, a missed initial
+  query followed by a successful retry, and no proof/no PNG. Exact QR decoding,
+  fragmented/duplicate replies, wrong-ID/negative rejection, resize-only PNG
+  retransmission, termios restoration and unchanged shared flags passed.
+  Ignored evidence: `dist/verification/qr/followup-pty-result.json`.
+- A private Core and isolated native Herdr App window were started with the App
+  deliberately attached three seconds after the initial query. The dashboard
+  upgraded to PNG; the screenshot was visually inspected and decoded back to
+  the exact synthetic `.invalid` URL. Screenshot:
+  `dist/verification/qr/native-late-viewer.png`. This is Linux desktop/decoder
+  evidence, not an actual macOS bootstrap or physical camera test.
+
 ## 0.0.8 terminal QR follow-up
 
 The immutable v0.0.6 tag (`586f933`) was not published: macOS CI caught a

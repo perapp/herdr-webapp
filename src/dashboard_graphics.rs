@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use qrcode::{Color, QrCode};
 
+// This deadline selects the initial text fallback, not the validity of a reply.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(750);
+const RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const RETRY_WINDOW: Duration = Duration::from_secs(30);
 const MAX_REPLY: usize = 4096;
 const PIXELS_PER_MODULE: usize = 4;
 const QUIET_ZONE: usize = 4;
@@ -46,9 +49,8 @@ pub fn png_bytes(code: &QrCode) -> anyhow::Result<Vec<u8>> {
 pub struct GraphicsProbe {
     terminal: TerminalMode,
     parser: ReplyParser,
-    deadline: Instant,
+    timing: ProbeTiming,
     supported: bool,
-    finished: bool,
 }
 
 impl GraphicsProbe {
@@ -72,15 +74,16 @@ impl GraphicsProbe {
         Some(Self {
             terminal,
             parser: ReplyParser::new(id),
-            deadline: Instant::now() + PROBE_TIMEOUT,
+            timing: ProbeTiming::default(),
             supported: false,
-            finished: false,
         })
     }
 
     /// Verified one-RGB-pixel Kitty query. A positive reply establishes native
     /// graphics support; Herdr's native implementation also supports PNG f=100.
-    /// Call once and flush stdout before polling; the deadline starts at start().
+    /// Retry only when query_due(), flush stdout, then call query_sent().
+    /// Reusing this run's unpredictable ID lets delayed/duplicate viewer replies
+    /// prove support without accepting replies from another dashboard lifetime.
     pub fn query(&self) -> Vec<u8> {
         format!(
             "\x1b_Gi={},s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\",
@@ -89,11 +92,21 @@ impl GraphicsProbe {
         .into_bytes()
     }
 
+    /// Queries are sparse and stop after 30 seconds or the first positive reply.
+    /// A viewer can attach after the dashboard starts, so one query is insufficient.
+    pub fn query_due(&self) -> bool {
+        !self.supported
+            && is_foreground(self.terminal.fd.as_raw_fd())
+            && self.timing.query_due(Instant::now())
+    }
+
+    /// Start the fallback/retry clocks only after the query has been flushed.
+    pub fn query_sent(&mut self) {
+        self.timing.sent(Instant::now());
+    }
+
     /// Bounded nonblocking drain, without changing shared file status flags.
     pub fn poll(&mut self) {
-        if Instant::now() >= self.deadline {
-            self.finished = true;
-        }
         let fd = self.terminal.fd.as_raw_fd();
         if !is_foreground(fd) {
             return; // Reading a background tty could otherwise raise SIGTTIN.
@@ -118,9 +131,10 @@ impl GraphicsProbe {
                 break;
             }
             let matched = self.parser.feed(&bytes[..n as usize]);
-            if matched && !self.finished {
+            // Timeout means "show text for now", never "discard valid proof".
+            // Continue draining for our entire input-ownership lifetime.
+            if matched {
                 self.supported = true;
-                self.finished = true;
             }
         }
     }
@@ -129,10 +143,35 @@ impl GraphicsProbe {
         self.supported
     }
     pub fn finished(&self) -> bool {
-        self.finished || Instant::now() >= self.deadline
+        self.supported || self.timing.initial_finished(Instant::now())
     }
     pub fn image_id(&self) -> u32 {
         self.parser.id
+    }
+}
+
+#[derive(Default)]
+struct ProbeTiming {
+    first_sent: Option<Instant>,
+    last_sent: Option<Instant>,
+}
+impl ProbeTiming {
+    fn query_due(&self, now: Instant) -> bool {
+        match (self.first_sent, self.last_sent) {
+            (Some(first), Some(last)) => {
+                now.saturating_duration_since(first) < RETRY_WINDOW
+                    && now.saturating_duration_since(last) >= RETRY_INTERVAL
+            }
+            _ => true,
+        }
+    }
+    fn sent(&mut self, now: Instant) {
+        self.first_sent.get_or_insert(now);
+        self.last_sent = Some(now);
+    }
+    fn initial_finished(&self, now: Instant) -> bool {
+        self.first_sent
+            .is_some_and(|first| now.saturating_duration_since(first) >= PROBE_TIMEOUT)
     }
 }
 
@@ -323,6 +362,27 @@ pub fn delete(image_id: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallback_clock_starts_after_flush_and_retries_are_sparse_and_bounded() {
+        let start = Instant::now();
+        let mut timing = ProbeTiming::default();
+        assert!(timing.query_due(start));
+        assert!(!timing.initial_finished(start + Duration::from_secs(5)));
+        let first = start + Duration::from_secs(5);
+        timing.sent(first);
+        assert!(!timing.initial_finished(first + Duration::from_millis(749)));
+        assert!(timing.initial_finished(first + PROBE_TIMEOUT));
+        assert!(!timing.query_due(first + Duration::from_millis(1999)));
+        for seconds in (2..30).step_by(2) {
+            let now = first + Duration::from_secs(seconds);
+            assert!(timing.query_due(now));
+            timing.sent(now);
+            assert!(!timing.query_due(now));
+        }
+        assert!(!timing.query_due(first + RETRY_WINDOW));
+        assert!(!timing.query_due(first + Duration::from_secs(300)));
+    }
 
     #[test]
     fn png_is_crisp_with_four_module_quiet_zone() {
