@@ -30,8 +30,11 @@ public native executable, keeps a private per-origin cache/state, and supervises
 The QR pins the laptop identity and carries an expiring, one-use pairing secret;
 it never points to the laptop's changing IP. Paired browser keys are nonextractable
 P-256 keys persisted in IndexedDB. Pairing grants full trusted-user shell access.
-Restart the connector to display a fresh one-use QR for another browser; existing
-pairings remain. `connect-relay --reset-pairings` explicitly forgets paired browser
+The running connector automatically renews the link and QR after five minutes
+or successful pairing; existing trusted browsers and active terminals are unchanged.
+In-progress pairing is protected by a bounded reservation. The pinned terminal card
+updates in place; refreshed credentials are not appended to captured logs.
+`connect-relay --reset-pairings` explicitly forgets paired browser
 keys on startup. Deleting browser storage also requires pairing again.
 
 Terminal operations, input, output and uploads use encrypted WebRTC DataChannels,

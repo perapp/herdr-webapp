@@ -489,6 +489,65 @@ where
     .await?
 }
 
+fn pairing_login(pairings: &Pairings, root_url: &str) -> Result<String> {
+    let fragment = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&pairings.capability)?);
+    Ok(format!("{root_url}#pair={fragment}"))
+}
+
+const PAIRING_CAPACITY_STATUS: &str = "Browser pairing limit reached (64). Trusted browsers and active terminals remain connected. Reset pairings explicitly to trust new browsers.";
+const PAIRING_PENDING_STATUS: &str =
+    "Pairing in progress. A new code will appear after completion or timeout.";
+const PAIRING_WRITE_STATUS: &str = "Pairing code unavailable: private state could not be updated. Check state directory ownership, permissions and free space; retrying automatically. Trusted browsers are unaffected.";
+
+/// No transport dependency: refresh even during a healthy, indefinitely open
+/// relay connection, during registration, or throughout reconnect backoff.
+async fn pairing_lifecycle(
+    pairings: Arc<Mutex<Pairings>>,
+    root_url: String,
+    dashboard: Option<Arc<crate::dashboard::Dashboard>>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Never Debug/log this value: an available display contains the private URL.
+    let mut displayed: Option<Result<String, &'static str>> = None;
+    loop {
+        interval.tick().await;
+        let display = {
+            let mut pairings = pairings.lock().await;
+            pairing_display(&mut pairings, &root_url)
+        };
+        if displayed.as_ref() == Some(&display) {
+            continue;
+        }
+        if let Some(card) = &dashboard {
+            match &display {
+                Ok(login) => {
+                    if card.update_link(login).is_err() {
+                        card.unavailable("Pairing display could not be updated; retrying automatically. Trusted browsers are unaffected.");
+                        continue;
+                    }
+                }
+                Err(status) => card.unavailable(status),
+            }
+        } else if let Err(status) = &display {
+            // Captured/headless output gets recovery instructions, never credentials.
+            eprintln!("{status}");
+        }
+        displayed = Some(display);
+    }
+}
+
+fn pairing_display(pairings: &mut Pairings, root_url: &str) -> Result<String, &'static str> {
+    pairings.refresh().map_err(|_| PAIRING_WRITE_STATUS)?;
+    if pairings.at_capacity() {
+        return Err(PAIRING_CAPACITY_STATUS);
+    }
+    if !pairings.available() {
+        return Err(PAIRING_PENDING_STATUS);
+    }
+    pairing_login(pairings, root_url).map_err(|_| PAIRING_WRITE_STATUS)
+}
+
 pub async fn run(config: ConnectorConfig) -> Result<()> {
     let endpoint = origin_url(&config.relay_url, config.allow_http_loopback)?;
     let origin = endpoint.url();
@@ -506,12 +565,18 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
         identity.public_key(),
         config.reset_pairings,
     )?));
+    pairings
+        .lock()
+        .await
+        .set_channel(endpoint.base_path == "/main/")?;
     // A real native handshake must precede registration/readiness; never spawn Core.
     Plain::connect(&config.core_socket, false)
         .await
         .map_err(|_| anyhow::anyhow!("local Core handshake failed"))?;
     let core = Core::new(config.core_socket.clone());
-    let monitor = tokio::spawn(core.clone().monitor());
+    // Dropping the set aborts both process-lifetime workers on every exit path.
+    let mut background = JoinSet::new();
+    background.spawn(core.clone().monitor());
     let mut socket_url = url.clone();
     socket_url
         .set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
@@ -520,21 +585,26 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
     // Do not expose pairing credentials to captured/non-interactive logs. Tests can
     // read owner-only pairing.json; interactive sessions get the pinned native QR.
     let dashboard = if std::io::stdout().is_terminal() {
-        let mut capability = serde_json::to_value(&pairings.lock().await.capability)?;
-        if endpoint.base_path == "/main/" {
-            capability["channel"] = json!("main");
-            capability["basePath"] = json!("/main/");
-        }
-        let fragment = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&capability)?);
-        Some(crate::dashboard::Dashboard::start(
-            &format!("{}#pair={fragment}", endpoint.root_url()),
+        let pairing = pairings.lock().await;
+        let login = if pairing.at_capacity() {
+            String::new()
+        } else {
+            pairing_login(&pairing, &endpoint.root_url())?
+        };
+        Some(Arc::new(crate::dashboard::Dashboard::start(
+            &login,
             &config.core_socket.to_string_lossy(),
             config.no_dashboard,
             crate::dashboard::Mode::Relay,
-        )?)
+        )?))
     } else {
         None
     };
+    background.spawn(pairing_lifecycle(
+        pairings.clone(),
+        endpoint.root_url(),
+        dashboard.clone(),
+    ));
     let mut backoff = 1u64;
     let mut stop = Box::pin(shutdown_signal());
     loop {
@@ -557,7 +627,7 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
                 pairings.clone(),
                 core.clone(),
                 &config,
-                dashboard.as_ref(),
+                dashboard.as_deref(),
                 &mut stop,
             )
             .await;
@@ -577,7 +647,8 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
         backoff = (backoff * 2).min(30);
     }
     clear_ready(&config.ready_file);
-    monitor.abort();
+    background.abort_all();
+    while background.join_next().await.is_some() {}
     Ok(())
 }
 #[allow(clippy::too_many_arguments)] // One connection borrows the process identity, state and shutdown future.
@@ -728,6 +799,70 @@ async fn shutdown_signal() {
 }
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn pairing_lifecycle_rotates_without_any_relay_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let mut p = Pairings::load(dir.path(), "machine".into(), "public".into(), false).unwrap();
+        p.set_channel(true).unwrap();
+        let original = p.capability.secret.clone();
+        let shared = Arc::new(Mutex::new(p));
+        let mut tasks = JoinSet::new();
+        tasks.spawn(pairing_lifecycle(
+            shared.clone(),
+            "https://example.test".into(),
+            None,
+        ));
+        // First tick is immediate. Expire only after it, proving the periodic
+        // tick rather than startup/reconnect drives regeneration.
+        tokio::task::yield_now().await;
+        shared.lock().await.capability.expires_at = 0;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if shared.lock().await.capability.secret != original {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut p = shared.lock().await;
+        let login = pairing_display(&mut p, "https://example.test").unwrap();
+        let fragment = login.strip_prefix("https://example.test#pair=").unwrap();
+        let value: Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(fragment).unwrap()).unwrap();
+        assert_eq!(value["machineId"], "machine");
+        assert_eq!(value["publicKey"], "public");
+        assert_eq!(value["channel"], "main");
+        assert_eq!(value["basePath"], "/main/");
+        assert_eq!(value["secret"], p.capability.secret);
+        drop(p);
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+
+    #[test]
+    fn pairing_display_hides_failed_private_state_update_until_retry_succeeds() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut p = Pairings::load(dir.path(), "machine".into(), "public".into(), false).unwrap();
+        p.capability.expires_at = 0;
+        let path = dir.path().join("pairing.json");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            pairing_display(&mut p, "https://example.test"),
+            Err(PAIRING_WRITE_STATUS)
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(pairing_display(&mut p, "https://example.test").is_ok());
+    }
+
     #[test]
     fn accepted_keeps_legacy_contract_and_embeds_build_in_signed_body() {
         let payload = super::accepted_payload();

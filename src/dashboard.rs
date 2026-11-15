@@ -38,7 +38,41 @@ impl Mode {
         }
     }
 }
+struct ConnectionCard {
+    login: String,
+    qr: String,
+    png: Option<Vec<u8>>,
+    unavailable: Option<String>,
+}
+impl ConnectionCard {
+    fn new(login: &str, interactive: bool) -> Result<Self> {
+        let login = safe(login);
+        if login.is_empty() {
+            return Ok(Self {
+                login,
+                qr: String::new(),
+                png: None,
+                unavailable: Some("Pairing code unavailable. Waiting for connector status.".into()),
+            });
+        }
+        let qr = text_qr(&login)?;
+        let png = interactive
+            .then(|| {
+                QrCode::new(login.as_bytes())
+                    .map_err(anyhow::Error::from)
+                    .and_then(|code| dashboard_graphics::png_bytes(&code))
+            })
+            .transpose()?;
+        Ok(Self {
+            login,
+            qr,
+            png,
+            unavailable: None,
+        })
+    }
+}
 struct Inner {
+    card: Mutex<Arc<ConnectionCard>>,
     lines: Mutex<VecDeque<String>>,
     stop: AtomicBool,
     interactive: bool,
@@ -51,15 +85,10 @@ impl Dashboard {
     pub fn start(login: &str, socket: &str, plain: bool, mode: Mode) -> Result<Self> {
         let interactive =
             !plain && io::stdout().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb");
-        let code = QrCode::new(login.as_bytes())?;
-        // Prefer the smaller standard L matrix for the text fallback. PNG
-        // retains M's greater tolerance of camera blur or damaged modules.
-        // This preserves every URL byte and the full four-module quiet zone.
-        let qr = text_qr(login)?;
-        let png = interactive
-            .then(|| dashboard_graphics::png_bytes(&code))
-            .transpose()?;
+        // One immutable card keeps the URL, text QR and native PNG in sync.
+        let card = Arc::new(ConnectionCard::new(login, interactive)?);
         let inner = Arc::new(Inner {
+            card: Mutex::new(card.clone()),
             lines: Mutex::new(VecDeque::new()),
             stop: AtomicBool::new(false),
             interactive,
@@ -72,21 +101,42 @@ impl Dashboard {
             io::stdout()
                 .execute(EnterAlternateScreen)?
                 .execute(cursor::Hide)?;
-            let login = safe(login);
             let socket = safe(socket);
             this.thread = Some(std::thread::spawn(move || {
-                run(&inner, &qr, png.as_deref(), &login, &socket, mode);
+                run(&inner, &socket, mode);
             }));
+        } else if let Some(status) = &card.unavailable {
+            println!(
+                "Herdr Web · {}\n{status}\nCore socket: {socket}\n--- Logs ---",
+                env!("CARGO_PKG_VERSION")
+            );
         } else {
             println!(
                 "Herdr Web · {}\n{}: {login}\nPrivate URL and QR grant FULL SHELL ACCESS.\nCore socket: {socket}\n{qr}\n{}\n--- Logs ---",
                 env!("CARGO_PKG_VERSION"),
                 mode.label(),
-                transport_notice(login)
+                transport_notice(login),
+                qr = card.qr
             );
         }
-        this.log(mode.ready());
+        this.log(card.unavailable.as_deref().unwrap_or(mode.ready()));
         Ok(this)
+    }
+    /// Swap all representations together. Never append fresh secrets to logs.
+    pub fn update_link(&self, login: &str) -> Result<()> {
+        let card = Arc::new(ConnectionCard::new(login, self.inner.interactive)?);
+        *self.inner.card.lock().unwrap() = card;
+        self.log("Pairing link and QR renewed; existing trusted browsers are unchanged.");
+        Ok(())
+    }
+    pub fn unavailable(&self, message: &str) {
+        *self.inner.card.lock().unwrap() = Arc::new(ConnectionCard {
+            login: String::new(),
+            qr: String::new(),
+            png: None,
+            unavailable: Some(safe(message)),
+        });
+        self.log(message);
     }
     pub fn log(&self, message: &str) {
         let stamp = SystemTime::now()
@@ -208,6 +258,25 @@ impl Frame {
             height,
         }
     }
+    fn unavailable(message: &str, socket: &str, mode: Mode, size: (u16, u16)) -> Self {
+        let rows = vec![
+            format!("HERDR / WEB   ·   {}", env!("CARGO_PKG_VERSION")),
+            format!("{} unavailable", mode.label()),
+            safe(message),
+            "Existing trusted browsers can still reconnect. Ctrl+C stops.".into(),
+            format!("Core  {socket}"),
+            "─ Logs (UTC) ─────────────────────────────────────────────────────────".into(),
+        ];
+        let log_start = rows.len();
+        Self {
+            rows,
+            links: 0..0,
+            image: None,
+            log_start,
+            width: size.0,
+            height: size.1,
+        }
+    }
     fn logs(&self, inner: &Inner) -> Vec<String> {
         let lines = inner.lines.lock().unwrap();
         let count = usize::from(self.height).saturating_sub(self.log_start);
@@ -247,14 +316,15 @@ impl Frame {
         output.into_bytes()
     }
 }
-fn run(inner: &Inner, qr: &str, png: Option<&[u8]>, login: &str, socket: &str, mode: Mode) {
+fn run(inner: &Inner, socket: &str, mode: Mode) {
     // This dashboard owns terminal input. Never probe in plain/non-TTY mode;
     // retain a single input owner throughout to drain late/duplicate responses.
-    let mut probe = png.and_then(|_| GraphicsProbe::start());
+    let mut probe = GraphicsProbe::start();
     let mut frame: Option<Frame> = None;
     let mut layout = None;
     let mut previous_logs = Vec::new();
     let mut placed = false;
+    let mut displayed: Option<Arc<ConnectionCard>> = None;
     while !inner.stop.load(Ordering::Relaxed) {
         if let Some(probe) = &mut probe {
             if probe.query_due() {
@@ -266,15 +336,33 @@ fn run(inner: &Inner, qr: &str, png: Option<&[u8]>, login: &str, socket: &str, m
         let supported = probe.as_ref().is_some_and(GraphicsProbe::supported);
         let pending = probe.as_ref().is_some_and(|p| !p.finished());
         if let Ok(size) = terminal::size() {
+            let card = inner.card.lock().unwrap().clone();
             let key = (size, supported, pending);
-            if layout != Some(key) {
+            let changed = displayed
+                .as_ref()
+                .is_none_or(|old| !Arc::ptr_eq(old, &card));
+            if layout != Some(key) || changed {
                 if placed && let Some(probe) = &probe {
                     let _ = write_output(&dashboard_graphics::delete(probe.image_id()));
                 }
                 placed = false;
-                let next = Frame::new(qr, login, socket, mode, size, supported, pending);
-                let mut output = next.full_text(login);
-                if let (Some(at), Some(png), Some(probe)) = (next.image, png, probe.as_ref()) {
+                let next = if let Some(message) = &card.unavailable {
+                    Frame::unavailable(message, socket, mode, size)
+                } else {
+                    Frame::new(
+                        &card.qr,
+                        &card.login,
+                        socket,
+                        mode,
+                        size,
+                        supported,
+                        pending,
+                    )
+                };
+                let mut output = next.full_text(&card.login);
+                if let (Some(at), Some(png), Some(probe)) =
+                    (next.image, card.png.as_deref(), probe.as_ref())
+                {
                     output.extend_from_slice(format!("\x1b[{};2H", at.row).as_bytes());
                     output.extend_from_slice(&dashboard_graphics::transmit(
                         png,
@@ -290,6 +378,7 @@ fn run(inner: &Inner, qr: &str, png: Option<&[u8]>, login: &str, socket: &str, m
                 previous_logs = logs;
                 frame = Some(next);
                 layout = Some(key);
+                displayed = Some(card);
             } else if let Some(frame) = &frame {
                 let logs = frame.logs(inner);
                 if logs != previous_logs {
@@ -337,6 +426,41 @@ impl Drop for Dashboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn renewed_card_keeps_url_text_and_png_together() {
+        let old =
+            ConnectionCard::new("https://qr-preview.invalid/#pair=synthetic-old", true).unwrap();
+        let new =
+            ConnectionCard::new("https://qr-preview.invalid/#pair=synthetic-new", true).unwrap();
+        assert_ne!(old.qr, new.qr);
+        assert_ne!(old.png, new.png);
+        let frame = Frame::new(
+            &new.qr,
+            &new.login,
+            "synthetic.sock",
+            Mode::Relay,
+            (120, 60),
+            false,
+            false,
+        );
+        let text = String::from_utf8(frame.full_text(&new.login)).unwrap();
+        assert!(text.contains(&new.login));
+        assert!(!text.contains(&old.login));
+        assert_eq!(frame.rows[frame.links.clone()].concat(), new.login);
+    }
+    #[test]
+    fn unavailable_card_removes_hyperlink_and_qr() {
+        let frame = Frame::unavailable(
+            "Pairing temporarily unavailable.",
+            "synthetic.sock",
+            Mode::Relay,
+            (100, 30),
+        );
+        let text = String::from_utf8(frame.full_text("")).unwrap();
+        assert!(frame.image.is_none() && frame.links.is_empty());
+        assert!(text.contains("unavailable"));
+        assert!(!text.contains("#pair=") && !text.contains("\x1b]8;;"));
+    }
     #[test]
     fn pinned_url_contains_the_entire_token_even_when_wrapped() {
         let login = format!("http://192.168.1.234:8001/#token={}", "a".repeat(64));
@@ -408,6 +532,32 @@ mod tests {
             .clamp(1, 120);
         std::thread::sleep(Duration::from_secs(seconds));
         drop(dashboard);
+    }
+    #[test]
+    #[ignore = "interactive synthetic rotation fixture; owned isolated TTY only"]
+    fn synthetic_native_rotation_preview() {
+        assert_eq!(
+            std::env::var("HERDR_WEBAPP_QR_ROTATION_PREVIEW").as_deref(),
+            Ok("1")
+        );
+        let dashboard = Dashboard::start(
+            "https://qr-preview.invalid/#pair=synthetic-first",
+            "synthetic.sock",
+            false,
+            Mode::Relay,
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_secs(1));
+        dashboard
+            .update_link("https://qr-preview.invalid/#pair=synthetic-second")
+            .unwrap();
+        std::thread::sleep(Duration::from_secs(1));
+        dashboard.unavailable("SYNTHETIC pairing in progress; no access credentials.");
+        std::thread::sleep(Duration::from_secs(1));
+        dashboard
+            .update_link("https://qr-preview.invalid/#pair=synthetic-third")
+            .unwrap();
+        std::thread::sleep(Duration::from_secs(1));
     }
     #[test]
     fn compact_text_qr_preserves_url_and_quiet_zone_with_fewer_cells() {
