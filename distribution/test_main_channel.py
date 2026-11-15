@@ -510,7 +510,8 @@ class Tests(unittest.TestCase):
             if url.endswith("api/mode"):
                 mode = dict(mode="relay", channel="main", basePath="/main/", revision=A,
                             protocolVersion=1, entrypointProtocolVersion=1,
-                            publicOrigin=x.args.public_origin, version="0.0.8")
+                            publicOrigin=x.args.public_origin, version="0.0.8",
+                            build={"version": "261115160344+0100-27a2009", "revision": A})
                 mode.update(mode_changes)
                 return 200, {}, json.dumps(mode).encode()
             if url == "/main/":
@@ -530,6 +531,12 @@ class Tests(unittest.TestCase):
         with mock.patch.object(m, "request", side_effect=response):
             m.Manager.probe(x, x.state / "s.sock", A, manifest)
         self.assertEqual(seen.count("/main/relay/socket"), 3)
+        # Display identities must not replace the legacy machine package identity.
+        mode_changes["version"] = "261115160344+0100-27a2009"
+        with mock.patch.object(m, "request", side_effect=response):
+            with self.assertRaisesRegex(m.Failure, "mode_mismatch"):
+                m.Manager.probe(x, x.state / "s.sock", A, manifest)
+        mode_changes.clear()
         self.assertIn("/main/assets/index.js", seen)
         self.assertIn(asset["url"], seen)
         for html_asset[0] in ["/main/assets/index.js", "./assets/index.js"]:

@@ -61,9 +61,11 @@ make release
 Clean builds at a version tag show that version number. Other builds show
 `YYMMDDHHMMSS±HHMM-<7-character commit hash>`, using the commit’s timestamp and
 timezone, not the build time. For example: `260603140506+0200-0123456`.
-CLI output, connection diagnostics and Settings → Version use this identity;
-missing provenance is shown as unavailable, never guessed from the package version.
-Release manifests and update comparisons retain their separate numeric versions.
+CLI `--build-version`, connection diagnostics and Settings → Version use this
+identity; missing provenance is shown as unavailable, never guessed from the
+package version. Legacy CLI `--version`, explicit `--package-version`, API mode
+`version`, release manifests and update comparisons retain numeric package
+identities so already-installed launchers and relay managers keep working.
 
 ## Documentation
 

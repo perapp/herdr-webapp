@@ -63,6 +63,10 @@ async fn main() -> anyhow::Result<()> {
         println!("herdr-webapp {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if config.build_version {
+        println!("herdr-webapp {}", build_info::VERSION);
+        return Ok(());
+    }
     if config.build_revision {
         println!("{}", build_revision().unwrap_or("unversioned"));
         return Ok(());
@@ -535,7 +539,8 @@ mod tests {
     fn local_mode_adds_build_without_changing_legacy_fields() {
         let mode = local_mode();
         assert_eq!(mode["mode"], "local");
-        assert_eq!(mode["version"], relay_crypto::VERSION);
+        assert_eq!(mode["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(mode["build"]["version"], build_info::VERSION);
         assert_eq!(mode["protocolVersion"], relay_crypto::PROTOCOL_VERSION);
         assert_eq!(
             mode["build"],

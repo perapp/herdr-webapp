@@ -42,7 +42,22 @@ The main child receives the public origin, channel base and TURN file path,
 listens only on a private owner-only Unix socket, and cannot recursively enable
 another updater. The TURN secret is never an argument value.
 
-The entry executable embeds the Python manager. CI-backed runtime needs
+The entry executable embeds the Python manager. Publishing a new main child
+**does not update that manager**. Already-deployed managers and connector launchers
+identify candidates through legacy CLI `--version`, so that output must remain
+the numeric package identity. New managers prefer explicit `--package-version`
+and fall back only when that flag is unsupported. CLI `--build-version` reports
+the human tag or timestamp/commit identity instead.
+
+Likewise `/api/mode.version` is the Cargo package identity used by readiness
+checks; `build.version` is the human-facing identity. Never substitute display
+identities into these machine contracts. The `573df15`/`27a2009` display-version
+rollout violated those contracts; the compatibility hotfix preserves old entries
+without a production restart. Publish a fresh corrected revision rather than
+deleting live locks or activation/failure state; rejected revisions remain
+quarantined by their three-failure ledger.
+
+CI-backed runtime needs
 **Python 3.11+ and system CA certificates**, not Git, Rust, Cargo, Node, npm, Make,
 `gh`, an SSH key or a GitHub token. Use a private writable persistent state volume
 owned by the service UID, with a short container path such as `/main-state`.
@@ -107,9 +122,10 @@ Clients reconnect without queuing/replaying ambiguous input or uploads.
 
 Once loaded, the main frontend checks its source revision against `/main/api/mode`
 on signaling reconnect and visible foreground return, without continuous polling.
-An unchanged revision reconnects normally. A changed revision reloads when safe;
-pairing, IME composition, uploads, selected files and unsent drafts defer it behind
-an **Update ready** action. Explicit reload may acknowledge discarding a draft,
+An unchanged revision reconnects normally. A changed revision exposes an
+**Update ready** action; reload is intentional, not an automatic side effect of
+reconnect. Pairing, IME composition and uploads block reload; selected files and
+unsent drafts require an explicit discard decision. Explicit reload may acknowledge discarding a draft,
 not silently interrupt critical work. A per-target session guard bounds automatic
 reload attempts if assets remain stale; storage/network failures do not force a
 reload. Pairings/preferences survive, with no input replay or keyboard focus.

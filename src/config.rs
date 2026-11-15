@@ -9,7 +9,7 @@ use std::{
 
 #[derive(Parser, Debug)]
 #[command(
-    version = crate::build_info::VERSION,
+    version = env!("CARGO_PKG_VERSION"),
     about = "Herdr in your browser. Authenticated users have full shell access."
 )]
 pub struct Config {
@@ -24,6 +24,9 @@ pub struct Config {
     /// Machine-only artifact manifest identity; not the human build version.
     #[arg(long, global = true, hide = true)]
     pub package_version: bool,
+    /// Display the human build identity (tag or timestamp/commit); --version is legacy package identity.
+    #[arg(long, global = true)]
+    pub build_version: bool,
     /// Internal verified-candidate helper; never accepted from the HTTP API.
     #[arg(long, hide = true)]
     pub update_helper: Option<PathBuf>,
@@ -292,6 +295,25 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_cli_version_is_package_and_display_is_explicit() {
+        let version = Config::try_parse_from(["herdr-webapp", "--version"]).unwrap_err();
+        assert_eq!(version.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(
+            version.to_string(),
+            format!("herdr-webapp {}\n", env!("CARGO_PKG_VERSION"))
+        );
+        assert!(
+            Config::try_parse_from(["herdr-webapp", "--build-version"])
+                .unwrap()
+                .build_version
+        );
+        assert!(
+            Config::try_parse_from(["herdr-webapp", "--package-version"])
+                .unwrap()
+                .package_version
+        );
+    }
     #[test]
     fn modes_keep_legacy_flags_and_offline_license_output() {
         let legacy = Config::try_parse_from(["app", "--port", "8123", "--no-dashboard"]).unwrap();

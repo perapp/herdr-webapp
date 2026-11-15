@@ -30,6 +30,12 @@ from websockets.asyncio.client import connect
 async def main(binary: Path, keep: bool, hold: bool):
     root = Path(tempfile.mkdtemp(prefix="herdr-web-smoke-"))
     os.chmod(root, 0o700)
+    # Installed pre-build-identity launchers still validate --version exactly.
+    def identity(flag):
+        return subprocess.check_output([str(binary.resolve()), flag], cwd=root, text=True, timeout=10).strip()
+    assert identity("--version") == identity("--package-version"), "legacy updater identity changed"
+    assert identity("--build-version").startswith("herdr-webapp "), "human build identity unavailable"
+    print("PASS legacy CLI package identity and explicit human build identity")
     hc = shutil.which("hc")
     assert hc, "hc must be installed"
     base = {k: os.environ[k] for k in ["PATH", "USER", "LOGNAME", "LANG", "SHELL"] if k in os.environ}
