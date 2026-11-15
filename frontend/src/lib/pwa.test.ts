@@ -134,6 +134,31 @@ describe('push-only service worker', () => {
     for (const payload of [null, { ...valid, connectionId: '../api' }, { ...valid, token: 'secret' }, { ...valid, kind: 'working' }, { ...valid, terminal: 'x#token=secret' }, { ...valid, channel: 'stable' }, { ...valid, connectionId: 'other-computer' }, { ...valid, version: 2 }, { ...valid, terminal: 'host/../api' }]) await sw.push(payload);
     expect(sw.showNotification).toHaveBeenCalledTimes(1);
   });
+  it('suppresses an in-flight push for any terminal on the visible same-computer page', async () => {
+    const sw = worker('/main/notifications/a/', '/main/sw.js');
+    sw.matchAll.mockResolvedValue([{ url: 'https://herdr.test/main/connections/a?terminal=other', visibilityState: 'visible', focused: false }]);
+    await sw.push({ version: 1, eventId: 'e1', kind: 'done', channel: 'main', connectionId: 'a', terminal: 't1' });
+    expect(sw.matchAll).toHaveBeenCalledWith({ type: 'window', includeUncontrolled: true });
+    expect(sw.showNotification).not.toHaveBeenCalled();
+    sw.matchAll.mockResolvedValue([{ url: 'https://herdr.test/main/connections/a', visibilityState: 'hidden' }]);
+    await sw.push({ version: 1, eventId: 'e2', kind: 'done', channel: 'main', connectionId: 'a', terminal: 't1' });
+    expect(sw.showNotification).toHaveBeenCalledOnce();
+  });
+  it.each([
+    'https://herdr.test/main/connections/b', 'https://herdr.test/connections/a',
+    'https://other.test/main/connections/a', 'https://herdr.test/main/', 'invalid',
+  ])('does not silence background alerts for an unrelated visible page: %s', async url => {
+    const sw = worker('/main/notifications/a/', '/main/sw.js');
+    sw.matchAll.mockResolvedValue([{ url, visibilityState: 'visible' }]);
+    await sw.push({ version: 1, eventId: 'e1', kind: 'blocked', channel: 'main', connectionId: 'a', terminal: 't1' });
+    expect(sw.showNotification).toHaveBeenCalledOnce();
+  });
+  it('still delivers if browser window visibility cannot be checked', async () => {
+    const sw = worker('/notifications/a/', '/sw.js');
+    sw.matchAll.mockRejectedValue(new Error('unavailable'));
+    await sw.push({ version: 1, eventId: 'e1', kind: 'done', channel: 'stable', connectionId: 'a', terminal: 't1' });
+    expect(sw.showNotification).toHaveBeenCalledOnce();
+  });
   it('accepts native dotted machine names without accepting traversal segments', async () => {
     const sw = worker('/notifications/a/', '/sw.js');
     await sw.push({ version: 1, eventId: 'event', kind: 'done', connectionId: 'a', channel: 'stable', terminal: 'build.example/t7' });

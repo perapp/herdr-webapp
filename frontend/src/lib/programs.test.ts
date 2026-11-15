@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render } from 'svelte/server';
+import * as programs from './programs';
 import ProgramIcon from '../ProgramIcon.svelte';
 import catalog from './programs.catalog.json';
 import { programIconUrl, resolveProgram, terminalProgram } from './programs';
@@ -70,6 +71,17 @@ describe('native shipped program resolution', () => {
 });
 
 describe('ProgramIcon', () => {
+  it('quotes release-inlined SVG URLs without breaking on XML apostrophes', () => {
+    const url = "data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3e%3c/svg%3e";
+    const mock = vi.spyOn(programs, 'programIconUrl').mockReturnValue(url);
+    try {
+      const html = render(ProgramIcon, { props: { program: resolveProgram('pi') } }).body;
+      expect(html).toContain(`mask-image: url(&quot;${url}&quot;)`);
+      expect(html).toContain(`-webkit-mask-image: url(&quot;${url}&quot;)`);
+      expect(html).not.toContain(`url('${url}')`);
+    } finally { mock.mockRestore(); }
+  });
+
   it('uses a tinted mask for monochrome glyphs and preserves full-color artwork', () => {
     const pi = render(ProgramIcon, { props: { program: resolveProgram('pi'), size: 14, color: '#abcdef' } }).body;
     expect(pi).toContain('mask-image:');

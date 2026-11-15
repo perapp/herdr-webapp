@@ -2,6 +2,7 @@
 """Runs only inside the disposable GUI. CDP and page contents are never logged."""
 import base64
 import json
+import io
 from pathlib import Path
 import sys
 import time
@@ -585,6 +586,22 @@ finally:
         elif mode == 'rotation':
             rotation_acceptance(browser, job)
         elif mode == 'mobile':
+            browser.live()
+            browser.wait("document.querySelectorAll('.terminal-pane:not(.compact)').length===2")
+            browser.js('''window.__paneSwitch={flashes:0,interruptions:0,phase:'switch',peers:window.__e2e.peers.length,path:location.pathname,
+                shell:document.querySelector('.app-shell'),workspace:document.querySelector('#workspace')};
+              window.__paneObserver=new MutationObserver(()=>{
+                const s=window.__paneSwitch;
+                if(document.querySelector('[data-testid="connections-page"],.login-shell,.workspace-empty'))s.flashes++;
+                if(s.phase==='switch' && (document.querySelector('[data-testid="connection-workspace"],.connection-banner') ||
+                  !s.shell.isConnected || !s.workspace.isConnected || document.querySelector('.app-shell')!==s.shell))s.interruptions++;
+              });window.__paneObserver.observe(document.body,{childList:true,subtree:true});''')
+            # Desktop focus switches and the responsive unmount/remount path
+            # must also preserve the authenticated peer and workspace screen.
+            for name in ['pane-switch', 'relay-e2e'] * 4:
+                browser.click('.terminal-pane[aria-label=' + json.dumps(name) + '] .pane-name')
+                browser.wait("document.querySelector('.pane-link.selected').textContent.includes(" + json.dumps(name) + ')')
+            assert browser.js("window.__e2e.peers.length===window.__paneSwitch.peers && location.pathname===window.__paneSwitch.path && window.__paneSwitch.flashes===0 && window.__paneSwitch.interruptions===0"), 'acceptance condition'
             browser.call('Emulation.setDeviceMetricsOverride', {'width': 390, 'height': 844, 'deviceScaleFactor': 1, 'mobile': True})
             browser.call('Emulation.setTouchEmulationEnabled', {'enabled': True})
             browser.wait("!!document.querySelector('.terminal-pane.compact')")
@@ -616,6 +633,22 @@ finally:
             # Exercise trusted accessory input against a real raw PTY: LF must
             # arrive as byte 10, not carriage return or a literal slash/command.
             browser.shell("printf '\\033]7501;state=idle:app=pi\\033\\\\'; printf '%s%s\\n' ACCESSORY_ READY", 'ACCESSORY_READY')
+            # Release SVGs contain apostrophes in data URLs. Verify both CSS
+            # parsing and actual mask pixels, not just the presence of a span.
+            browser.click('[aria-label="Toggle navigation"]')
+            browser.wait("!!document.querySelector('.agent-navigation .program-icon .glyph')")
+            bounds = browser.js("(()=>{const g=document.querySelector('.agent-navigation .program-icon .glyph');g.scrollIntoView({block:'center'});const r=g.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,scale:1}})()")
+            assert browser.js("getComputedStyle(document.querySelector('.agent-navigation .program-icon .glyph')).maskImage!=='none'"), 'acceptance condition'
+            shot = browser.call('Page.captureScreenshot', {'format': 'png', 'clip': bounds})
+            glyph = Image.open(io.BytesIO(base64.b64decode(shot['data']))).convert('RGB')
+            background = glyph.getpixel((0, 0))
+            painted = sum(pixel != background for pixel in glyph.getdata())
+            assert 10 < painted < glyph.width * glyph.height * .75, 'acceptance condition'
+            shot = browser.call('Page.captureScreenshot', {'format': 'png', 'captureBeyondViewport': False})
+            screenshot = ROOT / 'program-icons-phone.png'
+            screenshot.write_bytes(base64.b64decode(shot['data']))
+            screenshot.chmod(0o600)
+            browser.click('[aria-label="Close navigation"]')
             browser.click('[aria-label="Terminal keyboard shortcuts"]')
             browser.wait("!!document.querySelector('.agent-commands-button svg')")
             assert browser.js("(()=>{const key=document.querySelector('[aria-label=\"Control J\"]'),row=key?.closest('.terminal-attachments'),command=document.querySelector('.agent-commands-button');return !!row && row.firstElementChild===key && key.getBoundingClientRect().height>=44 && !!command.querySelector('svg') && command.textContent.trim()===''})()"), 'acceptance condition'
@@ -627,11 +660,7 @@ finally:
             browser.click('[aria-label="Control J"]')
             browser.wait("window.__e2e.tail.includes('CTRL_J_OK')", label='shell sentinel')
             browser.click('[aria-label="Terminal keyboard shortcuts"]')
-            # Observe every DOM transition, not only the final attached terminal.
-            browser.js('''window.__paneSwitch={flashes:0,peers:window.__e2e.peers.length,path:location.pathname};
-              window.__paneObserver=new MutationObserver(()=>{
-                if(document.querySelector('[data-testid="connections-page"],.login-shell'))window.__paneSwitch.flashes++;
-              });window.__paneObserver.observe(document.body,{childList:true,subtree:true});''')
+            # Continue observing across desktop, responsive remount and phone switches.
             browser.wait("document.querySelectorAll('.pane-link').length===2")
             for index in [1, 0, 1, 0]:
                 browser.click('[aria-label="Toggle navigation"]')
@@ -639,7 +668,7 @@ finally:
                 browser.click(f'.pane-link:nth-child({index + 1})')
                 browser.wait("!document.querySelector('#navigation-drawer[open]')")
                 browser.live()
-                assert browser.js("window.__e2e.peers.length===window.__paneSwitch.peers && location.pathname===window.__paneSwitch.path && window.__paneSwitch.flashes===0"), 'acceptance condition'
+                assert browser.js("window.__e2e.peers.length===window.__paneSwitch.peers && location.pathname===window.__paneSwitch.path && window.__paneSwitch.flashes===0 && window.__paneSwitch.interruptions===0"), 'acceptance condition'
             # A real background report is released through a FIFO only after
             # leaving the pane, so completion cannot be acknowledged prematurely.
             signal = str(Path(job['proofDir']) / 'agent-completion-signal')
@@ -666,6 +695,8 @@ finally:
             proof = str(Path(job['proofDir']) / 'pane-switch-proof')
             browser.shell("printf '%s%s\\n' pane-switch- proof > " + json.dumps(proof) +
                           "; printf '%s%s\\n' PANE_SWITCH_ OK", 'PANE_SWITCH_OK')
+            assert browser.js('window.__paneSwitch.flashes===0 && window.__paneSwitch.interruptions===0'), 'acceptance condition'
+            browser.js("window.__paneSwitch.phase='reconnect'")
             count = browser.js('window.__e2e.peers.length')
             browser.js("window.__e2e.peers.filter(p=>p.connectionState==='connected').forEach(p=>p.close())")
             browser.wait(f'window.__e2e.peers.length>{count}', timeout=90)

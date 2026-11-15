@@ -1,16 +1,16 @@
 <script lang="ts">
-  let { name, status, error, retry, connections, forget }: { name: string; status: string; error?: string; retry: () => void; connections: () => void; forget?: () => void } = $props();
+  let { name, status, error, retry, connections, forget }: { name: string; status: string; error?: string; retry: () => void; connections?: () => void; forget?: () => void } = $props();
 </script>
 
 <!-- Connection availability is not navigation: never show onboarding on peer loss. -->
 <div class="connection-workspace" data-testid="connection-workspace">
-  <header><button class="quiet" aria-label="Connections" onclick={connections}>☰</button><span>{name}</span></header>
+  <header>{#if connections}<button class="quiet" aria-label="Connections" onclick={connections}>☰</button>{/if}<span>{name}</span></header>
   <main aria-label="Terminal connection">
     <section aria-labelledby="connection-heading">
       <span class="prompt" aria-hidden="true">❯</span>
       <h1 id="connection-heading">{status === 'Your terminals, wherever you are.' ? 'Opening your terminals…' : status}</h1>
       <p role="status">{error || 'Your spaces and terminals will appear here. Input resumes when connected.'}</p>
-      <div class="actions"><button onclick={retry}>Retry connection</button><button class="quiet" onclick={connections}>Connections</button></div>
+      <div class="actions"><button onclick={retry}>Retry connection</button>{#if connections}<button class="quiet" onclick={connections}>Connections</button>{/if}</div>
       {#if forget}<details><summary>Connection help</summary><p>Keep the connector running on this computer. If access was revoked, scan its fresh QR code or open its new private link.</p><button class="quiet" onclick={forget}>Forget this computer</button></details>{/if}
     </section>
   </main>

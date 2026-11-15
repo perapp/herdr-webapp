@@ -394,7 +394,9 @@ class Harness:
                       'checks': ['desktop-input', 'connections-and-source-links', 'phone-input',
                                  'pane-switch-peer-continuity', 'no-start-page-flash', 'phone-reconnect', 'ctrl-j-exact-lf',
                                  'lightning-command-menu', 'computer-details', 'agent-sort-menu',
-                                 'unseen-ready-agent-jump-and-counter', 'previous-pane-toggle']}
+                                 'unseen-ready-agent-jump-and-counter', 'previous-pane-toggle', 'program-icon-mask-pixels',
+                                 'desktop-pane-focus', 'responsive-pane-remount', 'workspace-dom-continuity',
+                                 'reconnect-no-empty-workspace-flash']}
             self.save_artifacts(report)
             print(json.dumps(report))
             return
@@ -456,7 +458,7 @@ class Harness:
             private(self.args.artifacts / ('report-' + secrets.token_hex(4) + '.json'), json.dumps(report, indent=2))
             # Only fixed-name page screenshots, never CDP traces, job/pairing data
             # or browser profile state. Retained images are owner-readable only.
-            for name in ('rotation-settings-desktop.png', 'rotation-settings-phone.png', 'drawer-settings-phone.png'):
+            for name in ('rotation-settings-desktop.png', 'rotation-settings-phone.png', 'drawer-settings-phone.png', 'program-icons-phone.png'):
                 if not (self.workspace / name).is_file():
                     continue
                 destination = self.args.artifacts / (secrets.token_hex(4) + '-' + name)

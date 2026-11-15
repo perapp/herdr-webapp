@@ -51,13 +51,25 @@ self.addEventListener('push', event => {
   const url = destination(payload);
   if (!url) return;
   const ctx = context();
-  event.waitUntil(self.registration.showNotification(eventTitles[payload.kind], {
-    body: 'Open Herdr to view this agent.',
-    icon: `${ctx.base}icons/icon-192.png`,
-    badge: `${ctx.base}icons/icon-192.png`,
-    tag: `herdr-${payload.connectionId}-${payload.eventId}`,
-    data: { url },
-  }));
+  event.waitUntil((async () => {
+    // Normally the connector's page-visible lease prevents sending this push.
+    // Also cover in-flight pushes and older connectors, without silencing a
+    // different computer/channel or another device's background notifications.
+    let windows = [];
+    try { windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true }); } catch { /* Prefer delivery if visibility cannot be checked. */ }
+    const path = `${ctx.base}connections/${payload.connectionId}`;
+    if (windows.some(client => {
+      if (client.visibilityState !== 'visible') return false;
+      try { const page = new URL(client.url); return page.origin === ctx.origin && page.pathname === path; } catch { return false; }
+    })) return;
+    await self.registration.showNotification(eventTitles[payload.kind], {
+      body: 'Open Herdr to view this agent.',
+      icon: `${ctx.base}icons/icon-192.png`,
+      badge: `${ctx.base}icons/icon-192.png`,
+      tag: `herdr-${payload.connectionId}-${payload.eventId}`,
+      data: { url },
+    });
+  })());
 });
 self.addEventListener('notificationclick', event => {
   event.notification.close();

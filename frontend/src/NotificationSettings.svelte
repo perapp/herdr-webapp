@@ -57,7 +57,7 @@
     <div class="notification-details">
       <p>Opt in for each computer. Alerts include only structured agent status, never terminal contents or labels.</p>
       <p>Enabled computers can send alerts while the app is closed or another computer is selected, as long as their connector is running and authorization is valid.</p>
-      <p>Alerts for the terminal you’re viewing in this window are silenced. Other panes are not marked seen. Forgetting a computer here does not revoke its connector’s authorization.</p>
+      <p>Alerts for this computer are silenced while its page is visible; use the ready-agent badge instead. Other panes are not marked seen. Forgetting a computer here does not revoke its connector’s authorization.</p>
       <p>{notificationPermissionHelp}</p>
     </div>
   </details>

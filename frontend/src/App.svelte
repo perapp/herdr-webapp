@@ -1,5 +1,7 @@
 <script lang="ts">
   import SourceLink from './SourceLink.svelte';
+  import ConnectionStatus from './ConnectionStatus.svelte';
+  import { initialWorkspaceState, receiveWorkspaceState } from './lib/workspaceState';
   import { onMount, tick, untrack } from 'svelte';
   import AgentSortControl from './AgentSortControl.svelte';
   import { createAgentChangeTracker, groupAgents, readAgentSort, saveAgentSort, type AgentSortMode } from './lib/agentSort';
@@ -26,7 +28,7 @@
   import { watchAppearance } from './lib/appearance';
   import type { Action } from './TopologyDialog.svelte';
   import { ApiError, errorMessage, request } from './lib/api';
-  import { emptyState, parseState, readable, machineName, spaceName, viewKey, findNode, record, qualify } from './lib/schema';
+  import { parseState, readable, machineName, spaceName, viewKey, findNode, record, qualify } from './lib/schema';
   import type { SharedDocument, SharedSpace, SharedTab, LayoutNode } from './lib/schema';
   import { blankView, loadView, saveView } from './lib/view';
 
@@ -40,7 +42,8 @@
   let treeError = $state('');
   let expandedSpaces = $state<Record<string, boolean>>({});
   let loginError = $state('');
-  let snapshot = $state(emptyState());
+  let workspaceState = $state(initialWorkspaceState());
+  const snapshot = $derived(workspaceState.snapshot);
   let streamLive = $state(false);
   let error = $state('');
   let sidebarOpen = $state(false);
@@ -82,7 +85,7 @@
   const focused = $derived(activePane?.id || '');
   const activeTerminal = $derived(snapshot.terminals.find(terminal => terminalAddress(terminal) === (selected && typeof activePane?.content?.terminal === 'string' ? qualify(activePane.content.terminal, selected.document.on) : '')));
   const zoomed = $derived(tab && view.zoomed[tabKey] ? findNode(tab.root, view.zoomed[tabKey]) : undefined);
-  const ready = $derived(snapshot.connected && streamLive);
+  const ready = $derived(snapshot.connected && snapshot.metadataReady !== false && streamLive);
   const agents = $derived(agentTree(snapshot.documents, snapshot.terminals));
   // App is mounted per authenticated connection; no navigation crosses computers.
   const sortComputer = untrack(() => selectedComputer || null);
@@ -114,13 +117,13 @@
   }
 
   function stop() { lifecycle++; source?.close(); source = undefined; streamLive = false; }
-  function signedOut() { stop(); auth = 'signed-out'; snapshot = emptyState(); modal = null; computerDetails = undefined; token = ''; }
+  function signedOut() { stop(); auth = 'signed-out'; workspaceState = initialWorkspaceState(); modal = null; computerDetails = undefined; token = ''; }
   async function refresh() {
     const current = lifecycle;
     const before = revision;
     try {
       const next = parseState(await request('/api/state'));
-      if (!disposed && current === lifecycle && before === revision) snapshot = next;
+      if (!disposed && current === lifecycle && before === revision) workspaceState = receiveWorkspaceState(workspaceState, next);
     } catch (e) {
       if (disposed || current !== lifecycle) return;
       if (e instanceof ApiError && e.status === 401) { signedOut(); loginError = 'Your session ended. Sign in again.'; }
@@ -146,7 +149,7 @@
     source.onopen = () => { if (current === lifecycle) { streamLive = true; error = ''; } };
     source.addEventListener('state', event => {
       if (disposed || current !== lifecycle) return;
-      try { snapshot = parseState(JSON.parse((event as MessageEvent).data)); revision++; error = ''; streamLive = true; }
+      try { workspaceState = receiveWorkspaceState(workspaceState, parseState(JSON.parse((event as MessageEvent).data))); revision++; error = ''; streamLive = true; }
       catch (e) { error = errorMessage(e); streamLive = false; }
     });
     source.onerror = () => {
@@ -306,6 +309,8 @@
       <SourceLink />
     </section>
   </main>
+{:else if !workspaceState.initialized}
+  <ConnectionStatus name={computers.find(c => c.id === selectedComputer)?.name || 'Your terminals'} status="Restoring your terminals…" error={error || snapshot.error} retry={() => void start()} connections={onConnections} />
 {:else}
   <div class="app-shell" class:mobile style:height={viewportHeight ? `${viewportHeight}px` : undefined}>
     <header class="app-header">

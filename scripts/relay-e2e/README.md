@@ -15,7 +15,11 @@ input, Connections/Settings/Versions source links, phone pane switches without
 peer replacement or start-page flashes, and authenticated reconnect. It also
 checks exact LF from Ctrl J, the lightning command opener, computer details,
 the native agent sort menu, unread-agent jump/count/acknowledgement and previous-pane
-toggling (without focusing terminal input). This is not
+toggling (without focusing terminal input), plus parsed CSS and actual glyph pixels
+for release-inlined program icon masks. Desktop focus switches and responsive
+layout changes are checked too: ordinary switching must retain the App/workspace DOM
+and never show reconnect or empty/onboarding screens; explicit reconnect must
+never flash a loaded-empty workspace before metadata arrives. This is not
 a substitute for the full upload, editor and access-rotation suite.
 
 Repeat with `--transport udp`, `--transport tcp`, and `--transport tls`. Each

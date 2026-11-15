@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const backend = vi.hoisted(() => ({ request: vi.fn() }));
-vi.mock('./api', () => ({ request: backend.request }));
+vi.mock('./api', async importOriginal => ({ ...await importOriginal<typeof import('./api')>(), request: backend.request }));
+import { ApiError } from './api';
 import { disableNotifications, enableNotifications, notificationPresenceReporter } from './notifications';
 import { disconnectedTransport, setApplicationTransport } from './transport';
 
@@ -79,6 +80,31 @@ describe('per-computer notification lifecycle', () => {
     const sender = backend.request.mock.calls[0][3];
     sender('/api/test'); expect(a.request).toHaveBeenCalledOnce(); expect(b.request).not.toHaveBeenCalled();
     expect(values.has('herdr.main:herdr.notifications.v1:computer-b')).toBe(false);
+  });
+  it('reports whole-page visibility and releases it on hiding, in async call order', async () => {
+    await enableNotifications(); backend.request.mockClear();
+    const report = notificationPresenceReporter();
+    const visible = report('t1', true), hidden = report('', false), visibleAgain = report('t2', true);
+    await Promise.all([visible, hidden, visibleAgain]);
+    expect(backend.request.mock.calls.map(call => call[1])).toEqual([
+      expect.objectContaining({ terminal: 't1', pageVisible: true }),
+      expect.objectContaining({ terminal: '' }),
+      expect.objectContaining({ terminal: 't2', pageVisible: true }),
+    ]);
+    expect(backend.request.mock.calls[1][1]).not.toHaveProperty('pageVisible');
+  });
+  it('falls back to legacy single-pane presence with an older strict connector', async () => {
+    await enableNotifications(); backend.request.mockClear();
+    backend.request.mockRejectedValueOnce(new ApiError('unknown field', 422)).mockResolvedValue({ ok: true });
+    const report = notificationPresenceReporter();
+    await report('t1', true); await report('t2', true);
+    expect(backend.request.mock.calls.map(call => call[1])).toEqual([
+      expect.objectContaining({ terminal: 't1', pageVisible: true }),
+      expect.objectContaining({ terminal: 't1' }),
+      expect.objectContaining({ terminal: 't2' }),
+    ]);
+    expect(backend.request.mock.calls[1][1]).not.toHaveProperty('pageVisible');
+    expect(backend.request.mock.calls[2][1]).not.toHaveProperty('pageVisible');
   });
   it('presence reports only a requested terminal with client-scoped lease, never after opt-out', async () => {
     const report = notificationPresenceReporter();

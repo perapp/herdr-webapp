@@ -11,6 +11,9 @@
     decorative?: boolean;
   } = $props();
   const url = $derived(programIconUrl(program));
+  // Vite inlines SVGs with single-quoted XML attributes. Quote the entire
+  // CSS URL as a string instead of nesting those apostrophes in single quotes.
+  const mask = $derived(url ? `url(${JSON.stringify(url)})` : undefined);
   const pixels = $derived(Number.isFinite(size) ? Math.max(1, Math.min(128, size)) : 16);
 </script>
 
@@ -18,7 +21,7 @@
   <span class="program-icon" style:width="{pixels}px" style:height="{pixels}px"
     role={decorative ? undefined : 'img'} aria-label={decorative ? undefined : program.name} aria-hidden={decorative ? 'true' : undefined}>
     {#if program.tint}
-      <span class="glyph" style:background-color={color} style:mask-image="url('{url}')" style:-webkit-mask-image="url('{url}')"></span>
+      <span class="glyph" style:background-color={color} style:mask-image={mask} style:-webkit-mask-image={mask}></span>
     {:else}
       <img src={url} alt="" width={pixels} height={pixels} draggable="false" />
     {/if}

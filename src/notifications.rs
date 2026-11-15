@@ -36,6 +36,7 @@ const DELIVERY_TTL: Duration = Duration::from_secs(300);
 struct Delivery {
     owner_epoch: u64,
     registration: Registration,
+    terminal: String,
     payload: Vec<u8>,
     created: Instant,
 }
@@ -67,6 +68,7 @@ struct OwnerPolicy {
     generation: u64,
     grants: Option<BTreeMap<String, u64>>,
 }
+// An empty terminal denotes a whole-page lease, inserted only by pageVisible=true.
 type ForegroundLeases = HashMap<(String, String, String), (String, Instant)>;
 pub struct Notifications {
     path: PathBuf,
@@ -289,14 +291,7 @@ impl Notifications {
                     };
                     let event_id = uuid::Uuid::new_v4().to_string();
                     for (registration, owner_epoch) in registrations {
-                        if self.seen.lock().await.iter().any(
-                            |((owner, endpoint, _), (terminal, at))| {
-                                owner == &registration.owner
-                                    && endpoint == &registration.subscription.endpoint
-                                    && terminal == address
-                                    && at.elapsed() < Duration::from_secs(30)
-                            },
-                        ) {
+                        if self.foreground(&registration, address).await {
                             continue;
                         }
                         let payload = json!({"version":1,"eventId":event_id,"kind":next,"connectionId":registration.connection_id,"channel":registration.channel,"terminal":address});
@@ -305,6 +300,7 @@ impl Notifications {
                             queue.push_back(Delivery {
                                 owner_epoch,
                                 registration,
+                                terminal: address.to_owned(),
                                 payload: serde_json::to_vec(&payload).unwrap(),
                                 created: Instant::now(),
                             });
@@ -320,10 +316,36 @@ impl Notifications {
         *events = events.resubscribe();
         self.needs_snapshot.store(true, Ordering::Release);
     }
+    async fn foreground(&self, registration: &Registration, address: &str) -> bool {
+        self.seen
+            .lock()
+            .await
+            .iter()
+            .any(|((owner, endpoint, _), (terminal, at))| {
+                owner == &registration.owner
+                    && endpoint == &registration.subscription.endpoint
+                    && (terminal.is_empty() || terminal == address)
+                    && at.elapsed() < Duration::from_secs(30)
+            })
+    }
     async fn deliver(&self, delivery: Delivery) {
         let Some(remaining) = DELIVERY_TTL.checked_sub(delivery.created.elapsed()) else {
             return;
         };
+        // Visibility may have changed while this delivery waited in the queue.
+        if self
+            .foreground(&delivery.registration, &delivery.terminal)
+            .await
+        {
+            return;
+        }
+        // Opting out while queued must not send a stale notification either.
+        if !self.saved.lock().await.registrations.iter().any(|r| {
+            r.owner == delivery.registration.owner
+                && r.subscription.endpoint == delivery.registration.subscription.endpoint
+        }) {
+            return;
+        }
         let mut changes = self.owners.subscribe();
         let sending = tokio::time::timeout(
             remaining,
@@ -664,6 +686,7 @@ mod tests {
             .deliver(Delivery {
                 owner_epoch: 0,
                 registration: revoked,
+                terminal: "t1".into(),
                 payload: vec![],
                 created: Instant::now(),
             })
@@ -698,6 +721,7 @@ mod tests {
                 .deliver(Delivery {
                     owner_epoch: epoch,
                     registration,
+                    terminal: "t1".into(),
                     payload: vec![],
                     created: Instant::now(),
                 })
@@ -751,6 +775,7 @@ mod tests {
             .deliver(Delivery {
                 owner_epoch: 0,
                 registration: service.saved.lock().await.registrations[0].clone(),
+                terminal: "t1".into(),
                 payload: vec![],
                 created: Instant::now() - DELIVERY_TTL - Duration::from_secs(1),
             })
@@ -1090,6 +1115,163 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
     #[tokio::test]
+    async fn visible_page_leases_are_scoped_expire_and_preserve_legacy_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = registered_service(dir.path()).await;
+        let registration = service.saved.lock().await.registrations[0].clone();
+        let endpoint_url = registration.subscription.endpoint.clone();
+        let mut other_device = registration.clone();
+        other_device.subscription.endpoint = "https://fcm.googleapis.com/other".into();
+        let mut other_owner = registration.clone();
+        other_owner.owner = "bob".into();
+        service
+            .saved
+            .lock()
+            .await
+            .registrations
+            .extend([other_device.clone(), other_owner.clone()]);
+        let core = crate::core::Core::new("/nonexistent".into());
+        let _ = core.notifications.set(service.clone());
+        let app = Arc::new(crate::App {
+            core,
+            auth: crate::auth::Auth::new("test-token".into(), Some("http://test.local".into())),
+            updates: crate::update::Updater::development(),
+        });
+        for client in ["tabA", "tabB"] {
+            assert_eq!(
+                call(app.clone(), "alice", "POST", "/api/notifications/seen",
+                    json!({"endpoint":endpoint_url,"terminal":"t1","clientId":client,"pageVisible":true}))
+                    .await.0,
+                StatusCode::OK
+            );
+        }
+        assert!(service.foreground(&registration, "t2").await);
+        assert!(!service.foreground(&other_device, "t2").await);
+        assert!(!service.foreground(&other_owner, "t2").await);
+        // A hidden tab releases only its own lease, not another visible tab's.
+        assert_eq!(
+            call(
+                app.clone(),
+                "alice",
+                "POST",
+                "/api/notifications/seen",
+                json!({"endpoint":endpoint_url,"terminal":"","clientId":"tabA","pageVisible":false})
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert!(service.foreground(&registration, "t2").await);
+        assert_eq!(
+            call(
+                app.clone(),
+                "alice",
+                "POST",
+                "/api/notifications/seen",
+                json!({"endpoint":endpoint_url,"terminal":"","clientId":"tabB","pageVisible":false})
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert!(!service.foreground(&registration, "t2").await);
+        // Empty terminal still acquires a whole-page lease when explicitly visible.
+        assert_eq!(
+            call(
+                app.clone(),
+                "alice",
+                "POST",
+                "/api/notifications/seen",
+                json!({"endpoint":endpoint_url,"terminal":"","clientId":"tabA","pageVisible":true})
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert!(service.foreground(&registration, "t2").await);
+        for (_, at) in service.seen.lock().await.values_mut() {
+            *at = Instant::now() - Duration::from_secs(31);
+        }
+        assert!(!service.foreground(&registration, "t1").await);
+        assert!(!service.foreground(&registration, "t2").await);
+        // Missing pageVisible defaults to false: old clients suppress one terminal.
+        assert_eq!(
+            call(
+                app.clone(),
+                "alice",
+                "POST",
+                "/api/notifications/seen",
+                json!({"endpoint":endpoint_url,"terminal":"t1","clientId":"tabA"})
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert!(service.foreground(&registration, "t1").await);
+        assert!(!service.foreground(&registration, "t2").await);
+        assert_eq!(
+            call(
+                app.clone(),
+                "alice",
+                "POST",
+                "/api/notifications/seen",
+                json!({"endpoint":endpoint_url,"terminal":"","clientId":"tabA"})
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert!(service.seen.lock().await.is_empty());
+    }
+    #[tokio::test]
+    async fn visible_page_suppresses_other_terminal_at_queue_and_delivery_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = registered_service(dir.path()).await;
+        let registration = service.saved.lock().await.registrations[0].clone();
+        service.seen.lock().await.insert(
+            (
+                registration.owner.clone(),
+                registration.subscription.endpoint.clone(),
+                "tab".into(),
+            ),
+            (String::new(), Instant::now()),
+        );
+        let (tx, rx) = broadcast::channel(16);
+        tx.send(Observation::Snapshot(vec![record("t2", "working")]))
+            .unwrap();
+        tx.send(Observation::Event {
+            kind: "status".into(),
+            record: record("t2", "done"),
+        })
+        .unwrap();
+        drop(tx);
+        service.clone().observe(rx).await;
+        assert!(service.attempts.lock().await.is_empty());
+        assert_eq!(service.saved.lock().await.baseline["t2"], "done");
+        // A delivery already queued before the visible heartbeat is also dropped.
+        service
+            .deliver(Delivery {
+                owner_epoch: 0,
+                registration: registration.clone(),
+                terminal: "t3".into(),
+                payload: vec![],
+                created: Instant::now(),
+            })
+            .await;
+        assert!(service.attempts.lock().await.is_empty());
+        service.seen.lock().await.clear();
+        service
+            .deliver(Delivery {
+                owner_epoch: 0,
+                registration,
+                terminal: "t3".into(),
+                payload: vec![],
+                created: Instant::now(),
+            })
+            .await;
+        assert_eq!(service.attempts.lock().await.len(), 1);
+    }
+    #[tokio::test]
     async fn foreground_suppresses_only_matching_device_and_pane() {
         let dir = tempfile::tempdir().unwrap();
         let service = Notifications::open(&dir.path().join("push")).unwrap();
@@ -1414,6 +1596,8 @@ struct Seen {
     endpoint: String,
     terminal: String,
     client_id: String,
+    #[serde(default)]
+    page_visible: bool,
 }
 async fn seen(
     State(app): State<Shared>,
@@ -1448,7 +1632,7 @@ async fn seen(
     let mut seen = service.seen.lock().await;
     seen.retain(|_, (_, at)| at.elapsed() < Duration::from_secs(30));
     let key = (owner, body.endpoint, body.client_id);
-    if body.terminal.is_empty() {
+    if !body.page_visible && body.terminal.is_empty() {
         seen.remove(&key);
     } else {
         if seen.len() >= 2048 && !seen.contains_key(&key) {
@@ -1457,7 +1641,12 @@ async fn seen(
                 "Too many foreground clients",
             ));
         }
-        seen.insert(key, (body.terminal, Instant::now()));
+        let terminal = if body.page_visible {
+            String::new()
+        } else {
+            body.terminal
+        };
+        seen.insert(key, (terminal, Instant::now()));
     }
     Ok(Json(json!({"ok":true})))
 }

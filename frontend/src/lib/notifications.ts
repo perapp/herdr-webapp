@@ -1,4 +1,4 @@
-import { request } from './api';
+import { ApiError, request } from './api';
 import { channelBase, storageKey } from './channel';
 import { connectionRoute } from './connectionRoute';
 import { record } from './schema';
@@ -96,14 +96,31 @@ export async function disableNotifications(): Promise<void> {
 }
 const clientId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : String(Math.random()).slice(2);
 /** Bind both identity and transport before any asynchronous work or navigation. */
-export function notificationPresenceReporter(): (terminal: string) => Promise<void> {
+export function notificationPresenceReporter(): (terminal: string, pageVisible?: boolean) => Promise<void> {
   let ctx: Context;
   try { ctx = context(); } catch { return async () => {}; }
-  return async terminal => {
-    if (notificationUnavailable() || Notification.permission !== 'granted') return;
-    try { if (localStorage.getItem(ctx.key) !== 'enabled') return; } catch { return; }
-    const subscription = await (await existingRegistration(ctx))?.pushManager.getSubscription();
-    if (subscription) await ctx.request('/api/notifications/seen', { endpoint: subscription.endpoint, terminal, clientId });
+  let legacy = false;
+  let pending = Promise.resolve();
+  return (terminal, pageVisible = false) => {
+    // Serialize presence only (never terminal input), so an older async visible
+    // update cannot overtake hiding the page or leaving this computer.
+    const send = async () => {
+      if (notificationUnavailable() || Notification.permission !== 'granted') return;
+      try { if (localStorage.getItem(ctx.key) !== 'enabled') return; } catch { return; }
+      const subscription = await (await existingRegistration(ctx))?.pushManager.getSubscription();
+      if (!subscription) return;
+      const body = { endpoint: subscription.endpoint, terminal, clientId };
+      try { await ctx.request('/api/notifications/seen', pageVisible && !legacy ? { ...body, pageVisible: true } : body); }
+      catch (error) {
+        // A newer relay UI may connect to an older connector with strict JSON.
+        // Preserve its single-pane leases; the worker still guards visible pages.
+        if (!pageVisible || legacy || !(error instanceof ApiError) || error.status !== 422) throw error;
+        legacy = true;
+        await ctx.request('/api/notifications/seen', body);
+      }
+    };
+    pending = pending.catch(() => {}).then(send);
+    return pending;
   };
 }
 /** Forgetting removes this browser's local push worker, not other device authorization. */

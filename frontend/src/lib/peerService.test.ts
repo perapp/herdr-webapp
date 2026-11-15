@@ -169,6 +169,62 @@ describe('PeerService session and control requests', () => {
 });
 
 describe('PeerService terminal channels', () => {
+  it('isolates late attach/send failures from a replaced terminal and its event subscription', async () => {
+    const { service, channels, control, pc, lost, activate } = setup(); await activate();
+    const events = service.events('/api/events');
+    const eventLost = vi.fn(), state = vi.fn(); events.onerror = eventLost;
+    events.addEventListener('state', state);
+    await reply(control.wire, { type: 'subscribed', id: '1' });
+    for (const phase of ['attach', 'send'] as const) {
+      const previous = service.socket('/api/terminal?terminal=old&cols=80&rows=24');
+      const oldChannel = channels.at(-1)!;
+      if (phase === 'send') {
+        oldChannel.local.open();
+        await vi.waitFor(() => expect(previous.readyState).toBe(1));
+      }
+      // Simulate the phone/network backpressure that a click-and-wait loop misses.
+      oldChannel.local.bufferedAmount = 512 * 1024;
+      if (phase === 'attach') oldChannel.local.open();
+      else previous.send('already-intended-input');
+      const closed = vi.fn(); previous.onclose = closed;
+      previous.close();
+      const next = service.socket('/api/terminal?terminal=new&cols=80&rows=24');
+      const nextChannel = channels.at(-1)!; nextChannel.local.open();
+      await vi.waitFor(() => expect(next.readyState).toBe(1));
+      // Old promise catches and late RTC events must not terminate the replacement.
+      oldChannel.local.dispatchEvent(new Event('close'));
+      oldChannel.local.dispatchEvent(new Event('error'));
+      oldChannel.local.dispatchEvent(new Event('bufferedamountlow'));
+      await Promise.resolve();
+      expect(closed).toHaveBeenCalledOnce();
+      expect(next.readyState).toBe(1);
+      expect(jsonMessages(nextChannel)).toEqual([{ terminal: 'new', cols: 80, rows: 24, observe: false, resumed: false, theme: null }]);
+      expect(jsonMessages(oldChannel)).toHaveLength(phase === 'attach' ? 0 : 1);
+      next.close();
+    }
+    await reply(control.wire, { type: 'event', id: '1', event: 'state', data: '{"connected":true}' });
+    expect(state).toHaveBeenCalledOnce(); expect(eventLost).not.toHaveBeenCalled();
+    expect(lost).not.toHaveBeenCalled(); expect(pc.close).not.toHaveBeenCalled();
+    expect(control.local.readyState).toBe('open');
+  });
+
+  it('isolates remote terminal close/corruption but still fails closed on control corruption', async () => {
+    const { service, channels, control, pc, lost, activate } = setup(); await activate();
+    for (const failure of ['close', 'corrupt'] as const) {
+      const socket = service.socket('/api/terminal?terminal=t1&cols=80&rows=24');
+      const endpoint = channels.at(-1)!; endpoint.local.open();
+      await vi.waitFor(() => expect(socket.readyState).toBe(1));
+      const closed = vi.fn(); socket.onclose = closed;
+      if (failure === 'close') endpoint.local.close();
+      else endpoint.local.dispatchEvent(new MessageEvent('message', { data: new ArrayBuffer(1) }));
+      expect(socket.readyState).toBe(3); expect(closed).toHaveBeenCalledOnce();
+      expect(lost).not.toHaveBeenCalled(); expect(pc.close).not.toHaveBeenCalled();
+    }
+    control.local.dispatchEvent(new MessageEvent('message', { data: new ArrayBuffer(1) }));
+    expect(lost).toHaveBeenCalledOnce(); expect(pc.close).toHaveBeenCalledOnce();
+    expect(() => service.socket('/api/terminal')).toThrow('disconnected');
+  });
+
   it('switches terminal channels without closing control, events or the peer', async () => {
     const { service, channels, control, pc, lost, activate } = setup();
     await activate();
