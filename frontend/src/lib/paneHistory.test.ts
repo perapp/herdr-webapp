@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { agentTree } from './agents';
 import type { AgentNode, AgentTarget } from './agents';
 import { selectPane } from './navigation';
-import { PaneHistory, nextReadyAgent, paneAddress, readyAgents, resolveHistoryTarget } from './paneHistory';
+import { PaneHistory, createPaneHistory, forgetPaneHistory, nextReadyAgent, paneAddress, readyAgents, resolveHistoryTarget } from './paneHistory';
 import type { SharedDocument, TerminalInfo } from './schema';
 import { blankView } from './view';
 
@@ -114,5 +114,44 @@ describe('next unseen ready root agent', () => {
     parent.children = [child];
     expect(readyAgents([parent])).toEqual([]);
     expect(nextReadyAgent([parent], undefined)).toBeUndefined();
+  });
+});
+
+
+describe('pane history survives reconnects privately', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  function storage() {
+    const values = new Map<string, string>();
+    return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+  }
+  it('restores last/current toggling after remount, scoped by computer, channel and tab', () => {
+    const saved = storage(), doc = document();
+    vi.stubGlobal('location', new URL('https://herdr.test/main/connections/computer-a'));
+    const before = createPaneHistory('computer-a', saved);
+    before.observe(target(doc, 'a')); before.observe(target(doc, 'b'));
+    const after = createPaneHistory('computer-a', saved);
+    after.observe(target(doc, 'b'));
+    expect(after.take([doc])?.pane.id).toBe('a');
+    expect(after.take([doc])?.pane.id).toBe('b');
+    expect(createPaneHistory('computer-b', saved).previous([doc])).toBeUndefined();
+    expect(createPaneHistory('computer-a', storage()).previous([doc])).toBeUndefined();
+    vi.stubGlobal('location', new URL('https://herdr.test/connections/computer-a'));
+    expect(createPaneHistory('computer-a', saved).previous([doc])).toBeUndefined();
+  });
+  it('tolerates denied/corrupt storage and skips stale restored targets', () => {
+    const denied = { getItem: () => { throw Error('denied'); }, setItem: () => { throw Error('denied'); } };
+    const doc = document(), fallback = createPaneHistory(null, denied);
+    fallback.observe(target(doc, 'a')); fallback.observe(target(doc, 'b'));
+    expect(fallback.previous([doc])?.pane.id).toBe('a');
+    const saved = storage(); saved.setItem('herdr.pane-history.v1:null', '{broken');
+    expect(createPaneHistory(null, saved).previous([doc])).toBeUndefined();
+    saved.setItem('herdr.pane-history.v1:null', JSON.stringify([null, { pane: 42 }, { on: null, space: 's', tab: 't', pane: 'b' }, { on: null, space: 's', tab: 't', pane: 'removed' }, { on: null, space: 's', tab: 't', pane: 'a' }]));
+    expect(createPaneHistory(null, saved).previous([doc])?.pane.id).toBe('a');
+  });
+  it('clears remembered-computer history when it is forgotten', () => {
+    const saved = storage(), doc = document(); vi.stubGlobal('sessionStorage', saved);
+    const history = createPaneHistory('a'); history.observe(target(doc, 'a')); history.observe(target(doc, 'b'));
+    forgetPaneHistory('a');
+    expect(createPaneHistory('a').previous([doc])).toBeUndefined();
   });
 });

@@ -396,7 +396,7 @@ class Harness:
                                  'lightning-command-menu', 'computer-details', 'agent-sort-menu',
                                  'unseen-ready-agent-jump-and-counter', 'previous-pane-toggle', 'program-icon-mask-pixels',
                                  'desktop-pane-focus', 'responsive-pane-remount', 'workspace-dom-continuity',
-                                 'reconnect-no-empty-workspace-flash']}
+                                 'reconnect-no-empty-workspace-flash', 'previous-pane-after-reconnect']}
             self.save_artifacts(report)
             print(json.dumps(report))
             return

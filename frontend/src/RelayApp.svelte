@@ -4,6 +4,7 @@
   import { forgetLocalNotifications } from './lib/notifications';
   import { connectionRoute, connectionPath, lastComputer, rememberComputer, forgetSelection, ConnectionGeneration } from './lib/connectionRoute';
   import { forgetView } from './lib/view';
+  import { forgetPaneHistory } from './lib/paneHistory';
   import { onMount, setContext } from 'svelte';
   import { MainReload, reloadContext, trackReloadActivity } from './lib/mainReload';
   import type { ReloadState } from './lib/mainReload';
@@ -140,7 +141,7 @@
     const current = generation.guard();
     try {
       await forgetComputer(id);
-      forgetView(id); forgetSelection(id); paired?.();
+      forgetView(id); forgetPaneHistory(id); forgetSelection(id); paired?.();
       if (!mounted || !current()) return;
       history.pushState(null, '', routePath(channelPath('/')));
       await refresh(current);

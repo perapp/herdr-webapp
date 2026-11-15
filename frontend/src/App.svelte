@@ -5,7 +5,7 @@
   import { onMount, tick, untrack } from 'svelte';
   import AgentSortControl from './AgentSortControl.svelte';
   import { createAgentChangeTracker, groupAgents, readAgentSort, saveAgentSort, type AgentSortMode } from './lib/agentSort';
-  import { PaneHistory, readyAgents, nextReadyAgent } from './lib/paneHistory';
+  import { createPaneHistory, readyAgents, nextReadyAgent } from './lib/paneHistory';
   import ComputerDetailsDialog from './ComputerDetailsDialog.svelte';
   import { transportEvents } from './lib/transport';
   import type { EventSourceLike } from './lib/transport';
@@ -98,7 +98,7 @@
   });
   const agentGroups = $derived(groupAgents(agents, snapshot.terminals, agentSortMode, address => agentChangedTimes[address] ?? 0));
   function changeAgentSort(mode: AgentSortMode) { agentSortMode = mode; saveAgentSort(sortComputer, mode); }
-  const paneHistory = new PaneHistory();
+  const paneHistory = createPaneHistory(sortComputer);
   let historyRevision = $state(0);
   $effect(() => {
     if (selected && tab && activePane && paneHistory.observe({ document: selected.document, space: selected.space, tab, pane: activePane })) historyRevision = paneHistory.revision;

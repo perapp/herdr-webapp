@@ -703,6 +703,14 @@ finally:
             browser.live()
             assert browser.js('window.__paneSwitch.flashes===0'), 'acceptance condition'
             browser.js('window.__paneObserver.disconnect()')
+            # The back button must retain its target after App/peer remount.
+            browser.wait("!document.querySelector('[aria-label=\"Previous pane\"]').disabled")
+            browser.click('[aria-label="Previous pane"]')
+            browser.live()
+            browser.wait("document.querySelector('.pane-link.selected .pane-number').textContent.trim()==='2'")
+            browser.click('[aria-label="Previous pane"]')
+            browser.live()
+            browser.wait("document.querySelector('.pane-link.selected .pane-number').textContent.trim()==='1'")
             proof = str(Path(job['proofDir']) / 'mobile-resume-proof')
             browser.shell("printf '%s%s\\n' mobile-resume- proof > " + json.dumps(proof) +
                           "; printf '%s%s\\n' MOBILE_RESUME_ OK", 'MOBILE_RESUME_OK')
