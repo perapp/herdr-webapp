@@ -8,15 +8,19 @@
   import PaneTree from './PaneTree.svelte';
   import TopologyDialog from './TopologyDialog.svelte';
   import SettingsDialog from './SettingsDialog.svelte';
+  import NotificationPresence from './NotificationPresence.svelte';
+  import { notificationLayoutReady, selectNotificationTarget } from './lib/notificationTarget';
+  import InstallDialog from './InstallDialog.svelte';
+  import { installApp } from './lib/pwa';
   import UpdatePanel from './UpdatePanel.svelte';
   import { initializeAppearance, watchAppearance } from './lib/appearance';
   import type { Action } from './TopologyDialog.svelte';
   import { ApiError, errorMessage, request } from './lib/api';
-  import { emptyState, parseState, readable, machineName, spaceName, viewKey, findNode, record } from './lib/schema';
+  import { emptyState, parseState, readable, machineName, spaceName, viewKey, findNode, record, qualify } from './lib/schema';
   import type { SharedDocument, SharedSpace, SharedTab, LayoutNode } from './lib/schema';
   import { blankView, loadView, saveView } from './lib/view';
 
-  let { initialToken = '', peerMode = false, peerVersion = '', relayVersion = '', peerRoute = '', serverMode, peerBuild, onForget, computers = [], selectedComputer = '', onChooseComputer }: { initialToken?: string; peerMode?: boolean; peerVersion?: string; relayVersion?: string; peerRoute?: string; serverMode?: unknown; peerBuild?: unknown; onForget?: () => void; computers?: { id: string; name: string }[]; selectedComputer?: string; onChooseComputer?: (id: string) => void } = $props();
+  let { initialToken = '', peerMode = false, peerVersion = '', relayVersion = '', peerRoute = '', serverMode, peerBuild, onForget, computers = [], selectedComputer = '', onChooseComputer, onConnections }: { initialToken?: string; peerMode?: boolean; peerVersion?: string; relayVersion?: string; peerRoute?: string; serverMode?: unknown; peerBuild?: unknown; onForget?: () => void; computers?: { id: string; name: string }[]; selectedComputer?: string; onChooseComputer?: (id: string) => void; onConnections?: () => void } = $props();
   let auth = $state<'checking' | 'signed-out' | 'signed-in'>('checking');
   let token = $state('');
   let loginBusy = $state(false);
@@ -31,6 +35,8 @@
   let mobile = $state(false);
   let showKeys = $state(false);
   let showSettings = $state(false);
+  let installMessage = $state('');
+  async function showInstall() { installMessage = await installApp(); }
   let appearance = $state(initializeAppearance());
   let viewportHeight = $state<number>();
   let drawer = $state<HTMLDialogElement>();
@@ -43,6 +49,8 @@
   let revision = 0;
   let disposed = false;
   let checkingSession = false;
+  let notificationTarget = $state(new URLSearchParams(location.search).get('terminal') || '');
+  let notificationNotice = $state('');
   const selectable = $derived(snapshot.documents.flatMap((document, i) => document.spaces.map((space, j) => ({ document, space, key: viewKey(document.on, space.id), machine: machineName(document.on, snapshot.machines, i, snapshot.core), name: spaceName(space, document.on, snapshot.terminals, `Space ${j + 1}`) }))));
   const selected = $derived(selectable.find(s => s.key === view.space) || selectable[0]);
   const spaceKey = $derived(selected?.key || '');
@@ -160,6 +168,15 @@
     };
   }
   $effect(() => { if (viewLoaded) saveView(view); });
+  $effect(() => {
+    if (!ready || !viewLoaded || !notificationTarget || !notificationLayoutReady(snapshot)) return;
+    const found = selectNotificationTarget(view, snapshot.documents, notificationTarget);
+    notificationTarget = '';
+    if (!found) notificationNotice = 'This agent’s pane is no longer available. Choose a pane from the navigation menu.';
+    // Consume the routing hint, not the selected computer. No input is focused.
+    const url = new URL(location.href); url.searchParams.delete('terminal');
+    history.replaceState(null, '', url.pathname + url.search);
+  });
   onMount(() => {
     const stopAppearance = watchAppearance(value => appearance = value);
     const media = matchMedia(MOBILE_QUERY);
@@ -196,6 +213,8 @@
 </script>
 
 <style>
+  .notification-notice { position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 900; padding: 12px; background: var(--raised); border: 1px solid var(--muted); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .notification-notice button { min-width: 44px; min-height: 44px; }
   .peer-info { padding: 7px 10px; font-size: calc(11rem / 13); color: var(--muted); min-width: 0; }
   .peer-info summary { cursor: pointer; min-height: 28px; display: list-item; }
   .peer-info p { margin-bottom: 8px; overflow-wrap: anywhere; }
@@ -274,6 +293,9 @@
   </div>
 {/if}
 {#if modal}<TopologyDialog {...modal} close={() => modal = null} saved={topologySaved} />{/if}
+{#if installMessage}<InstallDialog message={installMessage} close={() => installMessage = ''} />{/if}
+<NotificationPresence {ready} terminal={typeof activePane?.content?.terminal === 'string' && selected ? qualify(activePane.content.terminal, selected.document.on) : ''} />
+{#if notificationNotice}<aside role="status" class="notification-notice">{notificationNotice}<button onclick={() => notificationNotice = ''} aria-label="Dismiss notification destination message">×</button></aside>{/if}
 {#if showSettings}<SettingsDialog close={() => showSettings = false} {peerMode} {serverMode} {peerBuild} {peerVersion} coreVersion={snapshot.coreVersion} connected={ready} />{/if}
 
 {#snippet settingsFooter()}
@@ -282,7 +304,9 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 3-.6 2.2-2 .9-2-.6-2 3.5 1.5 1.6v2.3L2.4 14.5l2 3.5 2-.6 2 .9L9 21h4l.6-2.7 2-.9 2 .6 2-3.5-1.5-1.6v-2.3l1.5-1.6-2-3.5-2 .6-2-.9L13 3Z"/><circle cx="11" cy="12" r="3"/></svg>
       <span>Settings</span><small>{appearance.preference === 'system' ? 'System' : appearance.preference === 'dark' ? 'Dark' : 'Light'}</small>
     </button>
+    <button class="settings-button" aria-haspopup="dialog" onclick={showInstall}><span>Install app</span></button>
     {#if peerMode}
+      <button class="settings-button" onclick={() => { closeNavigation(); onConnections?.(); }}><span>Connections</span></button>
       <details class="peer-info"><summary>{peerRoute || 'Peer connection'}</summary>
         <p>Connector {peerVersion || 'unknown'} · Relay {relayVersion || 'unknown'}</p>
         <p>The laptop launcher manages automatic connector updates while it is running. Manual connectors must be updated on that computer; local-server update controls are not available here.</p>

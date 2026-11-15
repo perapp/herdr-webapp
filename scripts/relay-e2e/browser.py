@@ -239,6 +239,57 @@ def main():
             proof = str(Path(job['proofDir']) / 'resume-proof')
             browser.shell("printf '%s%s\\n' resume- proof > " + json.dumps(proof) +
                           "; printf '%s%s\\n' RESUME_ OK", 'RESUME_OK')
+        elif mode == 'connections':
+            browser.live()
+            target = browser.js('location.pathname')
+            assert '/connections/' in target, 'acceptance condition'
+            browser.call('Page.addScriptToEvaluateOnNewDocument', {'source': OBSERVER})
+            # A normal root visit must show the list, even with one paired computer.
+            browser.call('Page.navigate', {'url': job['origin'] + '/'})
+            browser.wait("document.querySelector('h1')?.textContent==='Connections' && !document.querySelector('.xterm')")
+            browser.click('.connections-menu summary')
+            assert browser.js("JSON.stringify([...document.querySelectorAll('.connections-menu button')].map(b=>b.textContent.trim()))") == '["Settings","Install app"]', 'acceptance condition'
+            browser.call('Page.navigate', {'url': job['origin'] + '/launch' + ('?forceTurn=1' if job['transport'] != 'direct' else '')})
+            browser.wait('location.pathname===' + json.dumps(target))
+            browser.live()
+            proof = str(Path(job['proofDir']) / 'launch-proof')
+            browser.shell("printf '%s%s\\n' launch- proof > " + json.dumps(proof) +
+                          "; printf '%s%s\\n' LAUNCH_ OK", 'LAUNCH_OK')
+        elif mode == 'multi-computer':
+            browser.live()
+            first = browser.js('location.pathname')
+            browser.call('Page.addScriptToEvaluateOnNewDocument', {'source': OBSERVER})
+            fragment = base64.urlsafe_b64encode(json.dumps(job['secondPairing'], separators=(',', ':')).encode()).decode().rstrip('=')
+            query = '?forceTurn=1' if job['transport'] != 'direct' else ''
+            browser.call('Page.navigate', {'url': job['origin'] + '/' + query + '#pair=' + fragment})
+            browser.wait('location.pathname!==' + json.dumps(first) + " && location.hash==='' && !!window.__e2e")
+            browser.live()
+            assert browser.js("document.querySelector('#peer-computer')?.options.length") == 2, 'acceptance condition'
+            proof = str(Path(job['proofDir']) / 'second-computer-proof')
+            browser.shell("printf '%s%s\\n' second-computer- proof > " + json.dumps(proof) +
+                          "; printf '%s%s\\n' SECOND_COMPUTER_ OK", 'SECOND_COMPUTER_OK')
+            # A direct route must resume the first pinned key without a fresh pairing.
+            browser.call('Page.navigate', {'url': job['origin'] + first + query})
+            browser.wait('location.pathname===' + json.dumps(first) + ' && !!window.__e2e')
+            browser.live()
+            proof = str(Path(job['proofDir']) / 'first-computer-proof')
+            browser.shell("printf '%s%s\\n' first-computer- proof > " + json.dumps(proof) +
+                          "; printf '%s%s\\n' FIRST_COMPUTER_ OK", 'FIRST_COMPUTER_OK')
+        elif mode == 'mobile':
+            browser.call('Emulation.setDeviceMetricsOverride', {'width': 390, 'height': 844, 'deviceScaleFactor': 1, 'mobile': True})
+            browser.call('Emulation.setTouchEmulationEnabled', {'enabled': True})
+            browser.wait("!!document.querySelector('.terminal-pane.compact')")
+            browser.live()
+            proof = str(Path(job['proofDir']) / 'mobile-proof')
+            browser.shell("printf '%s%s\\n' mobile- proof > " + json.dumps(proof) +
+                          "; printf '%s%s\\n' MOBILE_ OK", 'MOBILE_OK')
+            count = browser.js('window.__e2e.peers.length')
+            browser.js("window.__e2e.peers.filter(p=>p.connectionState==='connected').forEach(p=>p.close())")
+            browser.wait(f'window.__e2e.peers.length>{count}', timeout=90)
+            browser.live()
+            proof = str(Path(job['proofDir']) / 'mobile-resume-proof')
+            browser.shell("printf '%s%s\\n' mobile-resume- proof > " + json.dumps(proof) +
+                          "; printf '%s%s\\n' MOBILE_RESUME_ OK", 'MOBILE_RESUME_OK')
         elif mode == 'large':
             browser.live()
             before = browser.js('window.__e2e.receivedBytes')

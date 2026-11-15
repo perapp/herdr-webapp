@@ -26,6 +26,12 @@ describe('shared layout schema', () => {
     expect(state.documents[0].spaces).toEqual([]);
     expect(state.documents[1].error).toBeTruthy();
   });
+  it('preserves explicit metadata readiness without inventing it for older servers', () => {
+    const base = { connected: true, terminals: [], machines: [], documents: [] };
+    expect(parseState(base).metadataReady).toBeUndefined();
+    expect(parseState({ ...base, metadataReady: false }).metadataReady).toBe(false);
+    expect(parseState({ ...base, metadataReady: true }).metadataReady).toBe(true);
+  });
   it('bounds recursion and does not manufacture machine identity from local IDs', () => {
     let root: unknown = { type: 'block', content: {} };
     for (let i = 0; i < 55; i++) root = { type: 'row', children: [root] };

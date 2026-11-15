@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import VersionDialog from './VersionDialog.svelte';
+  import NotificationSettings from './NotificationSettings.svelte';
   import { initializeAppearance, setAppearance, watchAppearance } from './lib/appearance';
   import type { AppearancePreference } from './lib/appearance';
   import { initializeFontSize, watchFontSize, setFontSize, defaultFontSize, minFontSize, maxFontSize } from './lib/fontSize';
@@ -56,6 +57,7 @@
     </div>
     <button class="quiet font-size-reset" disabled={fontSize === defaultFontSize} onclick={() => fontSaved = setFontSize(defaultFontSize)}>Reset to {defaultFontSize} px</button>
   </fieldset>
+  <NotificationSettings />
   <button class="quiet version-option" bind:this={versionButton} aria-haspopup="dialog" onclick={openVersions}>Version</button>
   <p class="settings-note" role="status">{saved && fontSaved ? 'Applies immediately. Saved only in this browser.' : 'Applied for now. Browser storage is unavailable, so this choice may not survive a reload.'}</p>
 </dialog>

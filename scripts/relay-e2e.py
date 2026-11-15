@@ -322,7 +322,23 @@ class Harness:
             require(time.monotonic() < deadline, 'connector readiness timeout')
             time.sleep(.1)
         pairing = json.loads((state / 'pairing.json').read_text())
-        private(self.workspace / 'job.json', json.dumps({'origin': origin, 'pairing': pairing,
+        # A second independent connector identity deliberately shares the fixture
+        # Core/layout IDs: browser credentials and private views must stay isolated.
+        second_state = self.root / 'second-connector'
+        second_state.mkdir(mode=0o700)
+        second_ready = self.root / 'second-ready.json'
+        self.spawn([str(self.args.binary), 'connect-relay', '--relay-url', origin,
+                    '--core-socket', self.env['HC_SOCKET'], '--state-dir', str(second_state),
+                    '--ready-file', str(second_ready),
+                    *([] if external else ['--allow-http-loopback']),
+                    *(['--force-turn'] if force_turn else [])], 'second-connector')
+        deadline = time.monotonic() + 45
+        while not second_ready.is_file():
+            require(all(p.poll() is None for p in self.children), 'relay or connector exited')
+            require(time.monotonic() < deadline, 'connector readiness timeout')
+            time.sleep(.1)
+        second_pairing = json.loads((second_state / 'pairing.json').read_text())
+        private(self.workspace / 'job.json', json.dumps({'origin': origin, 'pairing': pairing, 'secondPairing': second_pairing,
                 'transport': self.args.transport, 'proofDir': str(self.root)}))
         # Explicit exception confined to this disposable browser; NEVER native TLS.
         browser_flags = ['--ignore-certificate-errors'] if self.args.transport == 'tls' and not external else []
@@ -342,12 +358,20 @@ class Harness:
         require((self.root / 'reload-proof').read_text() == 'reload-proof\n', 'reload shell proof failed')
         self.browser('resume')
         require((self.root / 'resume-proof').read_text() == 'resume-proof\n', 'resume shell proof failed')
+        self.browser('connections')
+        require((self.root / 'launch-proof').read_text() == 'launch-proof\n', 'launch selection shell proof failed')
+        self.browser('mobile')
+        require((self.root / 'mobile-proof').read_text() == 'mobile-proof\n', 'mobile shell proof failed')
+        require((self.root / 'mobile-resume-proof').read_text() == 'mobile-resume-proof\n', 'mobile resume shell proof failed')
+        self.browser('multi-computer')
+        require((self.root / 'second-computer-proof').read_text() == 'second-computer-proof\n', 'second computer shell proof failed')
+        require((self.root / 'first-computer-proof').read_text() == 'first-computer-proof\n', 'first computer resume proof failed')
         large = self.browser('large')
         require((self.root / 'large-proof').read_text() == 'large-proof\n', 'large output shell proof failed')
         require(all(p.poll() is None for p in self.children), 'child exited during acceptance')
         report = {'ok': True, 'transport': self.args.transport, 'externalRelay': bool(external), 'pairs': paired['pairs'],
                   'checks': ['shell-file', 'upload-bytes', 'no-enter', '20-sequential-uploads',
-                             'reload', 'resume', '400k-output'], 'receivedBytes': large['receivedBytes']}
+                             'reload', 'resume', 'connections-root', 'launch-resume', 'phone-input', 'phone-reconnect', 'two-remembered-computers', '400k-output'], 'receivedBytes': large['receivedBytes']}
         if self.args.artifacts:
             self.args.artifacts.mkdir(parents=True, exist_ok=True)
             private(self.args.artifacts / ('report-' + secrets.token_hex(4) + '.json'), json.dumps(report, indent=2))

@@ -55,9 +55,14 @@ pub struct PeerService {
     subscriptions: Arc<Semaphore>,
     terminals: Arc<Semaphore>,
     uploads: Arc<Semaphore>,
+    owner: crate::notifications::Owner,
 }
 impl PeerService {
+    #[cfg(test)]
     pub fn new(core: Arc<Core>) -> Self {
+        Self::for_peer(core, "local".into())
+    }
+    pub fn for_peer(core: Arc<Core>, owner: String) -> Self {
         let mut bytes = [0; 32];
         rand::rng().fill_bytes(&mut bytes);
         let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
@@ -81,6 +86,7 @@ impl PeerService {
             subscriptions: Arc::new(Semaphore::new(32)),
             terminals: Arc::new(Semaphore::new(32)),
             uploads: Arc::new(Semaphore::new(2)),
+            owner: crate::notifications::Owner(owner),
         }
     }
 
@@ -133,6 +139,7 @@ impl PeerService {
             .uri(path)
             .body(Body::from(body))?;
         *request.headers_mut() = self.headers.clone();
+        request.extensions_mut().insert(self.owner.clone());
         if let Some(value) = content_type {
             request
                 .headers_mut()
@@ -405,7 +412,15 @@ fn valid_label(label: &str, prefix: &str) -> bool {
 }
 fn allowed(method: &str, path: &str) -> bool {
     match (method, path) {
-        ("GET", "/api/session" | "/api/state") | ("POST", "/api/rpc" | "/api/topology") => true,
+        ("GET", "/api/session" | "/api/state" | "/api/notifications")
+        | (
+            "POST",
+            "/api/rpc"
+            | "/api/topology"
+            | "/api/notifications"
+            | "/api/notifications/delete"
+            | "/api/notifications/seen",
+        ) => true,
         ("GET", p) => p.strip_prefix("/api/commands?terminal=").is_some_and(|q| {
             !q.is_empty()
                 && q.len() <= 1536

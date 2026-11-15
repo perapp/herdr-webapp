@@ -4,8 +4,8 @@ export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }
 import { transportRequest } from './transport';
-export async function request(path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
-  const response = await transportRequest(path, {
+export async function request(path: string, body?: unknown, signal?: AbortSignal, send = transportRequest): Promise<unknown> {
+  const response = await send(path, {
     method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin',
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body), signal,

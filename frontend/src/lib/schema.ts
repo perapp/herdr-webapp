@@ -16,6 +16,7 @@ export interface SharedDocument { on: string | null; version: number; spaces: Sh
 export interface TerminalInfo extends RecordValue { address?: string; id?: string; terminal?: string; name?: string; title?: string; label?: string; cols?: number; rows?: number }
 export interface State {
   connected: boolean;
+  metadataReady?: boolean;
   error?: string;
   core?: RecordValue;
   coreVersion?: string;
@@ -68,7 +69,7 @@ export function parseState(value: unknown): State {
   const v = object(value);
   if (typeof v.connected !== 'boolean') throw new Error('Missing connection status in server response.');
   return {
-    connected: v.connected, error: typeof v.error === 'string' ? v.error : undefined,
+    connected: v.connected, metadataReady: typeof v.metadataReady === 'boolean' ? v.metadataReady : undefined, error: typeof v.error === 'string' ? v.error : undefined,
     core: record(v.core) ? v.core : undefined,
     coreVersion: typeof v.coreVersion === 'string' && v.coreVersion.length > 0 && v.coreVersion.length <= 160 && !Array.from(v.coreVersion).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ? v.coreVersion : undefined,
     terminals: list(v.terminals).map(v => object(v) as TerminalInfo),

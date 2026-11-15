@@ -7,6 +7,7 @@ mod core;
 mod dashboard;
 mod dashboard_graphics;
 mod main_catalog;
+mod notifications;
 mod peer_service;
 mod relay_catalog;
 mod relay_channel;
@@ -251,6 +252,13 @@ async fn main() -> anyhow::Result<()> {
     let token_path = std::path::absolute(config.token_path()?)?;
     let updates = update::Updater::startup()?;
     let core = Core::new(socket.clone());
+    let notification_dir = token_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Token parent missing"))?
+        .join("web-push");
+    let notifications = notifications::Notifications::open(&notification_dir)?;
+    let _ = core.notifications.set(notifications.clone());
+    tokio::spawn(notifications.observe(core.notification_events.subscribe()));
     let app = Arc::new(App {
         core: core.clone(),
         updates: updates.clone(),
@@ -380,6 +388,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/rpc", post(rpc))
         .route("/api/topology", post(topology::handle))
         .route("/api/terminal", get(terminal::upgrade))
+        .merge(notifications::routes())
         .merge(attachments::routes())
         .merge(update::routes())
         .fallback(get(asset))
@@ -490,7 +499,13 @@ async fn asset(uri: Uri) -> Response {
     if path.starts_with("api/") {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let path = if path.is_empty() { "index.html" } else { path };
+    // Local installations resume the normal cookie-authenticated UI. Other
+    // unknown paths remain 404; remembered computer routes belong to the relay.
+    let path = if path.is_empty() || path == "launch" {
+        "index.html"
+    } else {
+        path
+    };
     if let Some(file) = Assets::get(path) {
         (
             [(

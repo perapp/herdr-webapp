@@ -285,7 +285,7 @@ async fn session_inner(
         e.signed(id, 2, json!({"kind":"answer","sdp":local.sdp})).await?;
         let ready = Arc::new(AtomicBool::new(false));
         let control = Arc::new(AtomicBool::new(false));
-        let service = PeerService::new(e.core.clone());
+        let service = PeerService::for_peer(e.core.clone(), key.clone());
         let channel_budget = Arc::new(Semaphore::new(MAX_CONCURRENT_CHANNELS));
         let hello_deadline = tokio::time::sleep(Duration::from_secs(30));
         tokio::pin!(hello_deadline);
@@ -574,8 +574,13 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
         .await
         .map_err(|_| anyhow::anyhow!("local Core handshake failed"))?;
     let core = Core::new(config.core_socket.clone());
+    let notifications =
+        crate::notifications::Notifications::open(&config.state_dir.join("web-push"))?;
+    notifications.retain_paired(&*pairings.lock().await).await?;
+    let _ = core.notifications.set(notifications.clone());
     // Dropping the set aborts both process-lifetime workers on every exit path.
     let mut background = JoinSet::new();
+    background.spawn(notifications.observe(core.notification_events.subscribe()));
     background.spawn(core.clone().monitor());
     let mut socket_url = url.clone();
     socket_url

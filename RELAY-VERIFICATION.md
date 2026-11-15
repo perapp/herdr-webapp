@@ -396,4 +396,31 @@ five documented upstream files differ, plus the new adapter and patch notes.
 6. Controlled connector restarts and TURN refresh interrupt input briefly; in-place
    ICE renegotiation and continuous end-to-end-health rollback are not implemented.
 
-The concrete edge/router handover is [`todo-edge.md`](todo-edge.md).
+## Retired implementation handoffs
+
+The implemented `todo-edge.md` and `todo-main.md` handoffs have been retired.
+Current main-channel operations are documented in
+[`distribution/main-channel.md`](distribution/main-channel.md). Edge deployment,
+router/TURN provisioning, and recorded deployment evidence are maintained in
+`../perapp-edge/README.md` and `../perapp-edge/deploy/herdr-status.md`.
+Historical build/deployment blockers above are dated acceptance evidence, not a
+statement of current production status. This cleanup did not contact production
+or rerun service tests.
+
+Retiring these implementation plans does not close the remaining acceptance gaps
+above. In particular, retain the following follow-up work:
+
+- Migration between genuinely different compiled main revisions; synthetic A/B
+  build identities and same-revision backend recovery do not prove this.
+- Outside-LAN/cellular forced TURN UDP/TCP, real network changes, and physical
+  Android/iOS keyboard and IME behavior.
+- Complete published-client upgrade with post-upgrade shell/Core continuity,
+  failed-start rollback, and isolated production restart/tamper/no-input-replay
+  checks.
+- Explicit admission/resource policy and shared proxy-IP limit decisions, plus
+  runtime quota/abuse and log-redaction verification.
+- Routine readiness that distinguishes process health, authenticated signaling,
+  verified downloadable artifacts, and real TURN peer traffic; an HTTP health
+  response alone is not sufficient.
+- Production TURN/TLS certificate issuance/renewal only if that optional transport
+  is required; local TLS fixture acceptance is not production TLS deployment.

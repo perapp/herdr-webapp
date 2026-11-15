@@ -1,4 +1,5 @@
 import { channelPath } from './lib/channel';
+import { initializePwa } from './lib/pwa';
 import { mount } from 'svelte';
 import App from './App.svelte';
 import RelayApp from './RelayApp.svelte';
@@ -15,6 +16,7 @@ if (fragment.has('token')) history.replaceState(null, '', location.pathname + lo
 fragment.delete('token');
 initializeAppearance();
 initializeFontSize();
+initializePwa();
 
 async function boot() {
   const root = document.getElementById('app')!;

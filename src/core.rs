@@ -76,17 +76,23 @@ pub struct Core {
     rpc: Mutex<Option<Plain>>,
     pub state: watch::Sender<Value>,
     metadata: Notify,
+    metadata_epoch: std::sync::atomic::AtomicU64,
+    pub notifications: std::sync::OnceLock<Arc<crate::notifications::Notifications>>,
+    pub notification_events: tokio::sync::broadcast::Sender<crate::notifications::Observation>,
 }
 impl Core {
     pub fn new(path: PathBuf) -> Arc<Self> {
         let (state, _) = watch::channel(
-            json!({"connected":false,"error":"Connecting to Herdr Core…","terminals":[],"machines":[],"documents":[]}),
+            json!({"connected":false,"metadataReady":false,"error":"Connecting to Herdr Core…","terminals":[],"machines":[],"documents":[]}),
         );
         Arc::new(Self {
             path,
             rpc: Mutex::new(None),
             state,
             metadata: Notify::new(),
+            metadata_epoch: std::sync::atomic::AtomicU64::new(0),
+            notifications: std::sync::OnceLock::new(),
+            notification_events: tokio::sync::broadcast::channel(1024).0,
         })
     }
     /// A single persistent, serialized RPC connection. Never retry mutations after an ambiguous failure.
@@ -139,11 +145,24 @@ impl Core {
         docs
     }
     async fn refresh_metadata(&self) -> Result<()> {
+        let epoch = self
+            .metadata_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
         let machines = self.call("machine.list", json!({})).await?["machines"].clone();
         let documents = self.documents(&machines).await;
         self.state.send_modify(|s| {
+            // A refresh begun before reconnect cannot make the new session ready.
+            if s["connected"] != true
+                || self
+                    .metadata_epoch
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != epoch
+            {
+                return;
+            }
             s["machines"] = machines;
             s["documents"] = json!(documents);
+            s["metadataReady"] = true.into();
         });
         Ok(())
     }
@@ -176,6 +195,52 @@ impl Core {
             backoff = (backoff * 2).min(15);
         }
     }
+    fn publish_notification_snapshot(&self) {
+        // Only the monitor publishes observations, so resync snapshots are ordered
+        // after all preceding facts and before any subsequent live transition.
+        if let Some(service) = self.notifications.get() {
+            service
+                .needs_snapshot
+                .swap(false, std::sync::atomic::Ordering::AcqRel);
+        }
+        let records = self.state.borrow()["terminals"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let _ = self
+            .notification_events
+            .send(crate::notifications::Observation::Snapshot(records));
+    }
+    fn publish_notification_message(&self, message: &Value, advanced: bool) {
+        let resync = self.notifications.get().is_some_and(|service| {
+            service
+                .needs_snapshot
+                .load(std::sync::atomic::Ordering::Acquire)
+        });
+        if message["method"] == "missed" || resync {
+            // State already incorporates this message: seed it, do not replay it.
+            self.publish_notification_snapshot();
+        } else if message["method"] == "event" && advanced {
+            let params = &message["params"];
+            if params["type"] == "removed" {
+                if let Some(address) = params["terminal"].as_str() {
+                    let _ = self
+                        .notification_events
+                        .send(crate::notifications::Observation::Removed(address.into()));
+                }
+            } else if let Some(record) = self.state.borrow()["terminals"]
+                .as_array()
+                .and_then(|ts| ts.iter().find(|t| t["address"] == params["terminal"]))
+            {
+                let _ = self
+                    .notification_events
+                    .send(crate::notifications::Observation::Event {
+                        kind: params["type"].as_str().unwrap_or("").into(),
+                        record: record.clone(),
+                    });
+            }
+        }
+    }
     async fn subscribe(&self) -> Result<()> {
         let mut events = Plain::connect(&self.path, false).await?;
         // A successful fresh hello supersedes the last-known version, even if
@@ -189,18 +254,24 @@ impl Core {
         .context("core subscription timed out")??;
         let mut seq = snapshot["seq"].as_u64().unwrap_or(0);
         self.state.send_modify(|s| {
+            self.metadata_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             s["terminals"] = snapshot["terminals"].clone();
+            s["metadataReady"] = false.into();
             s["connected"] = true.into();
             s["error"] = Value::Null;
         });
+        self.publish_notification_snapshot();
         self.metadata.notify_one();
         loop {
             let message = tokio::time::timeout(Duration::from_secs(45), events.line())
                 .await
                 .context("core heartbeat timed out")??;
             let mut metadata = false;
+            let previous_seq = seq;
             self.state
                 .send_modify(|s| metadata = notification(s, &message, &mut seq));
+            self.publish_notification_message(&message, seq > previous_seq);
             if metadata {
                 self.metadata.notify_one();
             }
@@ -313,6 +384,104 @@ fn reduce_event(state: &mut Value, event: &Value) {
 mod tests {
     use super::*;
     #[test]
+    fn notification_resync_on_heartbeat_is_ordered_and_removals_are_forwarded() {
+        use crate::notifications::{Notifications, Observation};
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let service = Notifications::open(&dir.path().join("push")).unwrap();
+        let core = Core::new("/nonexistent".into());
+        core.notifications.set(service.clone()).ok().unwrap();
+        let mut events = core.notification_events.subscribe();
+        core.state
+            .send_modify(|s| s["terminals"] = json!([{"address":"t1","status":{"state":"done"}}]));
+        service.needs_snapshot.store(true, Ordering::Release);
+        core.publish_notification_message(&json!({"method":"heartbeat"}), false);
+        assert!(!service.needs_snapshot.load(Ordering::Acquire));
+        assert!(
+            matches!(events.try_recv().unwrap(), Observation::Snapshot(records) if records[0]["status"]["state"] == "done")
+        );
+        // A resync triggered by a live event seeds its result, not a live replay.
+        service.needs_snapshot.store(true, Ordering::Release);
+        let status = json!({"method":"event","params":{"type":"status","terminal":"t1"}});
+        core.publish_notification_message(&status, true);
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            Observation::Snapshot(_)
+        ));
+        assert!(events.try_recv().is_err());
+        core.publish_notification_message(&status, true);
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            Observation::Event { .. }
+        ));
+        core.publish_notification_message(
+            &json!({"method":"event","params":{"type":"removed","terminal":"t1"}}),
+            true,
+        );
+        assert!(
+            matches!(events.try_recv().unwrap(), Observation::Removed(address) if address == "t1")
+        );
+    }
+    #[tokio::test]
+    async fn metadata_ready_only_after_documents_complete_and_not_for_stale_refresh() {
+        for stale in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("core.sock");
+            let listener = tokio::net::UnixListener::bind(&path).unwrap();
+            let core = Core::new(path);
+            assert_eq!(core.state.borrow()["metadataReady"], false);
+            core.state.send_modify(|s| s["connected"] = true.into());
+            let (arrived_tx, arrived_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (io, _) = listener.accept().await.unwrap();
+                let mut io = BufReader::new(io);
+                for result in [json!({"generation":1}), json!({"machines":[]})] {
+                    let mut line = String::new();
+                    io.read_line(&mut line).await.unwrap();
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    io.get_mut()
+                        .write_all(
+                            format!("{}\n", json!({"id":request["id"],"result":result})).as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                }
+                let mut line = String::new();
+                io.read_line(&mut line).await.unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["method"], "doc.get");
+                arrived_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                io.get_mut()
+                    .write_all(
+                        format!(
+                            "{}\n",
+                            json!({"id":request["id"],"result":{"version":7,"value":{"tabs":[]}}})
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            let refreshing = core.clone();
+            let refresh = tokio::spawn(async move { refreshing.refresh_metadata().await.unwrap() });
+            arrived_rx.await.unwrap();
+            assert_eq!(core.state.borrow()["metadataReady"], false);
+            if stale {
+                core.metadata_epoch
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+            release_tx.send(()).unwrap();
+            refresh.await.unwrap();
+            assert_eq!(core.state.borrow()["metadataReady"], !stale);
+            if !stale {
+                assert_eq!(core.state.borrow()["documents"][0]["version"], 7);
+            }
+            server.await.unwrap();
+        }
+    }
+    #[test]
     fn hello_version_is_top_level_last_known_and_cleared_on_legacy_hello() {
         let mut state = json!({"connected":false});
         assert!(state.get("coreVersion").is_none());
@@ -416,13 +585,70 @@ mod tests {
         let core = Core::new(path);
         assert!(core.subscribe().await.is_err());
         assert_eq!(core.state.borrow()["coreVersion"], "0.1.42");
+        assert_eq!(core.state.borrow()["metadataReady"], false);
+        core.state.send_modify(|s| s["metadataReady"] = true.into());
         // Same transition used by monitor on disconnect; no hello means no loss
         // of the last-known version.
         core.state.send_modify(|s| s["connected"] = json!(false));
         assert_eq!(core.state.borrow()["coreVersion"], "0.1.42");
         assert!(core.subscribe().await.is_err());
         assert!(core.state.borrow().get("coreVersion").is_none());
+        assert_eq!(core.state.borrow()["metadataReady"], false);
         assert_eq!(core.state.borrow()["core"]["id"], "legacy");
+        server.await.unwrap();
+    }
+    #[tokio::test]
+    async fn observer_receives_live_status_without_any_browser() {
+        use crate::notifications::Observation;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("core.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (io, _) = listener.accept().await.unwrap();
+            let mut io = BufReader::new(io);
+            for result in [
+                json!({"generation":1}),
+                json!({"seq":5,"terminals":[{"address":"t1","status":{"state":"working"}}]}),
+            ] {
+                let mut line = String::new();
+                io.read_line(&mut line).await.unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                io.get_mut()
+                    .write_all(
+                        format!("{}\n", json!({"id":request["id"],"result":result})).as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            for message in [
+                json!({"method":"event","params":{"seq":6,"type":"status","terminal":"t1","data":{"status":{"state":"done"},"reported":true}}}),
+                // Duplicate sequence must not reach the notification observer.
+                json!({"method":"event","params":{"seq":6,"type":"status","terminal":"t1","data":{"status":{"state":"error"}}}}),
+                json!({"method":"missed","params":{"seq":20,"terminals":[{"address":"t1","status":{"state":"blocked"}}]}}),
+            ] {
+                io.get_mut()
+                    .write_all(format!("{message}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+        let core = Core::new(path);
+        let mut events = core.notification_events.subscribe();
+        assert!(core.subscribe().await.is_err());
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            Observation::Snapshot(_)
+        ));
+        let Observation::Event { kind, record } = events.recv().await.unwrap() else {
+            panic!("expected live status");
+        };
+        assert_eq!(kind, "status");
+        assert_eq!(record["status"]["state"], "done");
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            Observation::Snapshot(_)
+        ));
+        assert!(events.try_recv().is_err());
         server.await.unwrap();
     }
     #[tokio::test]

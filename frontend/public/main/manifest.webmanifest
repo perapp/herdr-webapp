@@ -1,0 +1,16 @@
+{
+  "id": "/main/launch",
+  "name": "Herdr Main",
+  "short_name": "Herdr Main",
+  "description": "Herdr development channel: computers, spaces and live terminals",
+  "start_url": "/main/launch",
+  "scope": "/main/",
+  "display": "standalone",
+  "background_color": "#18212b",
+  "theme_color": "#18212b",
+  "icons": [
+    { "src": "/main/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/main/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/main/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

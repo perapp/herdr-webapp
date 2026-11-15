@@ -376,14 +376,40 @@ async fn asset(State(s): State<Arc<Relay>>, uri: Uri) -> Response {
     if path.starts_with("api/") || path.starts_with("client/") || path.starts_with("relay/") {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let path = if path.is_empty() { "index.html" } else { path };
+    // Only explicit, secret-free application routes receive the shell. Missing
+    // assets and reserved API/catalog paths must continue to return 404.
+    let shell = path.is_empty()
+        || path == "launch"
+        || path.strip_prefix("connections/").is_some_and(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        });
+    let path = if shell {
+        "index.html"
+    } else if path == "manifest.webmanifest" && s.config.base_path == "/main/" {
+        "main/manifest.webmanifest"
+    } else {
+        path
+    };
     if let Some(file) = crate::Assets::get(path) {
+        let data = if path == "index.html" {
+            // Vite uses a relative base for embedded/channel builds. Nested
+            // connection URLs need channel-root asset URLs on direct reload.
+            String::from_utf8_lossy(&file.data)
+                .replace("./assets/", &format!("{}assets/", s.config.base_path))
+                .into_bytes()
+        } else {
+            file.data.into_owned()
+        };
         let mut response = (
             [(
                 header::CONTENT_TYPE,
                 mime_guess::from_path(path).first_or_octet_stream().as_ref(),
             )],
-            file.data.into_owned(),
+            data,
         )
             .into_response();
         // Vite-generated, content-hashed assets only; all other content is no-store.
@@ -923,7 +949,7 @@ mod tests {
             .await
             .unwrap();
         let html = std::str::from_utf8(&body).unwrap();
-        assert!(html.contains("./assets/"));
+        assert!(html.contains("/main/assets/"));
         let asset = html
             .split("src=\"")
             .nth(1)
@@ -933,11 +959,7 @@ mod tests {
             .unwrap();
         let response = app
             .clone()
-            .oneshot(
-                Request::get(format!("/main/{}", asset.trim_start_matches("./")))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::get(asset).body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -959,6 +981,80 @@ mod tests {
             assert_eq!(response.status(), StatusCode::OK, "{path}");
             assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        }
+    }
+    #[tokio::test]
+    async fn application_routes_are_narrow_and_channel_relative() {
+        for base in ["/", "/main/"] {
+            let app = if base == "/main/" {
+                Router::new().nest(
+                    "/main/",
+                    router(RelayConfig {
+                        base_path: base.into(),
+                        revision: Some("a".repeat(40)),
+                        unix_socket: Some("/private-test.sock".into()),
+                        ..config()
+                    })
+                    .unwrap(),
+                )
+            } else {
+                router(config()).unwrap()
+            };
+            for tail in ["", "launch", "connections/abc_DEF-123"] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::get(format!("{base}{tail}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{base}{tail}");
+                let body = axum::body::to_bytes(response.into_body(), 65536)
+                    .await
+                    .unwrap();
+                assert!(String::from_utf8_lossy(&body).contains(&format!("{base}assets/")));
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get(format!("{base}manifest.webmanifest"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), 65536)
+                .await
+                .unwrap();
+            let manifest: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(manifest["id"], format!("{base}launch"));
+            assert_eq!(manifest["scope"], base);
+            assert_eq!(manifest["start_url"], format!("{base}launch"));
+            for tail in [
+                "connections/",
+                "connections/a/b",
+                "connections/a.js",
+                "api/missing",
+                "relay/missing",
+                "client/missing",
+                "missing.js",
+                "assets/missing.js",
+                "launch/no",
+            ] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::get(format!("{base}{tail}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::NOT_FOUND, "{base}{tail}");
+            }
         }
     }
     #[test]

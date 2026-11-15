@@ -64,6 +64,14 @@ but does not establish cellular, external-network or physical-phone acceptance.
   Each action opens a new CDP session. Reload registers the passive observer on
   that session **before** navigation, rather than relying on the original pairing
   session's new-document registration or injecting after the app creates its peer.
+- Connections root remains a list with one remembered computer; Install app is
+  immediately below Settings even before a connection. `/launch` resumes the
+  explicit computer and accepts trusted terminal input after authenticated reload.
+- Phone-sized input and reconnect are checked with Chromium device metrics/touch
+  emulation, not claimed as physical Android/iOS keyboard verification.
+- Two independent connector identities share the disposable Core/layout IDs on
+  purpose. Both remain remembered; explicit route switching authenticates each
+  pinned identity without re-pairing and produces independent shell file proofs.
 - 400,000 output characters traverse the terminal beyond its initial output
   credit, followed by an unambiguous sentinel and native file proof.
 - Waits require attached/live terminal state, not merely textarea DOM existence.

@@ -31,6 +31,11 @@ export function setApplicationTransport(transport: ApplicationTransport | undefi
 export function transportRequest(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   return active ? active.request(input, init) : fetch(channelInput(input), init);
 }
+/** Bind asynchronous settings work to its authenticated computer, never a later selection. */
+export function captureTransportRequest(): typeof transportRequest {
+  const transport = active;
+  return transport ? (input, init) => transport.request(input, init) : (input, init) => fetch(channelInput(input), init);
+}
 export function transportEvents(path: string): EventSourceLike {
   return active ? active.events(path) : new EventSource(channelPath(path));
 }
