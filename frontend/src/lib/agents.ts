@@ -1,4 +1,5 @@
 import { qualify, readable, record, reportedStatus, terminalAddress } from './schema';
+import { agentStatus } from './agentSeen';
 import { visiblePanes } from './navigation';
 import type { SharedDocument, SharedSpace, SharedTab, LayoutNode, TerminalInfo } from './schema';
 
@@ -31,7 +32,7 @@ export function agentTree(documents: SharedDocument[], terminals: TerminalInfo[]
     if (!terminal) return;
     shown.add(address);
     const path = new Set(ancestors).add(address);
-    const status = reportedStatus(terminal);
+    const status = agentStatus(terminal);
     return {
       address, target: targets.get(address),
       name: readable(terminal.name || terminal.title || terminal.template || (record(terminal.status) ? terminal.status.app : undefined), address),

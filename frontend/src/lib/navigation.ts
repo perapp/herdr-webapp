@@ -28,6 +28,15 @@ export function paneTitle(pane: LayoutNode, on: string | null, terminals: Termin
   const terminal = terminals.find(t => terminalAddress(t) === address);
   return readable(pane.title, address ? terminalName(terminal) : `Unavailable pane ${index + 1}`);
 }
+/** Leaves actually drawn by PaneTree, unlike navigation's inactive stack entries. */
+export function drawnTerminals(node: LayoutNode | undefined, on: string | null, stacks: Record<string, string>): string[] {
+  if (!node || node.hidden) return [];
+  if (node.type === 'block') return typeof node.content?.terminal === 'string' ? [qualify(node.content.terminal, on)] : [];
+  const children = node.children.filter(child => !child.hidden);
+  if (node.type === 'stack') return drawnTerminals(children.find(child => child.id === stacks[viewKey(on, node.id)]) || children.find(child => child.id === node.active) || children[0], on, stacks);
+  return children.flatMap(child => drawnTerminals(child, on, stacks));
+}
+
 /** Navigation is private; selecting an inactive stack child also reveals it on desktop. */
 export function selectPane(view: BrowserView, document: SharedDocument, space: SharedSpace, tab: SharedTab, paneId: string): boolean {
   function path(node: LayoutNode): LayoutNode[] | undefined {

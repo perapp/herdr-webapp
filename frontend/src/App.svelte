@@ -3,13 +3,19 @@
   import { onMount } from 'svelte';
   import { transportEvents } from './lib/transport';
   import type { EventSourceLike } from './lib/transport';
-  import { MOBILE_QUERY, paneTitle, resolvePane, selectCreated, selectPane, visiblePanes } from './lib/navigation';
+  import { MOBILE_QUERY, drawnTerminals, paneTitle, resolvePane, selectCreated, selectPane, visiblePanes } from './lib/navigation';
   import { agentTree } from './lib/agents';
   import type { AgentNode } from './lib/agents';
   import PaneTree from './PaneTree.svelte';
   import TopologyDialog from './TopologyDialog.svelte';
   import SettingsDialog from './SettingsDialog.svelte';
   import NotificationPresence from './NotificationPresence.svelte';
+  import AgentPresence from './AgentPresence.svelte';
+  import AgentIndicator from './AgentIndicator.svelte';
+  import ProgramIcon from './ProgramIcon.svelte';
+  import { terminalProgram } from './lib/programs';
+  import { agentStatus } from './lib/agentSeen';
+  import { terminalAddress } from './lib/schema';
   import { notificationLayoutReady, selectNotificationTarget } from './lib/notificationTarget';
   import { channelPath } from './lib/channel';
   import UpdateProgress from './UpdateProgress.svelte';
@@ -57,6 +63,7 @@
   const tabKey = $derived(selected && tab ? viewKey(selected.document.on, selected.space.id, tab.id) : '');
   const activePane = $derived(tab ? resolvePane(tab.root, view.focused[tabKey] || '', view.stacks, selected?.document.on ?? null) : undefined);
   const focused = $derived(activePane?.id || '');
+  const activeTerminal = $derived(snapshot.terminals.find(terminal => terminalAddress(terminal) === (selected && typeof activePane?.content?.terminal === 'string' ? qualify(activePane.content.terminal, selected.document.on) : '')));
   const zoomed = $derived(tab && view.zoomed[tabKey] ? findNode(tab.root, view.zoomed[tabKey]) : undefined);
   const ready = $derived(snapshot.connected && streamLive);
   const agents = $derived(agentTree(snapshot.documents, snapshot.terminals));
@@ -248,7 +255,8 @@
         <button class="navigation-toggle" aria-label="Toggle navigation" aria-expanded={sidebarOpen} aria-controls="navigation-drawer" onclick={toggleNavigation}>☰</button>
       </div>
       <span class="mobile-location" title={selected ? `${selected.machine} / ${selected.name} / ${readable(tab?.name, 'Workspace')} / ${activePane ? paneTitle(activePane, selected.document.on, snapshot.terminals) : ''}` : 'Herdr'}>
-          <span class="dot" class:live={snapshot.connected && streamLive} aria-label={snapshot.connected && streamLive ? 'Connected' : 'Disconnected'}></span>
+          <ProgramIcon program={terminalProgram(activeTerminal)} />
+          <AgentIndicator status={agentStatus(activeTerminal)} showIdle={false} />
           {selected ? selected.name : 'Herdr'}{#if tab}<span class="location-divider">/</span>{readable(tab.name, 'Tab')}{/if}
         </span>
         <button class="keyboard-toggle" aria-label="Terminal keyboard shortcuts" aria-pressed={showKeys} title="Show terminal keys" onclick={() => showKeys = !showKeys}>⌨</button>
@@ -291,6 +299,7 @@
   </div>
 {/if}
 {#if modal}<TopologyDialog {...modal} close={() => modal = null} saved={topologySaved} />{/if}
+<AgentPresence ready={ready && !sidebarOpen && !showSettings && !modal} terminals={snapshot.terminals} visible={drawnTerminals(mobile ? activePane : zoomed || tab?.root, selected?.document.on ?? null, view.stacks)} />
 <NotificationPresence {ready} terminal={typeof activePane?.content?.terminal === 'string' && selected ? qualify(activePane.content.terminal, selected.document.on) : ''} />
 {#if notificationNotice}<aside role="status" class="notification-notice">{notificationNotice}<button onclick={() => notificationNotice = ''} aria-label="Dismiss notification destination message">×</button></aside>{/if}
 {#if !peerMode}<UpdateProgress connected={ready} />{/if}
@@ -379,8 +388,9 @@
     <button class="agent-link" class:has-children={agent.children.length > 0} class:selected={isSelected} aria-current={isSelected ? 'page' : undefined} disabled={!target}
       title={target ? `${agent.name} · ${readable(target.space.name, 'Workspace')} / ${readable(target.tab.name, 'Tab')}` : `${agent.name} · No visible pane. Native terminal peek is not available on the web.`}
       onclick={() => { if (target) choosePane(target.document, target.space, target.tab, target.pane); }}>
+      <ProgramIcon program={terminalProgram(snapshot.terminals.find(terminal => terminalAddress(terminal) === agent.address))} />
       <span class="agent-name">{agent.name}</span>
-      <span class="agent-state" class:needs-you={agent.status === 'blocked'}><span class={`dot agent-${agent.status}`} aria-hidden="true"></span>{agent.status === 'blocked' ? 'Needs you' : agent.status === 'unreported' ? 'No status' : agent.status}</span>
+      <AgentIndicator status={agent.status} />
     </button>
     {#if !target}<span class="agent-unavailable">No visible pane · peek unavailable on web</span>{/if}
   </div>

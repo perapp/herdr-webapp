@@ -22,11 +22,14 @@
   import { initializeFontSize, watchFontSize } from './lib/fontSize';
   import { imageAccept, imageReference, uploadImage } from './lib/attachments';
   import { errorMessage } from './lib/api';
+  import AgentIndicator from './AgentIndicator.svelte';
+  import ProgramIcon from './ProgramIcon.svelte';
+  import type { ProgramAppearance } from './lib/programs';
   import CommandPalette from './CommandPalette.svelte';
   import { isCommandText } from './lib/commands';
   import type { AgentKind } from './lib/commands';
 
-  let { address, title, reported = 'unreported', active, onfocus, compact = false, showKeys = false, agent }: { address: string; title: string; reported?: string; active: boolean; onfocus: () => void; compact?: boolean; showKeys?: boolean; agent?: AgentKind } = $props();
+  let { address, title, reported = 'unreported', active, onfocus, compact = false, showKeys = false, agent, program }: { address: string; title: string; reported?: string; active: boolean; onfocus: () => void; compact?: boolean; showKeys?: boolean; agent?: AgentKind; program?: ProgramAppearance } = $props();
   let host: HTMLDivElement;
   let status = $state('Connecting');
   let detail = $state('Connecting to the terminal.');
@@ -277,8 +280,8 @@
 
 <section class:focused={active} class:compact class="terminal-pane" aria-label={title}>
   {#if !compact}<header class="terminal-header">
-    <button class="pane-name" onclick={() => focusTerminal()} title="Focus terminal and open keyboard"><span class:live={attached} class="dot"></span>{title}</button>
-    <span class={`reported-state state-${reported}`} role="status" title="Status reported by the terminal"><span class="dot"></span>{reported === 'unreported' ? 'No reported status' : reported}</span>
+    <button class="pane-name" onclick={() => focusTerminal()} title="Focus terminal and open keyboard">{#if program}<ProgramIcon {program} />{/if}{title}</button>
+    <span class="reported-state"><AgentIndicator status={reported} showIdle={false} /></span>
     <span class="terminal-status" class:connected={attached} role="status">{status}</span>
     {#if !attached}<button class="quiet" onclick={() => reconnect()}>Reconnect</button>{/if}
   </header>{/if}

@@ -6,8 +6,10 @@ The web app should feel like the **native phone-app version of herdr-app**:
 a first-class Herdr client for using your terminals from a phone, not a remote
 viewer, administration dashboard, or desktop-control approval workflow.
 
-- Follow herdr-app's interaction model and terminology, adapted deliberately for
-  touch and a small screen. Spaces, tabs, panes and live terminals are the app.
+- Keep UX as close to herdr-app as possible: interaction model, terminology,
+  status meanings, colors and indicators. Adapt deliberately for touch and a
+  small screen; this is its phone-app version, not a separate UX. Spaces, tabs,
+  panes and live terminals are the app.
 - After authentication, a terminal is interactive immediately. Tapping it focuses
   input and opens the device keyboard. Do not add Take control / Release control
   steps or default read-only modes unless the user explicitly requests them.

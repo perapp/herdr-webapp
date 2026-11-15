@@ -136,7 +136,7 @@ class Browser:
     def live(self):
         try:
             self.wait("!!document.querySelector('.xterm-helper-textarea') && "
-                      "(!!document.querySelector('.pane-name .dot.live') || "
+                      "(!!document.querySelector('.terminal-status.connected') || "
                       "(!!document.querySelector('.terminal-pane.compact') && !document.querySelector('.terminal-detail')))", label='terminal attached')
         except AssertionError:
             # Counts/booleans only: never export terminal text or private links.

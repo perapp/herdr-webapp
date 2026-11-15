@@ -1,8 +1,10 @@
 <script lang="ts">
   import PaneTree from './PaneTree.svelte';
   import TerminalPane from './TerminalPane.svelte';
+  import { agentStatus } from './lib/agentSeen';
+  import { terminalProgram } from './lib/programs';
   import { detectCommandAgent } from './lib/commands';
-  import { qualify, readable, terminalAddress, terminalName, reportedStatus, viewKey } from './lib/schema';
+  import { qualify, readable, terminalAddress, terminalName, viewKey } from './lib/schema';
   import type { LayoutNode, TerminalInfo } from './lib/schema';
   let { node, on, terminals, focused, stacks, focus, selectStack, compact = false, showKeys = false }: {
     node: LayoutNode; on: string | null; terminals: TerminalInfo[]; focused: string;
@@ -21,7 +23,7 @@
   <div class="layout-node" class:column={node.type === 'column'} class:row={node.type === 'row'} style:flex={compact ? '1 1 0%' : sizing}>
     {#if node.type === 'block'}
       {#if address}
-        {#key address}<TerminalPane {address} {title} {compact} {showKeys} agent={detectCommandAgent(terminal)} reported={reportedStatus(terminal)} active={focused === node.id} onfocus={() => focus(node.id)} />{/key}
+        {#key address}<TerminalPane {address} {title} {compact} {showKeys} agent={detectCommandAgent(terminal)} program={terminalProgram(terminal)} reported={agentStatus(terminal)} active={focused === node.id} onfocus={() => focus(node.id)} />{/key}
       {:else}
         <section class="unsupported" aria-label={readable(node.title, 'Unavailable pane')}>
           <h3>{readable(node.title, typeof node.content?.mod === 'string' ? readable(node.content.mod, 'Unsupported module') : 'Unsupported pane')}</h3>
