@@ -1,4 +1,5 @@
 import { storageKey } from './channel';
+// Keep the existing per-channel key so saved terminal sizes become app-wide.
 export const fontSizeKey = 'herdr.terminal-font-size';
 export const defaultFontSize = 13;
 export const minFontSize = 8;
@@ -17,25 +18,30 @@ function read(): number {
   try { return parseFontSize(localStorage.getItem(storageKey(fontSizeKey))); }
   catch { return defaultFontSize; }
 }
+function applyUiSize(): void {
+  if (typeof document !== 'undefined') document.documentElement.style.setProperty('--app-font-size', `${current}px`);
+}
+/** Initialize before mounting, including login/pairing screens without terminals. */
 export function initializeFontSize(): number {
-  if (!initialized) { current = read(); initialized = true; }
+  if (!initialized) {
+    current = read(); initialized = true;
+    // App-lifetime listener: chrome still scales when no pane or Settings exists.
+    window.addEventListener('storage', storageChanged);
+  }
+  applyUiSize();
   return current;
 }
-function publish(): void { for (const listener of listeners) listener(current); }
+function publish(): void { applyUiSize(); for (const listener of listeners) listener(current); }
 function storageChanged(event: StorageEvent): void {
   if (event.key !== storageKey(fontSizeKey) && event.key !== null) return;
   current = read(); publish();
 }
 export function watchFontSize(listener: (size: number) => void): () => void {
   initializeFontSize();
-  if (!listeners.size) window.addEventListener('storage', storageChanged);
   listeners.add(listener); listener(current);
-  return () => {
-    listeners.delete(listener);
-    if (!listeners.size) window.removeEventListener('storage', storageChanged);
-  };
+  return () => { listeners.delete(listener); };
 }
-/** Apply immediately to all panes even if this browser cannot persist preferences. */
+/** Apply immediately to UI and every terminal, even when storage is blocked. */
 export function setFontSize(size: number): boolean {
   if (!valid(size)) return false;
   initializeFontSize(); current = size;

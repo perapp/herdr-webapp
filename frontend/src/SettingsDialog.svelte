@@ -45,12 +45,13 @@
     {/each}
   </fieldset>
   <fieldset class="terminal-font-options">
-    <legend>Terminal font size</legend>
+    <legend>Font size</legend>
+    <p class="font-size-scope">Applies to terminals and all app text.</p>
     <div class="terminal-font-controls">
-      <button aria-label="Decrease terminal font size" disabled={fontSize <= minFontSize} onclick={() => fontSaved = setFontSize(fontSize - 1)}>−</button>
-      <input type="range" aria-label="Terminal font size" min={minFontSize} max={maxFontSize} step="1" value={fontSize}
+      <button aria-label="Decrease font size" disabled={fontSize <= minFontSize} onclick={() => fontSaved = setFontSize(fontSize - 1)}>−</button>
+      <input type="range" aria-label="Font size" min={minFontSize} max={maxFontSize} step="1" value={fontSize}
         oninput={event => fontSaved = setFontSize(Number(event.currentTarget.value))} />
-      <button aria-label="Increase terminal font size" disabled={fontSize >= maxFontSize} onclick={() => fontSaved = setFontSize(fontSize + 1)}>+</button>
+      <button aria-label="Increase font size" disabled={fontSize >= maxFontSize} onclick={() => fontSaved = setFontSize(fontSize + 1)}>+</button>
       <output aria-live="polite">{fontSize} px</output>
     </div>
     <button class="quiet font-size-reset" disabled={fontSize === defaultFontSize} onclick={() => fontSaved = setFontSize(defaultFontSize)}>Reset to {defaultFontSize} px</button>
@@ -59,4 +60,4 @@
   <p class="settings-note" role="status">{saved && fontSaved ? 'Applies immediately. Saved only in this browser.' : 'Applied for now. Browser storage is unavailable, so this choice may not survive a reload.'}</p>
 </dialog>
 {#if showVersions}<VersionDialog close={closeVersions} {peerMode} {serverMode} {peerBuild} {peerVersion} {coreVersion} {connected} />{/if}
-<style>.version-option { min-height: 44px; width: 100%; text-align: left; }</style>
+<style>.version-option { min-height: 44px; width: 100%; text-align: left; } .font-size-scope { margin: 0 0 8px; color: var(--muted); font-size: .846154rem; }</style>

@@ -114,7 +114,7 @@
   </main>
 {/if}
 <style>
-  .revision-update { position: fixed; z-index: 1000; top: env(safe-area-inset-top, 0px); left: 50%; transform: translateX(-50%); width: min(95%, 36rem); display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .4rem .7rem; border: 1px solid var(--muted); border-radius: .5rem; background: var(--raised); color: var(--ink); font-size: .8rem; }
+  .revision-update { position: fixed; z-index: 1000; top: env(safe-area-inset-top, 0px); left: 50%; transform: translateX(-50%); width: min(95%, 36rem); display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .4rem .7rem; max-height: calc(100dvh - env(safe-area-inset-top, 0px)); overflow: auto; flex-wrap: wrap; overflow-wrap: anywhere; border: 1px solid var(--muted); border-radius: .5rem; background: var(--raised); color: var(--ink); font-size: .8rem; }
   .revision-update button { min-height: 44px; flex-shrink: 0; }
   .install-command { white-space: pre-wrap; overflow-wrap: anywhere; padding: .8rem; background: var(--raised); border-radius: .5rem; font-size: .8rem; color: var(--ink); }
   select { width: 100%; padding: .7rem; margin: .4rem 0; }

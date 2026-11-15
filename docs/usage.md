@@ -327,10 +327,13 @@ Herdr.app. This is intentionally not a per-command sandbox or a multi-user syste
   Appearance offers System (default), Light and Dark, saved only in this browser.
   Changes update chrome and terminal colours immediately without reconnecting,
   and send native viewer FACTS without claiming focus or resize ownership.
-  System changes are followed only in System mode. Terminal font size is
+  System changes are followed only in System mode. App-wide **Font size** is
   adjustable from 8–28 px (default 13), with a slider, step buttons and reset.
-  It applies immediately to all panes, refits through native resize semantics,
-  and is saved only in this browser.
+  It scales Settings, navigation, dialogs, commands and other app text alongside
+  every terminal. UI text retains its relative hierarchy; terminal size is the
+  selected pixel value. Changes apply immediately, refit panes through native
+  resize semantics, and stay private to this browser/channel. Existing saved
+  terminal font sizes are retained as the app-wide choice.
   **Version** opens a read-only popup for the loaded browser app, the connected
   webapp/connector, the serving relay, and the connected Herdr Core. Main/source
   builds include their reported commit and commit date/time, with an explicit

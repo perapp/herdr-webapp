@@ -4,6 +4,7 @@ import App from './App.svelte';
 import RelayApp from './RelayApp.svelte';
 import './style.css';
 import { initializeAppearance } from './lib/appearance';
+import { initializeFontSize } from './lib/fontSize';
 import { takePairingFragment } from './lib/peerCrypto';
 
 // Clear pairing capabilities synchronously, before boot checks or application initialization.
@@ -13,6 +14,7 @@ let token = fragment.get('token') || '';
 if (fragment.has('token')) history.replaceState(null, '', location.pathname + location.search);
 fragment.delete('token');
 initializeAppearance();
+initializeFontSize();
 
 async function boot() {
   const root = document.getElementById('app')!;

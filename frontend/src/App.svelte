@@ -196,11 +196,11 @@
 </script>
 
 <style>
-  .peer-info { padding: 7px 10px; font-size: 11px; color: var(--muted); }
+  .peer-info { padding: 7px 10px; font-size: calc(11rem / 13); color: var(--muted); min-width: 0; }
   .peer-info summary { cursor: pointer; min-height: 28px; display: list-item; }
   .peer-info p { margin-bottom: 8px; overflow-wrap: anywhere; }
-  .peer-info select { font-size: 11px; margin-bottom: 8px; }
-  .peer-info button { width: 100%; font-size: 11px; }
+  .peer-info select { font-size: calc(11rem / 13); margin-bottom: 8px; }
+  .peer-info button { width: 100%; font-size: calc(11rem / 13); overflow-wrap: anywhere; }
 </style>
 
 <svelte:head><title>{selected ? `${selected.name} · Herdr` : 'Herdr · Spaces'}</title></svelte:head>

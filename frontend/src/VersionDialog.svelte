@@ -45,12 +45,12 @@
   .version-dialog { width: min(38rem, calc(100vw - 24px)); max-height: calc(100dvh - 24px); box-sizing: border-box; padding: 18px; overflow: auto; border: 1px solid var(--muted); border-radius: 12px; background: var(--raised); color: var(--ink); }
   .version-dialog::backdrop { background: #0008; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  h2 { font-size: 1.2rem; margin: 0; } h3 { font-size: 1rem; margin: 0 0 4px; }
-  button { min-height: 44px; min-width: 44px; } .done { width: 100%; }
+  h2 { font-size: 1.2rem; margin: 0; min-width: 0; overflow-wrap: anywhere; } h3 { font-size: 1rem; margin: 0 0 4px; }
+  button { min-height: 44px; min-width: 44px; flex-shrink: 0; overflow-wrap: anywhere; } .done { width: 100%; }
   section { border-top: 1px solid var(--muted); padding: 16px 0; }
   p { margin: 4px 0 12px; } .detail, .refresh-status { color: var(--muted); font-size: .85rem; }
-  .channel-badge { display: inline-block; font-size: .8rem; padding: 4px 8px; border: 1px solid var(--muted); border-radius: 5px; }
-  dl { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: 8px; margin: 12px 0 0; font-size: .85rem; }
-  dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; user-select: text; } code { font-size: .8rem; }
+  .channel-badge { display: inline-block; max-width: 100%; overflow-wrap: anywhere; font-size: .8rem; padding: 4px 8px; border: 1px solid var(--muted); border-radius: 5px; }
+  dl { display: grid; grid-template-columns: min(7rem, 35%) minmax(0, 1fr); gap: 8px; margin: 12px 0 0; font-size: .85rem; }
+  dt { color: var(--muted); overflow-wrap: anywhere; } dd { margin: 0; overflow-wrap: anywhere; user-select: text; } code { font-size: .8rem; }
   @media (max-width: 380px) { dl { grid-template-columns: 1fr; gap: 4px; } dd { margin-bottom: 6px; } }
 </style>
