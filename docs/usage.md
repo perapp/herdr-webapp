@@ -464,7 +464,8 @@ Architecture: `src/core.rs` owns persistent RPC and subscription connections;
 
 ### Touch scrolling
 
-Swipe vertically inside a pane to scroll terminal history with local momentum.
+Swipe vertically inside a pane to scroll terminal history. Local history moves
+by pixels rather than whole rows, flings glide like a web page and settle on a row.
 In Pi and other mouse-aware terminal applications, swipes send negotiated wheel
 reports instead; lifting your finger stops application input immediately.
 Swiping does not open the keyboard. Tap to type. The keyboard accessory strip
@@ -479,6 +480,13 @@ preferences disable momentum.
   keyboard button overrides that until the keyboard next opens or closes.
   Keyboard detection is inferred from viewport height on touch devices and
   needs validation on physical iOS/Android devices.
+- **The keyboard does not resize the terminal.** While the on-screen keyboard
+  is up, the grid keeps its full size and the pane shows the part that holds
+  the cursor (the newest rows while reading history). Resizing made
+  full-screen programs redraw, and agents that redraw in place (Claude Code)
+  left duplicated text in history when it happened mid-answer. Rotation, font
+  size and manually toggling the key row still resize. A pane first attached
+  while the keyboard is already open has no full-size grid yet and resizes once.
 - **Ctrl** and **Alt** latch for the next key only (Ctrl then `r` sends Ctrl+R;
   Alt then ← sends the xterm modified-arrow sequence). A latched Ctrl+M/Ctrl+J
   is not a way to submit: use Enter or **Ctrl J**. Held arrow keys repeat.

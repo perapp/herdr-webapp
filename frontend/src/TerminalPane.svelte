@@ -32,7 +32,7 @@
   import { screenText } from './lib/terminalText';
   import { canReadClipboard, writeClipboard } from './lib/clipboard';
 
-  let { address, title, reported = 'unreported', active, onfocus, compact = false, showKeys = false, visible = true, agent, program }: { address: string; title: string; reported?: string; active: boolean; onfocus: () => void; compact?: boolean; showKeys?: boolean; visible?: boolean; agent?: AgentKind; program?: ProgramAppearance } = $props();
+  let { address, title, reported = 'unreported', active, onfocus, compact = false, showKeys = false, visible = true, holdGrid = false, agent, program }: { address: string; title: string; reported?: string; active: boolean; onfocus: () => void; compact?: boolean; showKeys?: boolean; visible?: boolean; holdGrid?: boolean; agent?: AgentKind; program?: ProgramAppearance } = $props();
   let host: HTMLDivElement;
   let status = $state('Connecting');
   let detail = $state('Connecting to the terminal.');
@@ -48,6 +48,13 @@
   let conceal: () => void = () => {};
   let reveal: () => void = () => {};
   $effect(() => { if (visible) reveal(); else conceal(); });
+  // While the on-screen keyboard is up the grid keeps its full size: a resize
+  // makes full-screen programs redraw and reflow, and agents that redraw in
+  // place leave duplicated text in history. The pane shows the part of the
+  // unchanged grid that holds the cursor instead.
+  let held = $state(false);
+  let regrid: () => void = () => {};
+  $effect(() => { void holdGrid; regrid(); });
   // Latched Ctrl/Alt apply to the next key only, then release.
   let mods = $state(noModifiers());
   let scrolledUp = $state(false);
@@ -178,7 +185,27 @@
       return next;
     };
     const inputSub = terminalInput(term, (data, source, binary) => sendInput(source === 'input' && !binary ? modified(data) : data, binary, source));
-    const updateScrolled = () => { scrolledUp = term.buffer.active.viewportY < term.buffer.active.baseY; };
+    let fullHeight = 0, placing = 0;
+    const xterm = host.querySelector<HTMLElement>('.xterm');
+    /** Slide the full-height grid so the cursor row stays in the visible part,
+     * preferring the bottom of the screen where prompts and editors live.
+     */
+    const place = () => {
+      placing = 0;
+      if (!xterm) return;
+      if (!held) { xterm.style.height = ''; xterm.style.transform = ''; return; }
+      const hidden = Math.max(0, fullHeight - host.clientHeight);
+      const buffer = term.buffer.active;
+      const rowHeight = (host.querySelector('.xterm-screen')?.getBoundingClientRect().height || fullHeight) / term.rows;
+      // Reading history: the cursor is off screen, so keep the newest rows.
+      const cursorTop = buffer.viewportY < buffer.baseY ? hidden : Math.max(0, buffer.cursorY - 1) * rowHeight;
+      xterm.style.height = `${fullHeight}px`;
+      xterm.style.transform = `translateY(${-Math.round(Math.min(hidden, cursorTop))}px)`;
+    };
+    const schedulePlace = () => { if (held && !placing) placing = requestAnimationFrame(place); };
+    const cursorSub = term.onCursorMove(schedulePlace);
+    regrid = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(resize); };
+    const updateScrolled = () => { scrolledUp = term.buffer.active.viewportY < term.buffer.active.baseY; schedulePlace(); };
     const scrollSub = term.onScroll(updateScrolled);
     const viewport = host.querySelector('.xterm-viewport');
     viewport?.addEventListener('scroll', updateScrolled, { passive: true });
@@ -268,6 +295,9 @@
     host.addEventListener('focusout', blurred);
     function resize() {
       if (!attached || host.clientWidth < 20 || host.clientHeight < 20) return;
+      // The keyboard took height from an established grid: keep the grid.
+      if (holdGrid && fullHeight > 0 && host.clientHeight < fullHeight) { held = true; cancelAnimationFrame(placing); place(); return; }
+      if (held) { held = false; cancelAnimationFrame(placing); place(); }
       const box = host.getBoundingClientRect();
       const bounds = `${box.width}x${box.height}`;
       // Scrollbars and remote grid changes must not re-promote this viewer.
@@ -275,7 +305,7 @@
       if (bounds === viewportBounds) return;
       const size = fit.proposeDimensions();
       if (!size || !validSize(size.cols, size.rows)) return;
-      viewportBounds = bounds;
+      viewportBounds = bounds; fullHeight = host.clientHeight;
       // Core arbitrates the applicable client size. Render its authoritative
       // notifications rather than locally fighting another client's viewport.
       send({ type: 'resize', cols: size.cols, rows: size.rows });
@@ -298,7 +328,8 @@
       term.clear();
       status = 'Connecting';
       detail = 'Connecting to the terminal.';
-      const size = fit.proposeDimensions();
+      // A reconnect under the keyboard attaches with the held grid, not the visible part.
+      const size = held ? undefined : fit.proposeDimensions();
       const url = terminalUrl(address, size?.cols || term.cols, size?.rows || term.rows, location.href, appearance.dark ? 'dark' : 'light');
       const ws = transportSocket(url);
       socket = ws;
@@ -362,7 +393,7 @@
     return () => {
       disposed = true; generation++; uploadController?.abort(); clearTimeout(timer); cancelAnimationFrame(raf);
       observer.disconnect(); socket?.close(); submission.clear(); scrolling.dispose(); inputSub.dispose();
-      stopRepeat(); scrollSub.dispose(); viewport?.removeEventListener('scroll', updateScrolled);
+      stopRepeat(); scrollSub.dispose(); cursorSub.dispose(); cancelAnimationFrame(placing); viewport?.removeEventListener('scroll', updateScrolled);
       host.removeEventListener('beforeinput', beforeInput, true); host.removeEventListener('paste', paste, true);
       host.removeEventListener('click', clickTerminal);
       host.removeEventListener('focusin', focused); host.removeEventListener('focusout', blurred);

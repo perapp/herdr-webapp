@@ -436,7 +436,7 @@
           {#if mobile}
             {#each phonePanes as kept (kept.key)}
               <div class="kept-pane" hidden={!kept.active}>
-                <PaneTree node={kept.node} on={kept.on} terminals={snapshot.terminals} focused={kept.active ? focused : ''} stacks={view.stacks} compact visible={kept.active} showKeys={kept.active && showKeys} focus={(id) => { if (kept.active) view.focused[tabKey] = id; }} selectStack={selectStack} />
+                <PaneTree node={kept.node} on={kept.on} terminals={snapshot.terminals} focused={kept.active ? focused : ''} stacks={view.stacks} compact visible={kept.active} holdGrid={keyboardOpen} showKeys={kept.active && showKeys} focus={(id) => { if (kept.active) view.focused[tabKey] = id; }} selectStack={selectStack} />
               </div>
             {/each}
             {#if !activePane}<section class="workspace-empty"><h2>No visible panes</h2><p>Choose another tab from the menu or create one.</p><button onclick={() => openAction('new-tab')}>New tab</button></section>{/if}
