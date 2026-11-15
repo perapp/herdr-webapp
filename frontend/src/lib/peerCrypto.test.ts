@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   authTranscript, base64Decode, base64Encode, base64urlDecode, base64urlEncode,
   forgetComputer, generateIdentity, listComputers, machineIdForKey, pairProof, parsePairing, randomNonce,
-  saveComputer, signalTranscript, sign, takePairingFragment, verify,
+  saveComputer, signalTranscript, sign, takePairingFragment, verify, computerName, sanitizeComputerName, withComputerName, type Computer,
 } from './peerCrypto';
 
 vi.stubGlobal('crypto', webcrypto);
@@ -15,6 +15,30 @@ async function pairing() {
     secret: base64urlEncode(new Uint8Array(32).fill(11)), expiresAt: Math.floor(Date.now() / 1000) + 300 };
 }
 function fragment(data: unknown): string { return '#' + base64urlEncode(text.encode(JSON.stringify(data))); }
+
+describe('friendly computer names', () => {
+  const computer = { machineId: 'random-internal-id' } as Computer;
+  it('uses names without displaying internal IDs, with a caller-supplied fallback', () => {
+    expect(computerName(computer)).toBe('Computer');
+    expect(computerName(computer, 'Computer 2')).toBe('Computer 2');
+    expect(computerName({ reportedName: 'native' })).toBe('native');
+    expect(computerName({ name: 'Custom', reportedName: 'native' })).toBe('Custom');
+  });
+  it('bounds and sanitizes both reported and stored display text', () => {
+    expect(sanitizeComputerName(null)).toBeUndefined();
+    expect(sanitizeComputerName(' \u001b\u202eLaptop\n\u0000 ')).toBe('Laptop');
+    expect(sanitizeComputerName('a'.repeat(200))).toHaveLength(128);
+    expect(computerName({ name: '\u0000', reportedName: 'native' })).toBe('native');
+  });
+  it('fills legacy nameless records, refreshes automatic names and preserves custom/legacy names', () => {
+    const first = withComputerName(computer, 'first');
+    expect(first).toMatchObject({ name: 'first', reportedName: 'first' });
+    expect(withComputerName(first, 'second')).toMatchObject({ name: 'second', reportedName: 'second' });
+    expect(withComputerName({ ...first, name: 'My laptop' }, 'second')).toMatchObject({ name: 'My laptop', reportedName: 'second' });
+    expect(withComputerName({ ...computer, name: 'Legacy custom' }, 'second')).toMatchObject({ name: 'Legacy custom', reportedName: 'second' });
+    expect(withComputerName(first, undefined)).toEqual(first);
+  });
+});
 
 describe('strict wire encodings', () => {
   it('matches RFC4648 base64/base64url vectors including sliced byte arrays', () => {

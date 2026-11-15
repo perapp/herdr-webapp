@@ -126,7 +126,10 @@ class Harness:
             self.env[key] = str(path)
         self.env.update(HC_SOCKET=str(self.root / 'core.sock'), HC_SESSION='relay-e2e')
         self.gui_env = os.environ | {'GUI_WORKSTATION_UPGRADE_DAYS': '0',
-                                    'GUI_WORKSTATION_NETWORK': 'pasta:-T,auto,-U,auto',
+                                    # Pasta normally copies the host's LAN address into the guest.
+                                    # Then native host ICE candidates route back into Chromium's
+                                    # own namespace. Use a distinct guest subnet for real UDP ICE.
+                                    'GUI_WORKSTATION_NETWORK': 'pasta:-a,10.0.2.100,-n,24,-g,10.0.2.2,-T,auto,-U,auto',
                                     'GUI_WORKSTATION_OWNER_PID': str(os.getpid())}
         self.workspace = self.root / 'browser'
         self.workspace.mkdir(mode=0o700)
@@ -308,6 +311,19 @@ class Harness:
                 label if label in BROWSER_LABELS else 'browser acceptance failed')
         return result
 
+    def pane_switch_acceptance(self):
+        # Add a second real terminal without depending on unrelated create-pane UI.
+        other = json.loads(self.hc_call('run', '--bg', '--name', 'pane-switch',
+                                       'bash', '--noprofile', '--norc'))['address']
+        document = self.rpc('doc.get', {'name': 'herdr-app'})
+        document['value']['spaces'][0]['tabs'][0]['root']['children'].append(
+            {'id': 'e2e-pane-other', 'type': 'block', 'content': {'terminal': other}})
+        self.rpc('doc.set', {'name': 'herdr-app', 'version': document['version'], 'value': document['value']})
+        self.browser('mobile')
+        require((self.root / 'pane-switch-proof').read_text() == 'pane-switch-proof\n', 'pane switch shell proof failed')
+        require((self.root / 'mobile-proof').read_text() == 'mobile-proof\n', 'mobile shell proof failed')
+        require((self.root / 'mobile-resume-proof').read_text() == 'mobile-resume-proof\n', 'mobile resume shell proof failed')
+
     def execute(self):
         require(self.args.binary.is_file(), 'binary missing; build release first')
         # Explicit owner PID keeps acquire/release ownership stable across CLI subprocesses.
@@ -370,6 +386,15 @@ class Harness:
         self.gui_call('launch', 'chromium', *browser_flags, 'about:blank')
         paired = self.browser('pair')
         require((self.root / 'shell-proof').read_text() == 'relay-shell-proof\n', 'shell file proof failed')
+        if self.args.focus_pane_switch:
+            self.browser('connections')
+            self.pane_switch_acceptance()
+            report = {'ok': True, 'scope': 'focused-pane-switch', 'transport': self.args.transport,
+                      'checks': ['desktop-input', 'connections-and-source-links', 'phone-input',
+                                 'pane-switch-peer-continuity', 'no-start-page-flash', 'phone-reconnect']}
+            self.save_artifacts(report)
+            print(json.dumps(report))
+            return
         if not self.args.focus_rotation:
             self.browser('draft-completion')
             for name in ('draft-desktop-proof', 'draft-phone-proof'):
@@ -390,9 +415,7 @@ class Harness:
             require((self.root / 'resume-proof').read_text() == 'resume-proof\n', 'resume shell proof failed')
             self.browser('connections')
             require((self.root / 'launch-proof').read_text() == 'launch-proof\n', 'launch selection shell proof failed')
-            self.browser('mobile')
-            require((self.root / 'mobile-proof').read_text() == 'mobile-proof\n', 'mobile shell proof failed')
-            require((self.root / 'mobile-resume-proof').read_text() == 'mobile-resume-proof\n', 'mobile resume shell proof failed')
+            self.pane_switch_acceptance()
         self.browser('multi-computer')
         require((self.root / 'second-computer-proof').read_text() == 'second-computer-proof\n', 'second computer shell proof failed')
         require((self.root / 'first-computer-proof').read_text() == 'first-computer-proof\n', 'first computer resume proof failed')
@@ -479,7 +502,9 @@ def main():
     parser.add_argument('--port', type=int, default=9001)
     parser.add_argument('--relay-origin', help='Existing canonical HTTPS relay; no local relay/coturn or browser certificate exception')
     parser.add_argument('--artifacts', type=lambda p: Path(p).expanduser().resolve())
-    parser.add_argument('--focus-rotation', action='store_true', help='Run pair, multi-computer and rotation only; not full acceptance')
+    focus = parser.add_mutually_exclusive_group()
+    focus.add_argument('--focus-pane-switch', action='store_true', help='Run pair, source links, pane switching and phone reconnect only')
+    focus.add_argument('--focus-rotation', action='store_true', help='Run pair, multi-computer and rotation only; not full acceptance')
     args = parser.parse_args()
     require(1 <= args.port <= 65535, 'invalid port')
     if args.relay_origin is not None:

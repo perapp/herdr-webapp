@@ -20,7 +20,9 @@ export function initializePwa(): void {
   manifest.rel = 'manifest'; manifest.href = channelPath('/manifest.webmanifest');
   const icon = document.createElement('link');
   icon.rel = 'apple-touch-icon'; icon.href = channelPath('/icons/icon-192.png');
-  document.head.append(manifest, icon);
+  const favicon = document.createElement('link');
+  favicon.rel = 'icon'; favicon.href = channelPath('/icons/herdr.svg');
+  document.head.append(manifest, icon, favicon);
   if (window.isSecureContext && 'serviceWorker' in navigator) {
     // No authenticated URL, query or fragment is ever passed to registration.
     void navigator.serviceWorker.register(`${base}sw.js`, { scope: base, updateViaCache: 'none' }).catch(() => {

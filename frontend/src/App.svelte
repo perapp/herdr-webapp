@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SourceLink from './SourceLink.svelte';
   import { onMount } from 'svelte';
   import { transportEvents } from './lib/transport';
   import type { EventSourceLike } from './lib/transport';
@@ -20,7 +21,9 @@
   import { blankView, loadView, saveView } from './lib/view';
 
   let { initialToken = '', peerMode = false, peerVersion = '', serverMode, peerBuild, computers = [], selectedComputer = '', onConnections }: { initialToken?: string; peerMode?: boolean; peerVersion?: string; serverMode?: unknown; peerBuild?: unknown; computers?: { id: string; name: string }[]; selectedComputer?: string; onConnections?: () => void } = $props();
-  let auth = $state<'checking' | 'signed-out' | 'signed-in'>('checking');
+  // RelayApp mounts us only after the authenticated peer service is ready.
+  // Do not paint the local sign-in page for that first frame.
+  let auth = $state<'checking' | 'signed-out' | 'signed-in'>((() => peerMode ? 'signed-in' : 'checking')());
   let token = $state('');
   let loginBusy = $state(false);
   let treeBusy = $state(false);
@@ -221,7 +224,7 @@
 {#if auth !== 'signed-in'}
   <main class="login-shell">
     <section class="login-card" aria-labelledby="login-heading">
-      <div class="wordmark"><span class="herdr-mark" aria-hidden="true">h</span>herdr<span class="web-label">web</span></div>
+      <div class="wordmark"><img class="herdr-mark" src={channelPath('/icons/herdr.svg')} alt="" width="32" height="32" />herdr<span class="web-label">web</span></div>
       <p class="eyebrow">Your machines. One quiet workspace.</p>
       <h1 id="login-heading">Open your spaces.</h1>
       <p class="muted">Your Herdr spaces and terminals, ready to use from your phone.</p>
@@ -235,6 +238,7 @@
         </form>
       {/if}
       <p class="login-footnote">The token is exchanged for a private session cookie. It is never saved in browser storage.</p>
+      <SourceLink />
     </section>
   </main>
 {:else}

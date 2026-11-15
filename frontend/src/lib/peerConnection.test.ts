@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PeerConnection, type ConnectionState } from './peerConnection';
-import { authTranscript, signalTranscript, sign, verify, saveComputer, type Computer } from './peerCrypto';
+import { authTranscript, signalTranscript, sign, verify, saveComputer, listComputers, type Computer } from './peerCrypto';
 
 vi.mock('./peerCrypto', async importOriginal => ({
   ...await importOriginal<typeof import('./peerCrypto')>(),
   sign: vi.fn(async () => 'browser-signature'),
   verify: vi.fn(async (_key: string, _text: string, signature: string) => signature === 'connector-signature'),
   saveComputer: vi.fn(async () => {}),
+  listComputers: vi.fn(async () => [] as Computer[]),
 }));
 const services = vi.hoisted(() => [] as Array<{
   sessionId: string; ready: () => void; lost: () => void; close: ReturnType<typeof vi.fn>;
@@ -98,6 +99,25 @@ afterEach(() => {
 });
 
 describe('PeerConnection signaling authentication and epochs', () => {
+  it('persists signed native names only after ready and refreshes automatic names on reconnect', async () => {
+    const { socket } = setup(); await join(socket); ice(socket);
+    signed(socket, { kind: 'accepted', protocolVersion: 1, version: '1', computerName: 'native-laptop' });
+    await flush(); expect(saveComputer).not.toHaveBeenCalled();
+    services[0].ready(); await flush();
+    expect(saveComputer).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'native-laptop', reportedName: 'native-laptop' }));
+    socket.onclose?.(); await vi.advanceTimersByTimeAsync(500);
+    const retry = Socket.instances.at(-1)!; await join(retry, 'fresh'); ice(retry, 'fresh');
+    signed(retry, { kind: 'accepted', protocolVersion: 1, version: '1', computerName: 'renamed-laptop' }, 1, 'fresh');
+    await flush(); services.at(-1)!.ready(); await flush();
+    expect(saveComputer).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'renamed-laptop', reportedName: 'renamed-laptop' }));
+  });
+  it('preserves a stored custom name while updating the authenticated native name', async () => {
+    vi.mocked(listComputers).mockResolvedValueOnce([{ ...computer, name: 'My laptop', reportedName: 'old-host' }]);
+    const { socket } = setup(); await join(socket); ice(socket);
+    signed(socket, { kind: 'accepted', protocolVersion: 1, version: '1', computerName: 'new-host' });
+    await flush(); services[0].ready(); await flush();
+    expect(saveComputer).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'My laptop', reportedName: 'new-host' }));
+  });
   it('carries authenticated current-session build only, and resets it on reconnect', async () => {
     const { socket, states } = setup(); await join(socket); ice(socket);
     const build = { version: 'native', revision: 'a'.repeat(40), commitDate: '2026-06-03T12:00:00Z', dirty: false };
@@ -172,7 +192,7 @@ describe('PeerConnection signaling authentication and epochs', () => {
 
   it('rejects forged acceptance even when relay ICE is already available', async () => {
     const { socket, states } = setup(); await join(socket); ice(socket);
-    signed(socket, { kind: 'accepted', protocolVersion: 1, version: 'forged' }, 1, 'session-1', 'forged');
+    signed(socket, { kind: 'accepted', protocolVersion: 1, version: 'forged', computerName: 'Forged hostname' }, 1, 'session-1', 'forged');
     await flush();
     expect(Peer.instances).toHaveLength(0); expect(socket.close).toHaveBeenCalledOnce();
     expect(states.at(-1)?.status).toBe('Connection interrupted');

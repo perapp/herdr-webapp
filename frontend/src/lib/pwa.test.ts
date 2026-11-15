@@ -24,7 +24,7 @@ describe('install lifecycle', () => {
     const pwa = await setup('/main/connections/example?token=not-forwarded#private');
     pwa.initializePwa();
     expect(pwa.register).toHaveBeenCalledExactlyOnceWith('/main/sw.js', { scope: '/main/', updateViaCache: 'none' });
-    expect(pwa.append).toHaveBeenCalledExactlyOnceWith({ rel: 'manifest', href: '/main/manifest.webmanifest' }, { rel: 'apple-touch-icon', href: '/main/icons/icon-192.png' });
+    expect(pwa.append).toHaveBeenCalledExactlyOnceWith({ rel: 'manifest', href: '/main/manifest.webmanifest' }, { rel: 'apple-touch-icon', href: '/main/icons/icon-192.png' }, { rel: 'icon', href: '/main/icons/herdr.svg' });
   });
   it('invokes retained native prompt synchronously from the gesture and clears dismissed prompts', async () => {
     const pwa = await setup('/');
@@ -63,6 +63,20 @@ describe('install instructions', () => {
   });
   it('ships the same channel-aware worker in both embedded and Vite main paths', () => {
     expect(readFileSync(new URL('../../public/main/sw.js', import.meta.url), 'utf8')).toBe(readFileSync(new URL('../../public/sw.js', import.meta.url), 'utf8'));
+  });
+  it('ships the Herdr ram favicon and matching correctly sized PWA icons in both channels', () => {
+    const read = (path: string) => readFileSync(new URL(`../../public/${path}`, import.meta.url));
+    const svg = read('icons/herdr.svg');
+    expect(svg.toString()).toContain('id="ram"');
+    expect(svg.toString()).toContain('Apache-2.0');
+    expect(read('main/icons/herdr.svg')).toEqual(svg);
+    for (const [name, size] of [['icon-192.png', 192], ['icon-512.png', 512], ['maskable-512.png', 512]] as const) {
+      const png = read(`icons/${name}`);
+      expect(png.subarray(1, 4).toString()).toBe('PNG');
+      expect(png.readUInt32BE(16)).toBe(size);
+      expect(png.readUInt32BE(20)).toBe(size);
+      expect(read(`main/icons/${name}`)).toEqual(png);
+    }
   });
   it('keeps distinct stable/main app identities and secret-free channel launch routes', () => {
     for (const base of ['', 'main/']) {

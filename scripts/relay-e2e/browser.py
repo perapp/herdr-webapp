@@ -134,9 +134,21 @@ class Browser:
         raise AssertionError(label)
 
     def live(self):
-        self.wait("!!document.querySelector('.xterm-helper-textarea') && "
-                  "(!!document.querySelector('.pane-name .dot.live') || "
-                  "(!!document.querySelector('.terminal-pane.compact') && !document.querySelector('.terminal-detail')))", label='terminal attached')
+        try:
+            self.wait("!!document.querySelector('.xterm-helper-textarea') && "
+                      "(!!document.querySelector('.pane-name .dot.live') || "
+                      "(!!document.querySelector('.terminal-pane.compact') && !document.querySelector('.terminal-detail')))", label='terminal attached')
+        except AssertionError:
+            # Counts/booleans only: never export terminal text or private links.
+            metrics = self.js('''(()=>({peers:window.__e2e?.peers.length||0,
+              connected:window.__e2e?.peers.filter(p=>p.connectionState==='connected').length||0,
+              terminals:document.querySelectorAll('.xterm').length,
+              textareas:document.querySelectorAll('.xterm-helper-textarea').length,
+              connectionNotice:!!document.querySelector('[data-testid=connection-workspace]'),
+              navigationOpen:!!document.querySelector('.app-shell'),
+              receivedBytes:window.__e2e?.receivedBytes||0}))()''')
+            (ROOT / 'shell-metrics.json').write_text(json.dumps(metrics))
+            raise
         self.wait("!!window.__e2e && window.__e2e.peers.some(p=>p.connectionState==='connected')", label='peer connected')
 
     def reload(self, ready="document.readyState==='complete'", timeout=60):
@@ -295,7 +307,7 @@ def denied_profile(browser):
     # actual auth attempts and their failure/deadline, not a sleep/hidden pane.
     # Zero offered peers over the entire document excludes transient success.
     browser.wait("window.__e2e.authAttempts>=2 && "
-                 "document.querySelector('[data-testid=connection-notice] [role=status]')?.textContent==='Connection interrupted'", timeout=120,
+                 "document.querySelector('[data-testid=connection-workspace] h1')?.textContent==='Connection interrupted'", timeout=120,
                  label='rotation authorization rejected')
     assert browser.js("window.__e2e.peers.length===0 && !document.querySelector('.xterm')"), 'rotation authorization rejected'
 
@@ -522,9 +534,11 @@ finally:
             assert browser.js("(()=>{const f=document.querySelector('.navigation-settings'),b=f?.querySelector('button');return !!f && f.textContent.trim()==='' && f.children.length===1 && b?.getAttribute('aria-label')==='Settings' && !!b.querySelector('svg') && b.getBoundingClientRect().width>=44 && b.getBoundingClientRect().height>=44})()"), 'acceptance condition'
             browser.click('.navigation-settings .settings-button[aria-haspopup="dialog"]')
             browser.wait("!!document.querySelector('.preferences[open] .install-option')")
+            assert browser.js("!!document.querySelector('.preferences[open] a.source-link[href=\"https://github.com/perapp/herdr-webapp\"] svg')"), 'acceptance condition'
             browser.click('.version-option')
             browser.wait("!!document.querySelector('.version-dialog[open]') && !document.querySelector('.preferences[open]')")
             browser.wait("!!document.querySelector('[data-component=core]') && !!document.querySelector('[data-component=connector]')")
+            assert browser.js("!!document.querySelector('.version-dialog[open] a.source-link[href=\"https://github.com/perapp/herdr-webapp\"] svg')"), 'acceptance condition'
             assert not browser.js("!!document.querySelector('.component-updates > .update-error')"), 'acceptance condition'
             browser.click('[aria-label="Close versions"]')
             browser.wait("!!document.querySelector('.preferences[open]') && document.activeElement.matches('.version-option')")
@@ -532,6 +546,7 @@ finally:
             # The branded drawer heading is the Connections action, even with one saved computer.
             browser.click('.drawer-brand')
             browser.wait("!!document.querySelector('[data-testid=remembered-computers]') && !document.querySelector('.xterm')")
+            assert browser.js("!!document.querySelector('[data-testid=connections-page] a.source-link[href=\"https://github.com/perapp/herdr-webapp\"] svg')"), 'acceptance condition'
             browser.click('.connections-menu summary')
             assert browser.js("JSON.stringify([...document.querySelectorAll('.connections-menu button')].map(b=>b.textContent.trim()))") == '["Settings"]', 'acceptance condition'
             assert browser.js("document.querySelector('.connections-brand')?.textContent==='Herdr-webapp' && document.querySelector('.connections-brand').pathname==='/'"), 'acceptance condition'
@@ -584,10 +599,28 @@ finally:
             proof = str(Path(job['proofDir']) / 'mobile-proof')
             browser.shell("printf '%s%s\\n' mobile- proof > " + json.dumps(proof) +
                           "; printf '%s%s\\n' MOBILE_ OK", 'MOBILE_OK')
+            # Observe every DOM transition, not only the final attached terminal.
+            browser.js('''window.__paneSwitch={flashes:0,peers:window.__e2e.peers.length,path:location.pathname};
+              window.__paneObserver=new MutationObserver(()=>{
+                if(document.querySelector('[data-testid="connections-page"],.login-shell'))window.__paneSwitch.flashes++;
+              });window.__paneObserver.observe(document.body,{childList:true,subtree:true});''')
+            browser.wait("document.querySelectorAll('.pane-link').length===2")
+            for index in [1, 0, 1, 0]:
+                browser.click('[aria-label="Toggle navigation"]')
+                browser.wait("document.querySelectorAll('.pane-link').length===2")
+                browser.click(f'.pane-link:nth-child({index + 1})')
+                browser.wait("!document.querySelector('#navigation-drawer[open]')")
+                browser.live()
+                assert browser.js("window.__e2e.peers.length===window.__paneSwitch.peers && location.pathname===window.__paneSwitch.path && window.__paneSwitch.flashes===0"), 'acceptance condition'
+            proof = str(Path(job['proofDir']) / 'pane-switch-proof')
+            browser.shell("printf '%s%s\\n' pane-switch- proof > " + json.dumps(proof) +
+                          "; printf '%s%s\\n' PANE_SWITCH_ OK", 'PANE_SWITCH_OK')
             count = browser.js('window.__e2e.peers.length')
             browser.js("window.__e2e.peers.filter(p=>p.connectionState==='connected').forEach(p=>p.close())")
             browser.wait(f'window.__e2e.peers.length>{count}', timeout=90)
             browser.live()
+            assert browser.js('window.__paneSwitch.flashes===0'), 'acceptance condition'
+            browser.js('window.__paneObserver.disconnect()')
             proof = str(Path(job['proofDir']) / 'mobile-resume-proof')
             browser.shell("printf '%s%s\\n' mobile-resume- proof > " + json.dumps(proof) +
                           "; printf '%s%s\\n' MOBILE_RESUME_ OK", 'MOBILE_RESUME_OK')

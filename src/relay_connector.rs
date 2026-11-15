@@ -54,8 +54,16 @@ pub struct ConnectorConfig {
     pub reset_pairings: bool,
     pub no_dashboard: bool,
 }
-fn accepted_payload() -> Value {
-    json!({"kind":"accepted","version":crate::build_info::VERSION,"protocolVersion":1,"build":crate::build_info::BuildInfo::current()})
+fn accepted_payload(computer_name: Option<&str>) -> Value {
+    let mut payload = json!({"kind":"accepted","version":crate::build_info::VERSION,"protocolVersion":1,"build":crate::build_info::BuildInfo::current()});
+    if let Some(name) = computer_name {
+        // Metadata comes from the local native Core, never from relay messages.
+        let name: String = name.chars().filter(|c| !c.is_control()).take(128).collect();
+        if !name.trim().is_empty() {
+            payload["computerName"] = json!(name.trim());
+        }
+    }
+    payload
 }
 
 fn origin_url(input: &str, allow_loopback: bool) -> Result<crate::relay_channel::RelayEndpoint> {
@@ -228,7 +236,13 @@ async fn session_authenticated(
     generation: u64,
     ready: Arc<AtomicBool>,
 ) -> Result<()> {
-    e.signed(id, 1, accepted_payload()).await?;
+    // Read a fresh native hello on each authenticated connection, including renames.
+    let hello = e
+        .core
+        .call("hello", json!({"generation":1,"framed":false}))
+        .await?;
+    e.signed(id, 1, accepted_payload(hello["core"]["name"].as_str()))
+        .await?;
     e.send(json!({"type":"authorize","sessionId":id})).await?;
     let mut ice = None;
     let mut offer = None;
@@ -347,7 +361,7 @@ async fn session_authenticated(
                 });
             },
             Some(done) = handlers.join_next(), if !handlers.is_empty() => {
-                if !matches!(done, Ok((false, true))) { break; }
+                if channel_completion_ends_session(done) { break; }
             },
         } }
         Ok(())
@@ -357,6 +371,14 @@ async fn session_authenticated(
     let _ = pc.close().await;
     result
 }
+// Terminal/upload failures belong to their channel, not the authenticated peer.
+// Control termination and task failures still tear down every channel fail-closed.
+fn channel_completion_ends_session(
+    done: std::result::Result<(bool, bool), tokio::task::JoinError>,
+) -> bool {
+    !matches!(done, Ok((false, _)))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn serve_data_channel(
     dc: Arc<RTCDataChannel>,
@@ -857,6 +879,65 @@ async fn shutdown_signal() {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn channel_completion_scopes_errors_to_non_control_channels() {
+        for succeeded in [false, true] {
+            assert!(!super::channel_completion_ends_session(Ok((
+                false, succeeded
+            ))));
+            assert!(super::channel_completion_ends_session(Ok((
+                true, succeeded
+            ))));
+        }
+    }
+
+    #[tokio::test]
+    async fn non_control_completion_releases_admission_for_pane_switches() {
+        let budget = Arc::new(Semaphore::new(1));
+        let mut handlers = JoinSet::new();
+        // Exercise both orderly completion and the error returned on terminal close.
+        for succeeded in [false, true, false] {
+            let permit = budget.clone().try_acquire_owned().unwrap();
+            assert!(budget.clone().try_acquire_owned().is_err());
+            handlers.spawn(async move {
+                let _permit = permit;
+                (false, succeeded)
+            });
+            assert!(!super::channel_completion_ends_session(
+                handlers.join_next().await.unwrap()
+            ));
+            assert_eq!(budget.available_permits(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_handler_panic_and_cancellation_end_session() {
+        let budget = Arc::new(Semaphore::new(1));
+        let mut handlers = JoinSet::new();
+        let permit = budget.clone().try_acquire_owned().unwrap();
+        handlers.spawn(async move {
+            let _permit = permit;
+            panic!("channel handler panicked");
+            #[allow(unreachable_code)]
+            (false, false)
+        });
+        let done = handlers.join_next().await.unwrap();
+        assert!(done.as_ref().unwrap_err().is_panic());
+        assert!(super::channel_completion_ends_session(done));
+        assert_eq!(budget.available_permits(), 1);
+
+        let permit = budget.clone().try_acquire_owned().unwrap();
+        handlers.spawn(async move {
+            let _permit = permit;
+            std::future::pending::<(bool, bool)>().await
+        });
+        handlers.abort_all();
+        let done = handlers.join_next().await.unwrap();
+        assert!(done.as_ref().unwrap_err().is_cancelled());
+        assert!(super::channel_completion_ends_session(done));
+        assert_eq!(budget.available_permits(), 1);
+    }
+
     #[tokio::test]
     async fn pairing_lifecycle_keeps_permanent_capability_without_relay_connection() {
         let dir = tempfile::tempdir().unwrap();
@@ -913,7 +994,9 @@ mod tests {
 
     #[test]
     fn accepted_keeps_legacy_contract_and_embeds_build_in_signed_body() {
-        let payload = super::accepted_payload();
+        let payload = super::accepted_payload(Some("native-laptop"));
+        assert_eq!(payload["computerName"], "native-laptop");
+        assert!(super::accepted_payload(None).get("computerName").is_none());
         assert_eq!(payload["kind"], "accepted");
         assert_eq!(payload["version"], crate::build_info::VERSION);
         assert_eq!(payload["protocolVersion"], 1);
@@ -984,7 +1067,7 @@ mod tests {
         .unwrap();
         let identity = Identity::load_or_create(&dir.path().join("identity.json")).unwrap();
         for payload in [
-            accepted_payload(),
+            accepted_payload(Some("native-laptop")),
             json!({"kind":"accepted","version":"legacy","protocolVersion":1}),
         ] {
             let body = payload.to_string();

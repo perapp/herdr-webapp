@@ -169,6 +169,31 @@ describe('PeerService session and control requests', () => {
 });
 
 describe('PeerService terminal channels', () => {
+  it('switches terminal channels without closing control, events or the peer', async () => {
+    const { service, channels, control, pc, lost, activate } = setup();
+    await activate();
+    const events = service.events('/api/events');
+    const eventLost = vi.fn(); events.onerror = eventLost;
+    for (let pane = 0; pane < 6; pane++) {
+      const socket = service.socket(`/api/terminal?terminal=t${pane}&cols=80&rows=24`);
+      const endpoint = channels.at(-1)!;
+      endpoint.local.open();
+      await vi.waitFor(() => expect(socket.readyState).toBe(1));
+      socket.close();
+      expect(socket.readyState).toBe(3);
+      expect(control.local.readyState).toBe('open');
+      expect(lost).not.toHaveBeenCalled();
+      expect(eventLost).not.toHaveBeenCalled();
+      expect(pc.close).not.toHaveBeenCalled();
+    }
+    const pending = service.request('/api/state');
+    await vi.waitFor(() => expect(jsonMessages(control).at(-1)?.type).toBe('request'));
+    const id = jsonMessages(control).at(-1)!.id;
+    await reply(control.wire, { type: 'response', id, status: 200, body: body('{"connected":true}') });
+    expect(await (await pending).json()).toEqual({ connected: true });
+    events.close();
+  });
+
   it('attaches before opening, reconstructs 256 KiB binary frames in both directions and forbids offline sends', async () => {
     const { service, channels, activate } = setup(); await activate();
     const socket = service.socket('/api/terminal?terminal=t1&cols=80&rows=24&observe=true&resumed=true&theme=dark');

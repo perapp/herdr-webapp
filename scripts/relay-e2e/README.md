@@ -10,6 +10,11 @@ python3 scripts/relay-e2e.py \
   --binary target/release/herdr-webapp --transport direct --port 9001
 ```
 
+For a focused pane-switch loop, add `--focus-pane-switch`: it checks desktop
+input, Connections/Settings/Versions source links, phone pane switches without
+peer replacement or start-page flashes, and authenticated reconnect. This is not
+a substitute for the full upload, editor and access-rotation suite.
+
 Repeat with `--transport udp`, `--transport tcp`, and `--transport tls`. Each
 invocation owns a fresh fixture. Default binary: `target/release/herdr-webapp`;
 default transport: direct. TCP publishes **only TCP TURN**; TLS publishes **only
@@ -36,7 +41,9 @@ but does not establish cellular, external-network or physical-phone acceptance.
 ## Prerequisites
 
 - Linux/Pasta networking; literal host loopback must be reachable from the GUI.
-  The runner pins the GUI network to Pasta, disables automatic image upgrades,
+  The runner pins the GUI network to Pasta with a distinct `10.0.2.100/24`
+  guest address (so host LAN ICE candidates do not loop back into the guest),
+  disables automatic image upgrades,
   and acquires a new workstation with an explicit harness owner PID.
 - Installed `hc`, release executable, and explicitly provided GUI CLI.
 - Existing GUI image. The GUI CLI controls its normal acquire lifecycle; provision
@@ -75,6 +82,10 @@ but does not establish cellular, external-network or physical-phone acceptance.
   explicit computer and accepts trusted terminal input after authenticated reload.
 - Phone-sized input and reconnect are checked with Chromium device metrics/touch
   emulation, not claimed as physical Android/iOS keyboard verification.
+- Two real fixture terminals and repeated pane switches must retain the
+  same peer epoch and connection route. A DOM observer checks for transient
+  Connections/sign-in flashes throughout switching and an actual peer reconnect;
+  a shell-file proof confirms input still works after switching.
 - Two independent connector identities share the disposable Core/layout IDs on
   purpose. Both remain remembered; explicit route switching authenticates each
   pinned identity without re-pairing and produces independent shell file proofs.

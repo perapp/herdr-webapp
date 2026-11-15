@@ -1,0 +1,13 @@
+Herdr icon
+==========
+
+Source: herdr-app/assets/icons/herdr-ui-icon-clean.svg and .png
+https://github.com/herdrdev/herdr-app
+
+The ram path is adapted from the original Herdr logo:
+https://github.com/herdrdev/herdr/blob/HEAD/assets/logo.svg
+Upstream license: Apache License 2.0 (see the repository LICENSE).
+The SVG retains its upstream attribution metadata.
+
+Webapp adaptations: PNG resizing and an opaque, safe-area maskable variant.
+The same assets are distributed under /main/icons/ for the main channel.

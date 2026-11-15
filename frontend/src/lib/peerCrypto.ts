@@ -16,6 +16,28 @@ export interface Computer {
   identity: BrowserIdentity;
   version?: string;
   name?: string;
+  /** Last authenticated native Core name; separate from a user's custom name. */
+  reportedName?: string;
+}
+/** Single-line, bounded display text, including names loaded from older storage. */
+export function sanitizeComputerName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  // eslint-disable-next-line no-control-regex -- Remove terminal/control and directional formatting from display names.
+  const name = Array.from(value.slice(0, 4096).replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, '').replace(/\s+/g, ' ').trim()).slice(0, 128).join('');
+  return name || undefined;
+}
+export function computerName(computer?: Pick<Computer, 'name' | 'reportedName'>, fallback = 'Computer'): string {
+  return sanitizeComputerName(computer?.name) || sanitizeComputerName(computer?.reportedName) || sanitizeComputerName(fallback) || 'Computer';
+}
+/** Only pass a reported name from verified connector metadata. */
+export function withComputerName(computer: Computer, reported: unknown): Computer {
+  const reportedName = sanitizeComputerName(reported);
+  const name = sanitizeComputerName(computer.name);
+  const previous = sanitizeComputerName(computer.reportedName);
+  return { ...computer,
+    ...(reportedName ? { reportedName } : {}),
+    ...((!name || name === previous) && reportedName ? { name: reportedName } : name ? { name } : {}),
+  };
 }
 const encoder = new TextEncoder();
 const MAX_PAIRING_LENGTH = 2048;
@@ -150,7 +172,8 @@ export async function saveComputer(computer: Computer): Promise<void> {
     machineId: computer.machineId, publicKey: computer.publicKey,
     identity: { publicKey: computer.identity.publicKey, privateKey: key },
     ...(computer.version !== undefined ? { version: computer.version } : {}),
-    ...(computer.name !== undefined ? { name: computer.name } : {}),
+    ...(sanitizeComputerName(computer.name) ? { name: sanitizeComputerName(computer.name) } : {}),
+    ...(sanitizeComputerName(computer.reportedName) ? { reportedName: sanitizeComputerName(computer.reportedName) } : {}),
   };
   await operation('readwrite', store => store.put(saved));
 }

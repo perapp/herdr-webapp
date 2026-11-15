@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SourceLink from './SourceLink.svelte';
   import { getContext, onMount } from 'svelte';
   import { channelBase } from './lib/channel';
   import { displayDate, fetchVersionMode, loadedBuild, modeBuild, versionRows } from './lib/versions';
@@ -79,7 +80,7 @@
       {/each}
     </details>
   </div>
-  <footer><button class="quiet done" onclick={dismiss}>Close</button></footer>
+  <footer><SourceLink /><button class="quiet done" onclick={dismiss}>Close</button></footer>
 </dialog>
 <style>
   dialog.version-dialog { width: min(540px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); box-sizing: border-box; padding: 0; border-radius: 16px; background: var(--base); color: var(--ink); overflow: hidden; }
@@ -89,7 +90,7 @@
   h3 { font-size: 1rem; margin: 0 0 4px; }
   .dismiss { min-width: 44px; font-size: 1.846154rem; padding: 0; }
   .versions-body { min-height: 0; overflow: auto; padding: 20px 24px; overscroll-behavior: contain; }
-  button { min-height: 44px; overflow-wrap: anywhere; } .done { width: 100%; }
+  button { min-height: 44px; overflow-wrap: anywhere; } .done { min-width: 80px; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
   p { margin: 8px 0 12px; overflow-wrap: anywhere; }
   .version-number { font: 1rem ui-monospace, SFMono-Regular, monospace; color: var(--bright); }
@@ -101,7 +102,7 @@
   .build-details section { border-top: 1px solid var(--line); padding: 16px 0; }
   dl { display: grid; grid-template-columns: min(7rem, 35%) minmax(0, 1fr); gap: 8px; margin: 12px 0 0; font-size: .846154rem; }
   dt { color: var(--muted); overflow-wrap: anywhere; } dd { margin: 0; overflow-wrap: anywhere; user-select: text; } code { font-size: .846154rem; }
-  footer { flex-shrink: 0; padding: 8px 16px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+  footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; padding: 8px 16px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
   @media (max-width: 600px) { dialog.version-dialog { width: 100%; max-width: none; margin: auto auto 0; max-height: calc(100dvh - max(16px, env(safe-area-inset-top))); border-radius: 16px 16px 0 0; } .versions-header { padding-left: 20px; } .versions-body { padding: 18px 16px; } }
   @media (max-width: 380px) { dl { grid-template-columns: 1fr; gap: 4px; } dd { margin-bottom: 6px; } }
 </style>

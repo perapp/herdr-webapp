@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SourceLink from './SourceLink.svelte';
   import { channelBase, channelPath } from './lib/channel';
   import { forgetLocalNotifications } from './lib/notifications';
   import { connectionRoute, connectionPath, lastComputer, rememberComputer, forgetSelection, ConnectionGeneration } from './lib/connectionRoute';
@@ -7,10 +8,11 @@
   import { MainReload, reloadContext, trackReloadActivity } from './lib/mainReload';
   import type { ReloadState } from './lib/mainReload';
   import App from './App.svelte';
+  import ConnectionStatus from './ConnectionStatus.svelte';
   import SettingsDialog from './SettingsDialog.svelte';
   import UpdateProgress from './UpdateProgress.svelte';
   import { displayVersion, modeBuild } from './lib/versions';
-  import { parsePairing, listComputers, forgetComputer } from './lib/peerCrypto';
+  import { parsePairing, listComputers, forgetComputer, computerName } from './lib/peerCrypto';
   import type { Computer } from './lib/peerCrypto';
   import { PeerConnection } from './lib/peerConnection';
   import type { PeerTarget, ConnectionState } from './lib/peerConnection';
@@ -35,6 +37,11 @@
   let computers = $state<Computer[]>([]);
   let connectionState = $state<ConnectionState>({ status: 'Your terminals, wherever you are.' });
   let selected = $state('');
+  function labelComputer(computer?: Computer): string {
+    const index = computer ? computers.findIndex(c => c.machineId === computer.machineId) : -1;
+    return computerName(computer, computers.length > 1 && index >= 0 ? `Computer ${index + 1}` : 'Computer');
+  }
+  const selectedName = $derived(labelComputer(computers.find(c => c.machineId === selected)));
   let forceTurn = $state(new URLSearchParams(location.search).get('forceTurn') === '1');
   let connection = $state<PeerConnection>();
   let mounted = true;
@@ -172,8 +179,10 @@
 {/if}
 {#if connectionState.service}
   {#key selected}
-  <App onConnections={showConnections} {serverMode} peerBuild={connectionState.build} peerMode={true} peerVersion={connectionState.version} computers={computers.map(c => ({ id: c.machineId, name: c.name || `Computer ${c.machineId.slice(0, 8)}` }))} selectedComputer={selected} />
+  <App onConnections={showConnections} {serverMode} peerBuild={connectionState.build} peerMode={true} peerVersion={connectionState.version} computers={computers.map(c => ({ id: c.machineId, name: labelComputer(c) }))} selectedComputer={selected} />
   {/key}
+{:else if selected || loading}
+  <ConnectionStatus name={selectedName} status={connectionState.status} error={connectionState.error} {retry} connections={showConnections} forget={selected ? () => void forget() : undefined} />
 {:else}
   <main class="login-shell" data-testid="connections-page">
     <section class="login-card" aria-labelledby="relay-heading">
@@ -182,11 +191,11 @@
         <button aria-haspopup="dialog" onclick={() => showSettings = true}>Settings</button>
       </nav></details>
       <header class="start-heading">
-        <a class="wordmark" href={channelPath('/')} aria-label="Herdr-webapp — Connections"><span class="herdr-mark" aria-hidden="true">h</span>herdr<span class="web-label">web</span></a>
+        <a class="wordmark" href={channelPath('/')} aria-label="Herdr-webapp — Connections"><img class="herdr-mark" src={channelPath('/icons/herdr.svg')} alt="" width="32" height="32" />herdr<span class="web-label">web</span></a>
         <span class="channel-label">{channel}</span>
       </header>
       <h1 id="relay-heading">{selected ? 'Opening your terminals' : computers.length ? 'Your computers' : 'Your terminals, anywhere.'}</h1>
-      <p class="start-intro">{selected ? (computers.find(c => c.machineId === selected)?.name || `Computer ${selected.slice(0, 8)}`) : computers.length ? 'Pick up where you left off.' : 'Connect a computer. Bring your spaces with you.'}</p>
+      <p class="start-intro">{selected ? (selectedName) : computers.length ? 'Pick up where you left off.' : 'Connect a computer. Bring your spaces with you.'}</p>
       {#if loading || selected || connectionState.error || connectionState.status !== 'Your terminals, wherever you are.'}
         <div class="connection-notice" aria-busy={loading} data-testid="connection-notice">
           <p role="status">{loading && !selected ? 'Loading your computers…' : connectionState.status}</p>
@@ -207,7 +216,7 @@
             <label for="paired-computer">Switch computer</label>
             <select id="paired-computer" value={selected} onchange={event => choose(event.currentTarget.value)}>
               <option value="">Choose a computer…</option>
-              {#each computers as computer (computer.machineId)}<option value={computer.machineId}>{computer.name || `Computer ${computer.machineId.slice(0, 8)}`}</option>{/each}
+              {#each computers as computer (computer.machineId)}<option value={computer.machineId}>{labelComputer(computer)}</option>{/each}
             </select>
             <button class="quiet" onclick={forget}>Forget this computer</button>
           {/if}
@@ -217,7 +226,7 @@
           {#each computers as computer (computer.machineId)}
             <li><a class="computer-link" data-testid="open-computer" href={routePath(connectionPath(computer.machineId))} onclick={event => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); choose(computer.machineId); } }}>
               <span class="terminal-prompt" aria-hidden="true">&gt;_</span>
-              <span class="computer-label"><strong>{computer.name || `Computer ${computer.machineId.slice(0, 8)}`}</strong><span>Open terminal</span></span>
+              <span class="computer-label"><strong>{labelComputer(computer)}</strong><span>Open terminal</span></span>
               <span class="open-arrow" aria-hidden="true">→</span>
             </a></li>
           {/each}
@@ -253,6 +262,7 @@
         <p>Keep the connector running to reconnect. The setup command reuses a compatible Core; it does not replace an incompatible Core automatically. Managed setups can opt out of Core installation with <code>--no-install-core</code>.</p>
         <details class="start-details"><summary>Connection diagnostics</summary><label class="turn-option"><input type="checkbox" bind:checked={forceTurn} disabled={!!connection} /> Force TURN on the next connection</label><p>Relay {displayVersion(modeBuild(serverMode), relayVersion)}. TURN availability depends on this relay’s configuration.</p></details>
       </details>
+      <div class="source-row"><SourceLink /></div>
     </section>
   </main>
 {/if}
@@ -261,6 +271,7 @@
 <style>
   .login-shell { padding: 32px 20px; align-items: start; }
   .login-card { position: relative; min-width: 0; width: min(100%, 520px); margin: clamp(0px, 7vh, 72px) 0; padding: 24px; overflow-wrap: anywhere; }
+  .source-row { display: flex; justify-content: center; margin-top: 14px; }
   .start-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-right: 48px; margin-bottom: 28px; }
   .wordmark { text-decoration: none; gap: 7px; font-size: 1.65rem; }
   .channel-label { padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: .75rem; }

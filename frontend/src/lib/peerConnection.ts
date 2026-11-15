@@ -1,5 +1,5 @@
 import { channelContext, channelPath } from './channel';
-import { authTranscript, signalTranscript, generateIdentity, randomNonce, pairProof, sign, verify, saveComputer } from './peerCrypto';
+import { authTranscript, signalTranscript, generateIdentity, randomNonce, pairProof, sign, verify, saveComputer, listComputers, withComputerName } from './peerCrypto';
 import type { Pairing, Computer, BrowserIdentity } from './peerCrypto';
 import { PeerService } from './peerService';
 import { normalizeBuild, versionText } from './versions';
@@ -61,6 +61,7 @@ export class PeerConnection {
       let offered = false;
       let answered = false;
       let connectorVersion = '';
+      let connectorName: unknown;
       let connectorBuild: BuildInfo | undefined;
       let ice: RTCIceServer[] | undefined;
       const send = (data: object) => { guard(); if (socket?.readyState !== WebSocket.OPEN) throw new Error('Signaling disconnected'); socket.send(JSON.stringify(data)); };
@@ -77,7 +78,10 @@ export class PeerConnection {
         const control = pc.createDataChannel('herdr-control-v1', { ordered: true });
         service = new PeerService(pc, control, sessionId, () => { void (async () => {
           guard();
-          const saved: Computer = { machineId, publicKey: remoteKey, identity, version: connectorVersion };
+          // Re-pairing must not erase a previously saved custom name either.
+          const previous = (await listComputers()).find(saved => saved.machineId === machineId && saved.publicKey === remoteKey) || computer;
+          guard();
+          const saved = withComputerName({ ...previous, machineId, publicKey: remoteKey, identity, version: connectorVersion }, connectorName);
           await saveComputer(saved); guard();
           this.target = { computer: saved }; // Capability is dropped only after authenticated control ready.
           this.attempts = 0; clearTimeout(deadline);
@@ -142,6 +146,7 @@ export class PeerConnection {
           const body = JSON.parse(envelope.body);
           if (body.kind === 'accepted') {
             if (accepted || body.protocolVersion !== 1 || typeof body.version !== 'string') throw new Error('Invalid connector acceptance');
+            connectorName = body.computerName;
             accepted = true; connectorBuild = normalizeBuild(body.build, body.version); connectorVersion = versionText(body.version) || ''; this.update({ status: 'Establishing private peer connection…' }); await offer();
           } else if (body.kind === 'answer') {
             if (!accepted || !offered || answered || !pc || typeof body.sdp !== 'string') throw new Error('Unexpected answer');
