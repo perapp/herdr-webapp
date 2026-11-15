@@ -72,6 +72,55 @@ class TurnSocket:
 
 
 class OfflineTests(unittest.TestCase):
+    def browser_helper(self):
+        # Execute only the class: no CDP connection, optional GUI packages or I/O.
+        source = (Path(__file__).parent / 'browser.py').read_text()
+        nodes = [n for n in ast.parse(source).body if isinstance(n, ast.ClassDef) and n.name in ('Browser', 'NavigationPending')]
+        namespace = {'json': __import__('json'), 'time': __import__('time')}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), '<browser-helper>', 'exec'), namespace)
+        browser = object.__new__(namespace['Browser'])
+        browser.js = Mock(return_value={'x': 10, 'y': 20})
+        browser.call = Mock()
+        browser.wait = Mock()
+        return browser
+
+    def test_wait_retries_navigation_but_not_real_page_errors(self):
+        browser = self.browser_helper()
+        wait = type(browser).wait.__get__(browser)
+        pending = type(browser).call.__globals__['NavigationPending']
+        browser.js.side_effect = [pending('Browser navigation pending'), True]
+        wait('true', timeout=1)
+        self.assertEqual(browser.js.call_count, 2)
+        browser.js.side_effect = RuntimeError('page evaluation failed')
+        with self.assertRaisesRegex(RuntimeError, 'page evaluation failed'):
+            wait('bad expression', timeout=1)
+
+    def test_reload_fences_old_document_before_waiting(self):
+        browser = self.browser_helper()
+        calls = Mock()
+        calls.attach_mock(browser.js, 'js')
+        calls.attach_mock(browser.call, 'call')
+        calls.attach_mock(browser.wait, 'wait')
+        browser.reload("!!document.querySelector('main')", timeout=8)
+        self.assertEqual([c[0] for c in calls.mock_calls], ['js', 'call', 'wait'])
+        browser.js.assert_called_once_with('window.__herdrReloadFence=true')
+        self.assertIn('!window.__herdrReloadFence', browser.wait.call_args.args[0])
+        self.assertEqual(browser.wait.call_args.kwargs['timeout'], 8)
+
+    def test_disconnect_handles_local_pane_and_relay_teardown(self):
+        browser = self.browser_helper()
+        browser.disconnected()
+        expression = browser.wait.call_args.args[0]
+        self.assertIn("!document.querySelector('.xterm')", expression)
+        self.assertIn("document.querySelector('.terminal-detail')", expression)
+
+    def test_click_waits_then_sends_real_pointer_events(self):
+        browser = self.browser_helper()
+        browser.click('button[aria-label="Settings"]')
+        self.assertIn('!e.disabled', browser.wait.call_args.args[0])
+        self.assertEqual([c.args[1]['type'] for c in browser.call.call_args_list],
+                         ['mousePressed', 'mouseReleased'])
+
     def test_sources_compile_without_bytecode(self):
         directory = Path(__file__).parent
         for source in [directory.parent / 'relay-e2e.py', *directory.glob('*.py')]:

@@ -1,8 +1,27 @@
-.PHONY: all build frontend check test release run dev clean smoke
+.PHONY: all build frontend frontend-deps setup check check-fast ui-test ui-watch test release run dev dev-build dev-embedded clean smoke help
 all: release
 
-frontend:
-	cd frontend && npm ci && npm run build
+help:
+	@printf '%s\n' 'make dev                 Vite HMR + disposable Core (no live user terminals)' 'make check-fast          Frontend types, lint and tests; no Rust/release build' 'make ui-test TEST=fontSize.test.ts   Focused frontend tests' 'make ui-watch TEST=fontSize.test.ts  Focused watch loop' 'make dev-build           Rebuild debug backend after Rust changes' 'make setup               Force a clean locked dependency install' 'make check && make release && make smoke  Full completion gates'
+
+frontend-deps:
+	python3 -B scripts/frontend-deps.py
+
+setup:
+	python3 -B scripts/frontend-deps.py --force
+
+frontend: frontend-deps
+	cd frontend && npm run build
+
+# Fast inner loop: cached dependencies, no embedded-assets or Rust build.
+check-fast: frontend-deps
+	cd frontend && npm run check && npm run lint && npm test
+
+ui-test: frontend-deps
+	cd frontend && npm test -- $(TEST)
+
+ui-watch: frontend-deps
+	cd frontend && npx --no-install vitest --watch $(TEST)
 
 build: frontend
 	cargo build --locked
@@ -10,8 +29,9 @@ build: frontend
 release: frontend
 	cargo build --release --locked
 
-check:
-	cd frontend && npm ci && npm run check && npm run lint && npm test && npm run build
+# Full gate intentionally starts from a clean locked install.
+check: setup
+	cd frontend && npm run check && npm run lint && npm test && npm run build
 	cargo fmt --all -- --check
 	cargo clippy --locked --all-targets -- -D warnings
 	cargo test --locked
@@ -22,6 +42,8 @@ check:
 	python3 -B scripts/test_main_ci.py
 	python3 -B distribution/test_relay_catalog.py
 	python3 -B scripts/relay-e2e/test_static.py
+	python3 -B scripts/test_frontend_deps.py
+	python3 -B scripts/test_dev.py
 
 test:
 	cd frontend && npm test
@@ -31,9 +53,18 @@ test:
 run: release
 	./target/release/herdr-webapp
 
-# Rebuild frontend first; --core-socket can point to an isolated development core.
-dev: frontend
-	cargo run --locked -- --port 9001
+# Vite reads source directly; frontend edits never restart/recompile Rust.
+dev: frontend-deps
+	python3 -B scripts/dev.py $(DEV_ARGS)
+
+# Bootstrap embedded assets once; repeat explicitly after native source changes.
+dev-build: frontend-deps
+	@test -f frontend/dist/index.html || (cd frontend && npm run build)
+	cargo build --locked
+
+# Explicit legacy embedded debug path; caller must select an isolated Core.
+dev-embedded: frontend
+	cargo run --locked -- --port 9001 $(ARGS)
 
 smoke:
 	uv run --script scripts/smoke.py --binary "$(CURDIR)/target/release/herdr-webapp"

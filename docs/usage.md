@@ -380,11 +380,12 @@ user's web client, not separate accounts or shared-host isolation.
 ## Development and verification
 
 ```sh
-make release                    # npm ci + production frontend + release executable
-make check                      # typecheck, ESLint, Vitest, fmt, Clippy, Rust tests
-make test                       # existing dependency install/assets required
-make smoke                      # uv test runner + installed hc; TWO isolated cores
-make dev                        # embedded frontend, Rust debug server on port 9001
+make dev                        # Vite HMR + private disposable Core and shell
+make check-fast                 # frontend types, lint, tests; no Rust/build
+make ui-test TEST=fontSize.test.ts # focused tests (or make ui-watch TEST=...)
+make dev-build                  # debug backend bootstrap / rebuild after Rust edits
+make check && make release && make smoke # full final gate
+make setup                      # force clean npm ci; otherwise deps are cached
 ```
 
 `make smoke` starts disposable cores in a fresh private temporary directory,
@@ -395,11 +396,25 @@ updates, observer reconnect, isolated-core restart and logout. It cleans up only
 its own cores. Python/uv are test dependencies, not application dependencies.
 Use `uv run --script scripts/smoke.py --keep` to retain failed-test artifacts.
 
-For frontend-only iteration, `cd frontend && npm run dev -- --port 9002` uses a
-same-origin API proxy. Start the backend with
-`--port 9001 --public-origin http://<browser-visible-host>:9002` and set
-`HERDR_API_URL=http://127.0.0.1:9001` for Vite. Never weaken Origin checks to make
-Vite work. Prefer the embedded frontend when testing packaging.
+`make dev` serves Vite on `0.0.0.0:9001` and proxies authenticated API/SSE/WS
+requests to a loopback debug backend on port 9002. It owns a disposable Core,
+private HOME/XDG state, and a shell—never the user's Core. The first launch
+bootstraps a missing debug binary; subsequent launches reuse it. Frontend edits
+hot-reload without Cargo, production asset builds, or backend/Core restarts.
+Run `make dev-build` and restart `make dev` after Rust changes. Ports are strict; stop the
+owned session with Ctrl+C. HTTP development is for trusted networks only.
+
+Use `make dev DEV_ARGS='--help'` for launch options. The exact browser Origin
+is passed to the backend; do not disable Origin checks or rewrite incoming
+Origins. Dependency installs are cached by manifests, Node/npm versions and
+configuration; `make setup` forces a clean install. Full `make check` still
+starts with a clean locked install. Use the embedded release for packaging tests,
+and the relay acceptance runner for pairing, encrypted peer transport and TURN.
+
+Browser helpers in `scripts/relay-e2e/browser.py` provide `reload(ready=...)`,
+`disconnected()`, and visibility-aware real-pointer `click()`. Reuse them instead
+of new timing/selector plumbing. Same-profile tabs share saved navigation;
+separate identities need separate browser contexts. Avoid positional selectors.
 
 Architecture: `src/core.rs` owns persistent RPC and subscription connections;
 `src/terminal.rs` translates bounded framed channels to WebSockets;

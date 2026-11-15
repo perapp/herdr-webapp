@@ -28,6 +28,14 @@ viewer, administration dashboard, or desktop-control approval workflow.
 - Browser navigation/focus/zoom remain private. Structural edits share the
   versioned per-machine herdr-app document and preserve unknown fields.
 
+## Fast development
+
+- UI loop: `make dev` (Vite HMR + disposable Core; never the user's Core).
+- `make check-fast`; focused tests: `make ui-test TEST=fontSize.test.ts` or `make ui-watch TEST=fontSize.test.ts`.
+- Reuse the debug backend for UI edits; `make dev-build` + restart dev after Rust changes. `make setup` forces dependency refresh.
+- Reuse `scripts/relay-e2e/browser.py` helpers; wait for actual reload/disconnect state, not sleeps or positional selectors. Same-profile tabs share saved navigation.
+- Run full `make check && make release && make smoke` once at the final gate. Local HMR does not prove relay/TURN behavior.
+
 ## Engineering and verification
 
 - Work in this project, not the inherited terminal's misleading launch directory.

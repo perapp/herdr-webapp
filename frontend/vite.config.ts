@@ -5,6 +5,19 @@ import { sourceBuild } from './buildInfo.ts';
 const source = sourceBuild(process.env);
 const appVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
 
+// The dev listener is public, but API access remains same-origin and authenticated.
+const devOrigin = new URL(process.env.HERDR_DEV_ORIGIN || 'http://localhost:9001');
+const apiTarget = new URL(process.env.HERDR_API_URL || 'http://127.0.0.1:9002');
+if (apiTarget.protocol !== 'http:' || apiTarget.hostname !== '127.0.0.1'
+    || apiTarget.username || apiTarget.password || apiTarget.pathname !== '/'
+    || apiTarget.search || apiTarget.hash) {
+  throw new Error('HERDR_API_URL must be an HTTP loopback backend origin');
+}
+if (devOrigin.protocol !== 'http:' || devOrigin.username || devOrigin.password
+    || devOrigin.pathname !== '/' || devOrigin.search || devOrigin.hash) {
+  throw new Error('HERDR_DEV_ORIGIN must be an HTTP origin');
+}
+
 export default defineConfig({
   base: './',
   define: {
@@ -15,10 +28,17 @@ export default defineConfig({
   },
   plugins: [svelte()],
   server: {
-    // Keep fetch, EventSource and WebSocket same-origin. The backend must also
-    // accept the browser Origin when using this development proxy.
+    host: '0.0.0.0',
+    port: Number(process.env.HERDR_DEV_PORT || 9001),
+    strictPort: true,
+    allowedHosts: [devOrigin.hostname],
+    cors: false,
+    hmr: { host: devOrigin.hostname, clientPort: Number(devOrigin.port || 80), protocol: 'ws' },
+    // http-proxy streams SSE and WebSocket data without response buffering.
+    // Preserve the browser Origin, cookies and auth headers: never rewrite them
+    // to make a foreign origin appear trusted by the backend.
     proxy: {
-      '/api': { target: process.env.HERDR_API_URL || 'http://127.0.0.1:8080', ws: true },
+      '/api': { target: apiTarget.origin, ws: true, changeOrigin: false, rewriteWsOrigin: false },
     },
   },
 });

@@ -45,6 +45,10 @@ window.RTCPeerConnection=class extends NativePeer {
 '''
 
 
+class NavigationPending(RuntimeError):
+    """A document is between execution contexts; safe to retry a read-only wait."""
+
+
 class Browser:
     def __init__(self):
         self.seq = 0
@@ -72,6 +76,9 @@ class Browser:
             response = json.loads(self.ws.recv())
             if response.get('id') == ident:
                 if 'error' in response:
+                    message = response['error'].get('message', '')
+                    if any(text in message for text in ('Cannot find context', 'Execution context was destroyed', 'Inspected target navigated')):
+                        raise NavigationPending('Browser navigation pending')
                     raise RuntimeError('CDP operation failed')
                 return response.get('result', {})
 
@@ -85,8 +92,11 @@ class Browser:
     def wait(self, expression, timeout=60, label='acceptance condition'):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.js(expression):
-                return
+            try:
+                if self.js(expression):
+                    return
+            except NavigationPending:
+                pass  # Retry only context turnover, never arbitrary page errors.
             time.sleep(.1)
         raise AssertionError(label)
 
@@ -96,7 +106,22 @@ class Browser:
                   "(!!document.querySelector('.terminal-pane.compact') && !document.querySelector('.terminal-detail')))", label='terminal attached')
         self.wait("!!window.__e2e && window.__e2e.peers.some(p=>p.connectionState==='connected')", label='peer connected')
 
+    def reload(self, ready="document.readyState==='complete'", timeout=60):
+        """Fence the old document; a reload command can return before navigation."""
+        self.js('window.__herdrReloadFence=true')
+        self.call('Page.reload', {'ignoreCache': True})
+        self.wait("!window.__herdrReloadFence && (" + ready + ")", timeout=timeout,
+                  label='new document ready after reload')
+
+    def disconnected(self, timeout=60):
+        """Relay tears App down; local transport can retain a disconnected pane."""
+        self.wait("!document.querySelector('.xterm') || !!document.querySelector('.terminal-detail')",
+                  timeout=timeout, label='terminal disconnected')
+
     def click(self, selector):
+        self.wait('(()=>{const e=document.querySelector(' + json.dumps(selector) +
+                  ');if(!e)return false;const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&!e.disabled})()',
+                  label='click target visible and enabled')
         rect = self.js('(()=>{const r=document.querySelector(' + json.dumps(selector) +
                        ').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()')
         for kind in ('mousePressed', 'mouseReleased'):
