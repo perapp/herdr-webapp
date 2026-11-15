@@ -205,7 +205,7 @@ class PublisherTests(unittest.TestCase):
             ci.stamp(binary, output, target, REVISION, VERSION, RUN_ID)
         host.assert_called_once_with(target)
         self.assertEqual(probe.call_args_list, [
-            unittest.mock.call(binary, '--version', 'herdr-webapp ' + VERSION),
+            unittest.mock.call(binary, '--package-version', 'herdr-webapp ' + VERSION),
             unittest.mock.call(binary, '--build-revision', REVISION)])
         ci.validate_stamp(ci.load_json(output / 'native.json'), (output / 'herdr-webapp').read_bytes(),
                           target, REVISION, VERSION, RUN_ID)

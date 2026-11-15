@@ -80,7 +80,7 @@
 
 <section class="update-panel" aria-label="Web app updates">
   <div class="update-current">
-    <span class="update-version" title="Herdr web app version">Herdr web <strong>{status ? `v${status.current_version}` : '—'}</strong></span>
+    <span class="update-version" title="Herdr web app version">Herdr web <strong>{status ? status.current_version : '—'}</strong></span>
     <button class="quiet" disabled={busy} onclick={() => void perform('/api/updates/check', {})}>Check updates</button>
   </div>
   {#if status?.available_version && status.available_version !== status.current_version}
@@ -115,7 +115,7 @@
 {#if confirmation}
   <dialog class="update-dialog" use:portal bind:this={dialog} aria-labelledby="update-heading" oncancel={event => { event.preventDefault(); dismiss(); }}>
     <h2 id="update-heading">Update Herdr web?</h2>
-    <p class="update-transition"><span>v{confirmation.from}</span><span aria-hidden="true">→</span><strong>v{confirmation.to}</strong></p>
+    <p class="update-transition"><span>{confirmation.from}</span><span aria-hidden="true">→</span><strong>v{confirmation.to}</strong></p>
     <p>Only the web server restarts. Herdr Core and your terminals keep running. This browser reconnects automatically and loads the new version.</p>
     <p class="update-note">Terminal input is unavailable briefly while reconnecting. Disconnected keystrokes are not queued.</p>
     <div class="update-dialog-actions">

@@ -130,7 +130,7 @@ def stamp(binary, output, target, revision, version, run_id):
     native(target)
     data = read(binary, MAX_FILE)
     binary_identity(data, target)
-    probe(binary, '--version', 'herdr-webapp ' + version)
+    probe(binary, '--package-version', 'herdr-webapp ' + version)
     probe(binary, '--build-revision', revision)
     require(read(binary, MAX_FILE) == data, 'binary changed during probing')
     metadata = dict(schemaVersion=1, repository=REPOSITORY, workflow=WORKFLOW, runId=run_id,

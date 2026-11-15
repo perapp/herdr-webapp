@@ -17,6 +17,7 @@ fn main() {
         "HERDR_BUILD_REVISION",
         "HERDR_BUILD_COMMIT_DATE",
         "HERDR_BUILD_DIRTY",
+        "HERDR_BUILD_TAG",
     ] {
         println!("cargo:rerun-if-env-changed={name}");
     }
@@ -67,7 +68,8 @@ fn main() {
     let expected = std::env::var("HERDR_BUILD_REVISION")
         .ok()
         .filter(|v| validation::revision(v));
-    let head = git(&["rev-parse", "HEAD"]);
+    let head = git(&["rev-parse", "HEAD"]).map(|s| s.trim().to_owned());
+    let expected = expected.or_else(|| head.clone().filter(|s| validation::revision(s)));
     let matches = expected
         .as_deref()
         .zip(head.as_deref())
@@ -90,6 +92,37 @@ fn main() {
     } else {
         None
     };
+    let tag = if matches && dirty == Some(false) {
+        git(&["tag", "--points-at", "HEAD", "--sort=version:refname"]).and_then(|tags| {
+            tags.lines()
+                .filter_map(validation::release_tag)
+                .next_back()
+                .map(str::to_owned)
+        })
+    } else if head.is_none() && expected.is_some() {
+        std::env::var("HERDR_BUILD_TAG")
+            .ok()
+            .and_then(|s| validation::release_tag(&s).map(str::to_owned))
+    } else {
+        None
+    };
+    let display = validation::display_version(expected.as_deref(), date.as_deref(), tag.as_deref());
+    println!(
+        "cargo:rustc-env=HERDR_BUILD_REVISION={}",
+        expected.as_deref().unwrap_or("")
+    );
+    println!(
+        "cargo:rustc-env=HERDR_DISPLAY_VERSION={}",
+        display.as_deref().unwrap_or("Unavailable")
+    );
+    // Never fall back to the manifest version for a known untagged checkout.
+    println!(
+        "cargo:rustc-env=HERDR_RELEASE_VERSION={}",
+        tag.as_deref().unwrap_or("")
+    );
+    if let Some(path) = git(&["rev-parse", "--git-path", "refs/tags"]) {
+        println!("cargo:rerun-if-changed={}", path.trim());
+    }
     // Empty exports mask inherited untrusted values, including HERDR_BUILD_DIRTY.
     println!(
         "cargo:rustc-env=HERDR_BUILD_COMMIT_DATE={}",

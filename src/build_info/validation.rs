@@ -41,7 +41,7 @@ pub fn commit_date(value: &str) -> bool {
         2 => 28,
         _ => return false,
     };
-    if day == 0 || day > days || hour > 23 || minute > 59 || second > 60 {
+    if day == 0 || day > days || hour > 23 || minute > 59 || second > 59 {
         return false;
     }
     let mut end = 19;
@@ -63,4 +63,76 @@ pub fn commit_date(value: &str) -> bool {
         && b[end + 3] == b':'
         && number(end + 1, end + 3).is_some_and(|h| h <= 23)
         && number(end + 4, end + 6).is_some_and(|m| m <= 59)
+}
+
+/// Version tags are exact HEAD tags, with an optional conventional v prefix.
+pub fn release_tag(value: &str) -> Option<&str> {
+    let value = value.strip_prefix('v').unwrap_or(value);
+    if value.len() > 128 || !value.is_ascii() {
+        return None;
+    }
+    let core = value.split(['-', '+']).next()?;
+    let parts: Vec<_> = core.split('.').collect();
+    if parts.len() != 3
+        || parts.iter().any(|p| {
+            p.is_empty()
+                || !p.bytes().all(|b| b.is_ascii_digit())
+                || (p.len() > 1 && p.starts_with('0'))
+        })
+    {
+        return None;
+    }
+    let mut tail = &value[core.len()..];
+    if let Some(rest) = tail.strip_prefix('-') {
+        let pre = rest.split('+').next()?;
+        if !identifiers(pre, true) {
+            return None;
+        }
+        tail = &rest[pre.len()..];
+    }
+    if let Some(build) = tail.strip_prefix('+') {
+        if !identifiers(build, false) {
+            return None;
+        }
+    } else if !tail.is_empty() {
+        return None;
+    }
+    Some(value)
+}
+fn identifiers(value: &str, prerelease: bool) -> bool {
+    value.split('.').all(|p| {
+        !p.is_empty()
+            && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !(prerelease
+                && p.len() > 1
+                && p.starts_with('0')
+                && p.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+pub fn display_version(
+    revision: Option<&str>,
+    date: Option<&str>,
+    tag: Option<&str>,
+) -> Option<String> {
+    if let Some(tag) = tag.and_then(release_tag) {
+        return Some(tag.to_owned());
+    }
+    let revision = revision.filter(|s| self::revision(s))?;
+    let date = date.filter(|s| commit_date(s))?;
+    let zone = if date.ends_with(['Z', 'z']) {
+        "+0000".to_owned()
+    } else {
+        date[date.len() - 6..].replace(':', "")
+    };
+    Some(format!(
+        "{}{}{}{}{}{}{}-{}",
+        &date[2..4],
+        &date[5..7],
+        &date[8..10],
+        &date[11..13],
+        &date[14..16],
+        &date[17..19],
+        zone,
+        &revision[..7].to_ascii_lowercase()
+    ))
 }

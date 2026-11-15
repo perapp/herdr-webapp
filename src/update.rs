@@ -29,7 +29,7 @@ use std::{
 };
 use tokio::sync::{Notify, watch};
 const REPO: &str = "perapp/herdr-webapp";
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION: &str = crate::build_info::RELEASE_VERSION;
 const FILES: [&str; 3] = [
     "herdr-webapp",
     "pi-extension/commands.ts",
@@ -135,6 +135,9 @@ fn write_private(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     Ok(())
 }
 fn eligible(exe: &Path) -> Result<PathBuf> {
+    eligible_for_version(exe, VERSION)
+}
+fn eligible_for_version(exe: &Path, version: &str) -> Result<PathBuf> {
     ensure!(
         exe.file_name().is_some_and(|n| n == "herdr-webapp") && fs::canonicalize(exe)? == exe,
         "Not a managed installation"
@@ -157,7 +160,8 @@ fn eligible(exe: &Path) -> Result<PathBuf> {
         r.schema_version == 1
             && r.repository == REPO
             && r.target == target()
-            && r.version == VERSION
+            && r.version == version
+            && semver(version).is_ok()
             && target() != "unsupported",
         "Installation receipt does not match this executable"
     );
@@ -385,7 +389,7 @@ impl Updater {
     }
     fn new_inner(root: Option<PathBuf>, pid: Option<Pid>) -> Arc<Self> {
         let managed = root.is_some();
-        let (status,_)=watch::channel(UpdateStatus{current_version:VERSION.into(),available_version:None,phase:"idle".into(),message:if managed {"Ready to check for updates"} else {"Development/source build: updates can be checked, but installation is disabled. Use the release installer."}.into(),can_install:managed,release_url:None,checked_at:None,source:if managed{"release"}else{"development"}.into()});
+        let (status,_)=watch::channel(UpdateStatus{current_version:crate::build_info::VERSION.into(),available_version:None,phase:"idle".into(),message:if managed {"Ready to check for updates"} else {"Development/source build: updates can be checked, but installation is disabled. Use the release installer."}.into(),can_install:managed,release_url:None,checked_at:None,source:if managed{"release"}else{"development"}.into()});
         Arc::new(Self {
             status,
             busy: Mutex::new(false),
@@ -509,7 +513,10 @@ impl Updater {
     }
     fn operation(&self, install: Option<String>) -> Result<()> {
         let (version, release) = latest()?;
-        let newer = semver(&version)? > semver(VERSION)?;
+        let newer = match semver(VERSION) {
+            Ok(current) => semver(&version)? > current,
+            Err(_) => true,
+        };
         self.status.send_modify(|s| {
             s.checked_at = Some(
                 SystemTime::now()
@@ -692,6 +699,9 @@ pub fn helper(path: &Path) -> Result<()> {
     Err(error.into())
 }
 fn retire_backup(root: &Path) -> Result<()> {
+    retire_backup_for_version(root, VERSION)
+}
+fn retire_backup_for_version(root: &Path, version: &str) -> Result<()> {
     let backup = sidecar(root, ".old");
     match fs::symlink_metadata(&backup) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -709,7 +719,7 @@ fn retire_backup(root: &Path) -> Result<()> {
         receipt.schema_version == 1
             && receipt.repository == REPO
             && receipt.target == target()
-            && semver(&receipt.version)? < semver(VERSION)?,
+            && semver(&receipt.version)? < semver(version)?,
         "Backup is not an older managed release"
     );
     // Validate every node before removing anything. Do not follow links or remove
@@ -964,11 +974,12 @@ mod tests {
         let receipt_path = root.join("install.json");
         write_private(
             &receipt_path,
-            &serde_json::to_vec(&receipt(VERSION)).unwrap(),
+            &serde_json::to_vec(&receipt("1.0.0")).unwrap(),
             0o600,
         )
         .unwrap();
-        assert_eq!(eligible(&exe).unwrap(), root);
+        assert_eq!(eligible_for_version(&exe, "1.0.0").unwrap(), root);
+        assert!(eligible_for_version(&exe, "").is_err());
         fs::remove_file(&receipt_path).unwrap();
         write_private(
             &receipt_path,
@@ -1007,9 +1018,9 @@ mod tests {
         let root = d.path().join("app");
         let backup = backup_fixture(&root, "0.0.0");
         write_private(&backup.join("LICENSE"), b"license", 0o600).unwrap();
-        retire_backup(&root).unwrap();
+        retire_backup_for_version(&root, "1.0.0").unwrap();
         assert!(!backup.exists());
-        retire_backup(&root).unwrap(); // readiness is idempotent
+        retire_backup_for_version(&root, "1.0.0").unwrap(); // readiness is idempotent
         fs::create_dir(&root).unwrap();
         let stage = d.path().join("stage");
         fs::create_dir(&stage).unwrap();

@@ -78,6 +78,30 @@ class Tests(unittest.TestCase):
         self.managers.append(manager)
         return manager
 
+    def test_old_main_compat_package_probe_only_falls_back_on_exit_two(self):
+        manager = self.manager()
+        binary = self.root / 'old-main'
+        log = self.root / 'probe-flags'
+        def script(package):
+            binary.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> ' + str(log) + '\n'
+                              + 'case "$1" in\n--package-version) ' + package + ';;\n'
+                              + '--version) printf "herdr-webapp 0.0.8\\n";;\nesac\n')
+            binary.chmod(0o700)
+        script('exit 2')
+        self.assertEqual(manager.command([str(binary), '--package-version'], capture=True,
+                                        timeout=10, legacy_version=True), 'herdr-webapp 0.0.8')
+        self.assertEqual(log.read_text().splitlines(), ['--package-version', '--version'])
+        log.unlink()
+        script('printf "herdr-webapp 9.9.9\\n"')
+        self.assertEqual(manager.command([str(binary), '--package-version'], capture=True,
+                                        timeout=10, legacy_version=True), 'herdr-webapp 9.9.9')
+        self.assertEqual(log.read_text().splitlines(), ['--package-version'])
+        log.unlink()
+        script('exit 1')
+        with self.assertRaises(m.Failure):
+            manager.command([str(binary), '--package-version'], capture=True, timeout=10, legacy_version=True)
+        self.assertEqual(log.read_text().splitlines(), ['--package-version'])
+
     def test_cli_validation(self):
         a = self.args()
         m.validate_args(a)

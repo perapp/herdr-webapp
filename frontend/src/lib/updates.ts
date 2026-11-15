@@ -29,7 +29,8 @@ function hasControlCharacters(value: string): boolean {
 export function parseUpdateStatus(value: unknown): UpdateStatus {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Update status is unreadable. Try checking again.');
   const v = value as Record<string, unknown>;
-  if (!validVersion(v.current_version) || !(v.available_version === null || validVersion(v.available_version)) ||
+  const display = typeof v.current_version === 'string' && (validVersion(v.current_version) || /^\d{12}[+-]\d{4}-[a-f0-9]{7}$/.test(v.current_version) || v.current_version === 'Unavailable');
+  if (!display || !(v.available_version === null || validVersion(v.available_version)) ||
       !phases.includes(v.phase as UpdatePhase) || typeof v.can_install !== 'boolean' ||
       typeof v.message !== 'string' || v.message.length > 2048 || hasControlCharacters(v.message) ||
       !(v.source === 'release' || v.source === 'development') ||

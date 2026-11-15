@@ -32,6 +32,10 @@ class Error(Exception):
     pass
 
 
+class UnsupportedOption(Error):
+    pass
+
+
 class Incompatible(Error):
     pass
 
@@ -239,7 +243,9 @@ def probe(path, expected, flag='--version'):
             child.wait(timeout=max(0.01, until - time.monotonic()))
         except subprocess.TimeoutExpired:
             raise Error('client version probe timed out') from None
-        if child.returncode != 0 or text.strip() != (('herdr-webapp ' if flag == '--version' else '') + expected).encode():
+        if child.returncode == 2 and flag == '--package-version':
+            raise UnsupportedOption('legacy client has no package-version option')
+        if child.returncode != 0 or text.strip() != (('herdr-webapp ' if flag in ('--version', '--package-version') else '') + expected).encode():
             raise Error('client version probe mismatch')
     finally:
         stop(child)
@@ -251,7 +257,12 @@ def release_identity(asset):
 
 
 def probe_release(path, asset):
-    probe(path, asset['version'])
+    try:
+        probe(path, asset['version'], '--package-version' if asset.get('channel') == 'main' else '--version')
+    except UnsupportedOption:
+        # Only clap's unsupported-option exit permits the legacy numeric probe.
+        # Successful but mismatched new output must never downgrade validation.
+        probe(path, asset['version'])
     if asset.get('channel') == 'main':
         probe(path, asset['revision'], '--build-revision')
 
@@ -333,7 +344,7 @@ class Supervisor:
                 if (not isinstance(data, dict) or type(data.get('schemaVersion')) is not int or data.get('schemaVersion') != 1
                         or type(data.get('pid')) is not int or data.get('pid') != self.child.pid
                         or type(data.get('protocolVersion')) is not int or data.get('protocolVersion') != PROTOCOL
-                        or data.get('ready') is not True or data.get('version') != release['version']
+                        or data.get('ready') is not True or data.get('packageVersion', data.get('version')) != release['version']
                         or (release.get('channel') == 'main' and (data.get('channel') != 'main' or data.get('revision') != release['revision']))):
                     raise Error('connector readiness did not match the launched child')
                 return

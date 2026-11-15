@@ -12,6 +12,13 @@ describe('update status boundary', () => {
     expect(canInstallUpdate(source)).toBe(false);
     expect(canInstallUpdate({ ...source, can_install: true })).toBe(false);
   });
+  it.each(['260603140506+0200-abcdef0', '260102030405-0530-abcdef0', 'Unavailable'])('accepts development display identity %s without treating it as SemVer', current_version => {
+    const value = parseUpdateStatus({ ...status, current_version, source: 'development', can_install: false });
+    expect(value.current_version).toBe(current_version);
+    expect(validVersion(current_version)).toBe(false);
+    expect(canInstallUpdate(value)).toBe(false);
+    expect(() => parseUpdateStatus({ ...status, available_version: current_version })).toThrow();
+  });
   it.each(['0.0.1', '1.2.3-rc.1', '1.2.3+build.01', '1.2.3-0.a-1'])('accepts SemVer %s', value => expect(validVersion(value)).toBe(true));
   it.each(['v1.2.3', '01.2.3', '1.2', '1.2.3-01', '1.2.3-', '1.2.3\n', '1.2.3/<script>', '1'.repeat(129)])('rejects invalid version %s', value => expect(validVersion(value)).toBe(false));
   it.each([

@@ -108,12 +108,12 @@ impl Dashboard {
         } else if let Some(status) = &card.unavailable {
             println!(
                 "Herdr Web · {}\n{status}\nCore socket: {socket}\n--- Logs ---",
-                env!("CARGO_PKG_VERSION")
+                crate::build_info::VERSION
             );
         } else {
             println!(
                 "Herdr Web · {}\n{}: {login}\nPrivate URL and QR grant FULL SHELL ACCESS.\nCore socket: {socket}\n{qr}\n{}\n--- Logs ---",
-                env!("CARGO_PKG_VERSION"),
+                crate::build_info::VERSION,
                 mode.label(),
                 transport_notice(login),
                 qr = card.qr
@@ -177,7 +177,7 @@ fn transport_notice(login: &str) -> &'static str {
 }
 fn connection_rows(login: &str, width: usize, mode: Mode) -> Vec<String> {
     let mut rows = vec![
-        format!("HERDR / WEB   ·   {}", env!("CARGO_PKG_VERSION")),
+        format!("HERDR / WEB   ·   {}", crate::build_info::VERSION),
         format!("{} (private · FULL SHELL ACCESS):", mode.label()),
     ];
     let chars: Vec<_> = safe(login).chars().collect();
@@ -260,7 +260,7 @@ impl Frame {
     }
     fn unavailable(message: &str, socket: &str, mode: Mode, size: (u16, u16)) -> Self {
         let rows = vec![
-            format!("HERDR / WEB   ·   {}", env!("CARGO_PKG_VERSION")),
+            format!("HERDR / WEB   ·   {}", crate::build_info::VERSION),
             format!("{} unavailable", mode.label()),
             safe(message),
             "Existing trusted browsers can still reconnect. Ctrl+C stops.".into(),

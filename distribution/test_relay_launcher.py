@@ -102,8 +102,8 @@ revision = {revision!r}
 if sys.argv[1:] == ['--build-revision']:
     print(revision if behavior != 'revision' else '0' * 40)
     sys.exit(0)
-if sys.argv[1:] == ['--version']:
-    print('herdr-webapp ' + release)
+if sys.argv[1:] in (['--version'], ['--package-version']):
+    print('herdr-webapp ' + ('260603140506+0200-' + revision[:7] if revision and sys.argv[1] == '--version' else release))
     sys.exit(0)
 events = pathlib.Path({events!r})
 def event(kind):
@@ -125,7 +125,7 @@ if behavior == 'exit':
 ready = pathlib.Path(sys.argv[sys.argv.index('--ready-file') + 1])
 if behavior != 'timeout':
     tmp = ready.with_suffix('.tmp')
-    tmp.write_text(json.dumps(dict(schemaVersion=1, protocolVersion=1, version=release,
+    tmp.write_text(json.dumps(dict(schemaVersion=1, protocolVersion=1, version=('260603140506+0200-' + revision[:7] if revision else release), packageVersion=release,
         pid=os.getpid() if behavior != 'pid' else os.getppid(), ready=True,
         **(dict(channel='main', revision=revision if behavior != 'readyrevision' else '0' * 40) if revision else {{}}))))
     tmp.chmod(0o600 if behavior != 'mode' else 0o644)
@@ -163,6 +163,26 @@ while True:
             files = list((self.root / 'cache').glob('*/current.json'))
             return bool(files) and json.loads(files[0].read_text())['version'] == release
         eventually(ready)
+
+    def test_old_main_compat_probe_only_falls_back_for_unsupported_option(self):
+        binary = self.root / 'old-main'
+        log = self.root / 'probe-flags'
+        asset = dict(version='0.0.8', channel='main', revision='a' * 40)
+        def script(package):
+            binary.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> ' + str(log) + '\n'
+                              + 'case "$1" in\n--package-version) ' + package + ';;\n'
+                              + '--version) printf "herdr-webapp 0.0.8\\n";;\n'
+                              + '--build-revision) printf "' + 'a' * 40 + '\\n";;\nesac\n')
+            binary.chmod(0o700)
+        script('exit 2')
+        launcher.probe_release(binary, asset)
+        self.assertEqual(log.read_text().splitlines(), ['--package-version', '--version', '--build-revision'])
+        for package in ['printf "herdr-webapp 9.9.9\\n"', 'exit 1']:
+            log.unlink()
+            script(package)
+            with self.assertRaises(launcher.Error):
+                launcher.probe_release(binary, asset)
+            self.assertEqual(log.read_text().splitlines(), ['--package-version'])
 
     def test_update_download_keeps_old_alive_and_retains_pairing(self):
         child = self.launch()

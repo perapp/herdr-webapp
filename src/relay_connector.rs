@@ -55,7 +55,7 @@ pub struct ConnectorConfig {
     pub no_dashboard: bool,
 }
 fn accepted_payload() -> Value {
-    json!({"kind":"accepted","version":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"build":crate::build_info::BuildInfo::current()})
+    json!({"kind":"accepted","version":crate::build_info::VERSION,"protocolVersion":1,"build":crate::build_info::BuildInfo::current()})
 }
 
 fn origin_url(input: &str, allow_loopback: bool) -> Result<crate::relay_channel::RelayEndpoint> {
@@ -414,7 +414,7 @@ async fn serve_data_channel(
             &dc,
             &mut next,
             PeerMessage::Text(
-                json!({"type":"ready","protocolVersion":1,"version":env!("CARGO_PKG_VERSION")})
+                json!({"type":"ready","protocolVersion":1,"version":crate::build_info::VERSION})
                     .to_string(),
             ),
         )
@@ -684,7 +684,7 @@ where
         (16..=256).contains(&nonce.len()) && !nonce.contains('\n'),
         "invalid relay challenge"
     );
-    let version = env!("CARGO_PKG_VERSION");
+    let version = crate::build_info::VERSION;
     let signature = identity
         .sign(format!("herdr-register-v1\n{origin}\n{machine}\n{nonce}\n{version}").as_bytes());
     socket.send(Message::Text(json!({"type":"register","machineId":machine,"publicKey":identity.public_key(),"version":version,"nonce":nonce,"signature":signature}).to_string().into())).await?;
@@ -706,7 +706,7 @@ where
         }
     }
     if let Some(path) = &config.ready_file {
-        let mut ready = json!({"schemaVersion":1,"pid":std::process::id(),"version":version,"protocolVersion":1,"ready":true});
+        let mut ready = json!({"schemaVersion":1,"pid":std::process::id(),"version":version,"packageVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"ready":true});
         if crate::relay_channel::RelayEndpoint::parse(
             &config.relay_url,
             config.allow_http_loopback,
@@ -872,7 +872,7 @@ mod tests {
     fn accepted_keeps_legacy_contract_and_embeds_build_in_signed_body() {
         let payload = super::accepted_payload();
         assert_eq!(payload["kind"], "accepted");
-        assert_eq!(payload["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(payload["version"], crate::build_info::VERSION);
         assert_eq!(payload["protocolVersion"], 1);
         assert_eq!(
             payload["build"],

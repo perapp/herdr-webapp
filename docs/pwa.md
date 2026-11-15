@@ -8,7 +8,7 @@ Browser data eviction/clearing, private browsing, separate installed-app storage
 
 ## Installation
 
-**Install app** stays directly below Settings in both desktop and phone navigation. Chromium's retained native prompt is invoked directly from the click when offered. Otherwise an accessible dialog explains the detected platform's manual steps, standalone state, secure-origin limitation, embedded-browser limitation or unknown reason. A normal tab cannot reliably detect every installation elsewhere.
+**Install app** is always available inside Settings on both desktop and phone, including before pairing and while disconnected. Install app and Version stay visible in the Settings footer while its Display and Notifications sections scroll. The **Herdr-webapp** name at the top of the navigation menu returns to the current channel’s Connections list; there is no separate Connections menu action. Chromium's retained native prompt is invoked directly from the click when offered. Otherwise an accessible dialog explains the detected platform's manual steps, standalone state, secure-origin limitation, embedded-browser limitation or unknown reason. A normal tab cannot reliably detect every installation elsewhere.
 
 - Android Chrome: native prompt when offered; otherwise browser menu → Install app / Add to Home screen. Samsung Internet wording/capabilities vary.
 - iPhone/iPad: browser Share → Add to Home Screen; Safari is a practical fallback when that entry is missing. Desktop-style iPad identification is handled.

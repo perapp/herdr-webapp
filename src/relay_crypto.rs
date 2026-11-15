@@ -17,7 +17,7 @@ use std::{
 };
 
 pub const PROTOCOL_VERSION: u32 = 1;
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = crate::build_info::VERSION;
 
 pub fn random_token(bytes: usize) -> String {
     use rand::RngCore;

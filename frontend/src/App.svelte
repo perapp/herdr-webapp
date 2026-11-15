@@ -10,8 +10,8 @@
   import SettingsDialog from './SettingsDialog.svelte';
   import NotificationPresence from './NotificationPresence.svelte';
   import { notificationLayoutReady, selectNotificationTarget } from './lib/notificationTarget';
-  import InstallDialog from './InstallDialog.svelte';
-  import { installApp } from './lib/pwa';
+  import { channelPath } from './lib/channel';
+  import { displayVersion, modeBuild } from './lib/versions';
   import UpdatePanel from './UpdatePanel.svelte';
   import { initializeAppearance, watchAppearance } from './lib/appearance';
   import type { Action } from './TopologyDialog.svelte';
@@ -35,8 +35,6 @@
   let mobile = $state(false);
   let showKeys = $state(false);
   let showSettings = $state(false);
-  let installMessage = $state('');
-  async function showInstall() { installMessage = await installApp(); }
   let appearance = $state(initializeAppearance());
   let viewportHeight = $state<number>();
   let drawer = $state<HTMLDialogElement>();
@@ -213,6 +211,9 @@
 </script>
 
 <style>
+  .drawer-brand { display: inline-flex; align-items: center; min-height: 44px; min-width: 0; color: var(--bright); font-size: calc(14rem / 13); font-weight: 650; letter-spacing: -.02em; text-decoration: none; overflow-wrap: anywhere; }
+  .drawer-brand:hover { color: var(--teal); }
+  .drawer-brand:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; border-radius: 4px; }
   .notification-notice { position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 900; padding: 12px; background: var(--raised); border: 1px solid var(--muted); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .notification-notice button { min-width: 44px; min-height: 44px; }
   .peer-info { padding: 7px 10px; font-size: calc(11rem / 13); color: var(--muted); min-width: 0; }
@@ -262,7 +263,7 @@
       {/if}
     </header>
     <dialog id="navigation-drawer" class="navigation-drawer" bind:this={drawer} onclose={() => sidebarOpen = false} onpointerdown={event => { if (event.target === drawer) closeNavigation(); }} aria-label="Navigate computers, workspaces, tabs and panes">
-        <header class="drawer-heading"><strong>Herdr</strong><button class="quiet" aria-label="Close navigation" onclick={closeNavigation}>×</button></header>
+        <header class="drawer-heading"><a class="drawer-brand" href={channelPath('/')} aria-label="Herdr-webapp — Connections" title="Connections" onclick={event => { if (onConnections && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); closeNavigation(); onConnections(); } }}>Herdr-webapp</a><button class="quiet" aria-label="Close navigation" onclick={closeNavigation}>×</button></header>
         <div class="navigation-scroll">{@render navigation()}</div>
         {@render settingsFooter()}
     </dialog>
@@ -293,7 +294,6 @@
   </div>
 {/if}
 {#if modal}<TopologyDialog {...modal} close={() => modal = null} saved={topologySaved} />{/if}
-{#if installMessage}<InstallDialog message={installMessage} close={() => installMessage = ''} />{/if}
 <NotificationPresence {ready} terminal={typeof activePane?.content?.terminal === 'string' && selected ? qualify(activePane.content.terminal, selected.document.on) : ''} />
 {#if notificationNotice}<aside role="status" class="notification-notice">{notificationNotice}<button onclick={() => notificationNotice = ''} aria-label="Dismiss notification destination message">×</button></aside>{/if}
 {#if showSettings}<SettingsDialog close={() => showSettings = false} {peerMode} {serverMode} {peerBuild} {peerVersion} coreVersion={snapshot.coreVersion} connected={ready} />{/if}
@@ -304,11 +304,9 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 3-.6 2.2-2 .9-2-.6-2 3.5 1.5 1.6v2.3L2.4 14.5l2 3.5 2-.6 2 .9L9 21h4l.6-2.7 2-.9 2 .6 2-3.5-1.5-1.6v-2.3l1.5-1.6-2-3.5-2 .6-2-.9L13 3Z"/><circle cx="11" cy="12" r="3"/></svg>
       <span>Settings</span><small>{appearance.preference === 'system' ? 'System' : appearance.preference === 'dark' ? 'Dark' : 'Light'}</small>
     </button>
-    <button class="settings-button" aria-haspopup="dialog" onclick={showInstall}><span>Install app</span></button>
     {#if peerMode}
-      <button class="settings-button" onclick={() => { closeNavigation(); onConnections?.(); }}><span>Connections</span></button>
       <details class="peer-info"><summary>{peerRoute || 'Peer connection'}</summary>
-        <p>Connector {peerVersion || 'unknown'} · Relay {relayVersion || 'unknown'}</p>
+        <p>Connector {displayVersion(peerBuild, peerVersion)} · Relay {displayVersion(modeBuild(serverMode), relayVersion)}</p>
         <p>The laptop launcher manages automatic connector updates while it is running. Manual connectors must be updated on that computer; local-server update controls are not available here.</p>
         <label for="peer-computer">Computer</label>
         <select id="peer-computer" value={selectedComputer} onchange={event => onChooseComputer?.(event.currentTarget.value)}>

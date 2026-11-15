@@ -9,7 +9,7 @@ use std::{
 
 #[derive(Parser, Debug)]
 #[command(
-    version,
+    version = crate::build_info::VERSION,
     about = "Herdr in your browser. Authenticated users have full shell access."
 )]
 pub struct Config {
@@ -21,6 +21,9 @@ pub struct Config {
     /// Report compiled source provenance (used by verified main-channel builds).
     #[arg(long, global = true, hide = true)]
     pub build_revision: bool,
+    /// Machine-only artifact manifest identity; not the human build version.
+    #[arg(long, global = true, hide = true)]
+    pub package_version: bool,
     /// Internal verified-candidate helper; never accepted from the HTTP API.
     #[arg(long, hide = true)]
     pub update_helper: Option<PathBuf>,

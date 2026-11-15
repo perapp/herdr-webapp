@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { commitDate, displayDate, fetchVersionMode, loadedBuild, modeBuild, normalizeBuild, versionRows, versionUrl } from './versions';
+import { commitDate, displayDate, fetchVersionMode, loadedBuild, modeBuild, normalizeBuild, timestampVersion, displayVersion, versionRows, versionUrl } from './versions';
 import { emptyState, parseState } from './schema';
 import { sourceBuild } from '../../buildInfo';
 const a = 'a'.repeat(40), b = 'b'.repeat(40), iso = '2026-06-03T14:05:06+02:00';
@@ -10,8 +10,8 @@ describe('version provenance', () => {
     compiled();
     const served = { version: 'legacy', build: { version: 'new', revision: b, commitDate: iso, dirty: true } };
     const rows = versionRows(true, served, { version: 'connector', revision: a }, '', '0.1.19', true);
-    expect(loadedBuild().revision).toBe(a); expect(rows[0].build.version).toBe('0.0.8');
-    expect(rows[1].build.version).toBe('connector'); expect(rows[2].build.revision).toBe(b);
+    expect(loadedBuild().revision).toBe(a); expect(rows[0].build.version).toBe('260603140506+0200-aaaaaaa');
+    expect(rows[1].build.version).toBeNull(); expect(rows[2].build.revision).toBe(b);
     expect(rows[3].build).toEqual({ version: '0.1.19', revision: null, commitDate: null, dirty: null });
   });
   it('shows actual channel URLs only for browser-facing components, never connector/Core URLs', () => {
@@ -47,16 +47,34 @@ describe('version provenance', () => {
   });
   it('queries only a matching HEAD for commit date and dirty state', () => {
     const git = vi.fn((args: string[]) => args[0] === 'rev-parse' ? a : args[0] === 'show' ? iso : ' M frontend/src/App.svelte');
-    expect(sourceBuild({ HERDR_BUILD_REVISION: a }, git)).toEqual({ revision: a, commitDate: iso, dirty: true });
+    expect(sourceBuild({ HERDR_BUILD_REVISION: a }, git)).toMatchObject({ revision: a, commitDate: iso, dirty: true });
     expect(git).toHaveBeenCalledWith(['show', '-s', '--format=%cI', a]);
-    git.mockClear(); expect(sourceBuild({ HERDR_BUILD_REVISION: b }, git)).toEqual({ revision: b, commitDate: null, dirty: null }); expect(git).toHaveBeenCalledTimes(1);
+    git.mockClear(); expect(sourceBuild({ HERDR_BUILD_REVISION: b }, git)).toMatchObject({ revision: b, commitDate: null, dirty: null }); expect(git).toHaveBeenCalledTimes(1);
     expect(sourceBuild({ HERDR_BUILD_REVISION: b, HERDR_BUILD_COMMIT_DATE: iso }, git).commitDate).toBeNull();
     expect(sourceBuild({ HERDR_BUILD_REVISION: a, HERDR_BUILD_COMMIT_DATE: '2020-01-01T00:00:00Z' }, git).commitDate).toBe(iso);
     const absentGit = () => { throw new Error('No checkout'); };
-    expect(sourceBuild({ HERDR_BUILD_REVISION: b, HERDR_BUILD_COMMIT_DATE: iso }, absentGit)).toEqual({ revision: b, commitDate: iso, dirty: null });
-    expect(sourceBuild({ HERDR_BUILD_COMMIT_DATE: iso }, absentGit)).toEqual({ revision: '', commitDate: null, dirty: null });
+    expect(sourceBuild({ HERDR_BUILD_REVISION: b, HERDR_BUILD_COMMIT_DATE: iso }, absentGit)).toMatchObject({ revision: b, commitDate: iso, dirty: null });
+    expect(sourceBuild({ HERDR_BUILD_COMMIT_DATE: iso }, absentGit)).toMatchObject({ revision: '', commitDate: null, dirty: null });
     expect(normalizeBuild({ commitDate: iso, dirty: true })).toEqual({ version: null, revision: null, commitDate: null, dirty: null });
     expect(sourceBuild({ HERDR_BUILD_REVISION: b, HERDR_BUILD_COMMIT_DATE: 'yesterday' }, git).commitDate).toBeNull();
+  });
+  it('formats exact tags, untagged commits and unknown metadata honestly', () => {
+    expect(timestampVersion(a, iso)).toBe('260603140506+0200-aaaaaaa');
+    expect(timestampVersion(b, '2026-01-02T03:04:05-05:30')).toBe('260102030405-0530-bbbbbbb');
+    expect(timestampVersion(b, '2026-01-02T03:04:05Z')).toBe('260102030405+0000-bbbbbbb');
+    expect(displayVersion({ version: '0.0.8', revision: a, commitDate: iso })).toBe('260603140506+0200-aaaaaaa');
+    expect(displayVersion({ version: '0.0.8', releaseVersion: '1.2.3', revision: a, commitDate: iso })).toBe('1.2.3');
+    expect(displayVersion({ revision: a }, '0.0.8')).toBe('Unavailable');
+    const tagged = normalizeBuild({ releaseVersion: '1.2.3', revision: a, commitDate: iso, dirty: false });
+    expect(displayVersion(tagged)).toBe('1.2.3');
+    expect(normalizeBuild(tagged)).toEqual(tagged);
+    const git = (args: string[]) => args[0] === 'rev-parse' ? a : args[0] === 'show' ? iso : args[0] === 'tag' ? 'v1.2.3' : '';
+    expect(sourceBuild({}, git)).toMatchObject({ revision: a, version: '1.2.3', releaseVersion: '1.2.3' });
+    const dirty = sourceBuild({}, args => args[0] === 'status' ? ' M source.ts' : git(args));
+    expect(dirty).toMatchObject({ dirty: true, releaseVersion: null, version: '260603140506+0200-aaaaaaa' });
+    expect(displayVersion({ revision: a, commitDate: iso, releaseVersion: '1.2.3', dirty: true })).toBe('260603140506+0200-aaaaaaa');
+    expect(sourceBuild({}, args => args[0] === 'tag' ? '' : git(args)).version).toBe('260603140506+0200-aaaaaaa');
+    expect(sourceBuild({}, () => { throw new Error('No Git'); }).version).toBe('Unavailable');
   });
   it('fetches channel metadata directly using the native network and abort signal', async () => {
     vi.stubGlobal('location', new URL('https://example.test/main/'));

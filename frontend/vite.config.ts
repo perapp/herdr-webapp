@@ -1,9 +1,8 @@
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
-import { readFileSync } from 'node:fs';
 import { sourceBuild } from './buildInfo.ts';
 const source = sourceBuild(process.env);
-const appVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
+const appVersion = source.version;
 
 // The dev listener is public, but API access remains same-origin and authenticated.
 const devOrigin = new URL(process.env.HERDR_DEV_ORIGIN || 'http://localhost:9001');
@@ -25,6 +24,7 @@ export default defineConfig({
     __HERDR_SOURCE_COMMIT_DATE__: JSON.stringify(source.commitDate),
     __HERDR_SOURCE_DIRTY__: JSON.stringify(source.dirty),
     __HERDR_APP_VERSION__: JSON.stringify(appVersion),
+    __HERDR_RELEASE_VERSION__: JSON.stringify(source.releaseVersion),
   },
   plugins: [svelte()],
   server: {

@@ -58,6 +58,10 @@ pub fn build_revision() -> Option<&'static str> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
+    if config.package_version {
+        println!("herdr-webapp {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if config.build_revision {
         println!("{}", build_revision().unwrap_or("unversioned"));
         return Ok(());
@@ -116,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
                         )))
                     } else {
                         Ok(relay_catalog::router(Arc::new(
-                            relay_catalog::ReleaseCatalog::load(path, relay_crypto::VERSION)?,
+                            relay_catalog::ReleaseCatalog::load(path, env!("CARGO_PKG_VERSION"))?,
                         )))
                     }
                 })

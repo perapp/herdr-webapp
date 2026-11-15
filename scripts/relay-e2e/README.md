@@ -64,8 +64,9 @@ but does not establish cellular, external-network or physical-phone acceptance.
   Each action opens a new CDP session. Reload registers the passive observer on
   that session **before** navigation, rather than relying on the original pairing
   session's new-document registration or injecting after the app creates its peer.
-- Connections root remains a list with one remembered computer; Install app is
-  immediately below Settings even before a connection. `/launch` resumes the
+- Connections root remains a list with one remembered computer; Settings remains
+  available before pairing, with Install app inside it. The Herdr-webapp menu
+  heading links back to Connections. `/launch` resumes the
   explicit computer and accepts trusted terminal input after authenticated reload.
 - Phone-sized input and reconnect are checked with Chromium device metrics/touch
   emulation, not claimed as physical Android/iOS keyboard verification.

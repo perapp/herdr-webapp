@@ -370,7 +370,7 @@ class Manager:
         self.groups.add(p)
         return p
 
-    def command(self, argv, cwd=None, env=None, timeout=3600, capture=False):
+    def command(self, argv, cwd=None, env=None, timeout=3600, capture=False, legacy_version=False):
         # Captured commands are restricted to small fixed-output provenance/Git calls.
         p = self.spawn(argv, cwd, env, capture)
         deadline = time.monotonic() + timeout
@@ -385,6 +385,11 @@ class Manager:
             if self.building:
                 self.disk_reserve()
             output = p.stdout.read(4097) if capture else b""
+            if (legacy_version and capture and len(output) <= 4096
+                    and p.returncode == 2 and argv[-1] == "--package-version"):
+                # Old main artifacts predate the machine-only option. Never fall
+                # back after successful mismatched output or any other failure.
+                return self.command([*argv[:-1], "--version"], cwd, env, timeout, capture)
             if p.returncode or len(output) > 4096:
                 raise Failure("command_failed")
             return output.decode("utf-8").strip()
@@ -522,7 +527,7 @@ class Manager:
             binary = catalog / sha / native_target() / "herdr-webapp"
             if self.command([str(binary), "--build-revision"], timeout=10, capture=True) != sha:
                 raise Failure("revision_mismatch")
-            if self.command([str(binary), "--version"], timeout=10, capture=True) != "herdr-webapp " + self.manifest["version"]:
+            if self.command([str(binary), "--package-version"], timeout=10, capture=True, legacy_version=True) != "herdr-webapp " + self.manifest["version"]:
                 raise Failure("version_mismatch")
             os.rename(temp, self.artifacts / sha)
         finally:
@@ -666,7 +671,7 @@ class Manager:
             raise Failure("invalid_artifact")
         if self.command([str(binary), "--build-revision"], timeout=10, capture=True) != sha:
             raise Failure("revision_mismatch")
-        if len(manifest["assets"]) == 3 and self.command([str(binary), "--version"], timeout=10, capture=True) != "herdr-webapp " + manifest["version"]:
+        if len(manifest["assets"]) == 3 and self.command([str(binary), "--package-version"], timeout=10, capture=True, legacy_version=True) != "herdr-webapp " + manifest["version"]:
             raise Failure("version_mismatch")
         return binary, catalog, manifest
 

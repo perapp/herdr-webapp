@@ -1,10 +1,16 @@
 //! Build provenance embedded at compile time; never probes Git or Core at runtime.
+#[allow(dead_code)] // Build-time formatting helpers share validation with this module.
 mod validation;
+
+pub const VERSION: &str = env!("HERDR_DISPLAY_VERSION");
+/// Empty for untagged/unknown builds; only release management may use this.
+pub const RELEASE_VERSION: &str = env!("HERDR_RELEASE_VERSION");
 
 #[derive(Debug, serde::Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildInfo {
     pub version: &'static str,
+    pub release_version: Option<&'static str>,
     pub revision: Option<&'static str>,
     pub commit_date: Option<&'static str>,
     pub dirty: Option<bool>,
@@ -26,7 +32,8 @@ impl BuildInfo {
     ) -> Self {
         let revision = revision.filter(|r| validation::revision(r));
         Self {
-            version: env!("CARGO_PKG_VERSION"),
+            version: VERSION,
+            release_version: validation::release_tag(RELEASE_VERSION),
             revision,
             commit_date: revision.and(date.filter(|d| validation::commit_date(d))),
             dirty: revision.and(match dirty {
@@ -60,7 +67,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 value,
-                serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"revision":null,"commitDate":null,"dirty":null})
+                serde_json::json!({"version":VERSION,"releaseVersion":validation::release_tag(RELEASE_VERSION),"revision":null,"commitDate":null,"dirty":null})
             );
         }
     }
@@ -82,6 +89,35 @@ mod tests {
             BuildInfo::from_compile_time(Some(SHA), None, Some("true")).dirty,
             Some(true)
         );
+    }
+    #[test]
+    fn versions_use_exact_tags_or_commit_local_time() {
+        assert_eq!(
+            validation::display_version(Some(SHA), Some("2026-06-03T14:05:06+02:00"), None)
+                .as_deref(),
+            Some("260603140506+0200-0123456")
+        );
+        assert_eq!(
+            validation::display_version(Some(SHA), Some("2026-01-02T03:04:05-05:30"), None)
+                .as_deref(),
+            Some("260102030405-0530-0123456")
+        );
+        assert_eq!(
+            validation::display_version(Some(SHA), Some("2026-01-02T03:04:05Z"), None).as_deref(),
+            Some("260102030405+0000-0123456")
+        );
+        assert_eq!(
+            validation::display_version(Some(SHA), None, Some("v1.2.3")).as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(validation::display_version(Some(SHA), None, None), None);
+        assert_eq!(validation::display_version(None, None, None), None);
+        for tag in ["v1.2.3", "1.2.3-rc.1+build"] {
+            assert!(validation::release_tag(tag).is_some());
+        }
+        for tag in ["1.02.3", "1.2.3-01", "1.2.3+", "1.2.3-", "1.2.3\n", "main"] {
+            assert!(validation::release_tag(tag).is_none(), "accepted {tag}");
+        }
     }
     #[test]
     fn calendar_timestamp_validation_rejects_malformed_and_injection() {

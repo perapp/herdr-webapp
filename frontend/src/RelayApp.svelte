@@ -8,8 +8,7 @@
   import type { ReloadState } from './lib/mainReload';
   import App from './App.svelte';
   import SettingsDialog from './SettingsDialog.svelte';
-  import InstallDialog from './InstallDialog.svelte';
-  import { installApp } from './lib/pwa';
+  import { displayVersion, modeBuild } from './lib/versions';
   import { parsePairing, listComputers, forgetComputer } from './lib/peerCrypto';
   import type { Computer } from './lib/peerCrypto';
   import { PeerConnection } from './lib/peerConnection';
@@ -40,8 +39,6 @@
   let mounted = true;
   let copied = $state(false);
   let showSettings = $state(false);
-  let installMessage = $state('');
-  async function showInstall() { installMessage = await installApp(); }
   const command = `curl -fsSL '${location.origin}${channelPath('/run')}' | sh`;
   const generation = new ConnectionGeneration();
   function stop() {
@@ -171,8 +168,8 @@
   <main class="login-shell">
     <section class="login-card" aria-labelledby="relay-heading">
       <details class="connections-menu"><summary aria-label="Open navigation">☰</summary><nav aria-label="App actions">
+        <a class="connections-brand" href={channelPath('/')} aria-label="Herdr-webapp — Connections" title="Connections">Herdr-webapp</a>
         <button aria-haspopup="dialog" onclick={() => showSettings = true}>Settings</button>
-        <button aria-haspopup="dialog" onclick={showInstall}>Install app</button>
       </nav></details>
       <div class="wordmark"><span class="herdr-mark" aria-hidden="true">h</span>herdr<span class="web-label">web</span></div>
       <p class="eyebrow">A private connection to your computer.</p>
@@ -204,17 +201,19 @@
       <pre class="install-command"><code>{command}</code></pre>
       <button onclick={copy}>{copied ? 'Copied' : 'Copy command'}</button>
       <p class="login-footnote">Pairing pins your computer’s identity. Terminal content, commands and files travel only through encrypted WebRTC, directly when possible, or via TURN when the relay has it configured.</p>
-      <details><summary>Connection diagnostics</summary><label><input type="checkbox" bind:checked={forceTurn} disabled={!!connection} /> Force TURN on the next connection</label><p>Relay {relayVersion || 'version unavailable'}. TURN availability depends on this relay’s configuration.</p></details>
+      <details><summary>Connection diagnostics</summary><label><input type="checkbox" bind:checked={forceTurn} disabled={!!connection} /> Force TURN on the next connection</label><p>Relay {displayVersion(modeBuild(serverMode), relayVersion)}. TURN availability depends on this relay’s configuration.</p></details>
     </section>
   </main>
 {/if}
 {#if showSettings}<SettingsDialog close={() => showSettings = false} peerMode {serverMode} connected={false} />{/if}
-{#if installMessage}<InstallDialog message={installMessage} close={() => installMessage = ''} />{/if}
 <style>
-  .login-card { position: relative; }
+  .login-card { position: relative; min-width: 0; overflow-wrap: anywhere; }
   .connections-menu { position: absolute; top: 10px; right: 10px; z-index: 1; margin: 0; }
   .connections-menu summary { min-width: 44px; min-height: 44px; display: grid; place-items: center; cursor: pointer; border-radius: 6px; }
   .connections-menu nav { position: absolute; right: 0; width: 180px; padding: 6px; border: 1px solid var(--muted); border-radius: 8px; background: var(--raised); }
+  .connections-brand { display: flex; align-items: center; min-height: 44px; padding: 6px 10px; color: var(--bright); font-weight: 650; text-decoration: none; border-bottom: 1px solid var(--line); }
+  .connections-brand:hover { color: var(--teal); }
+  .connections-brand:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
   .connections-menu button { display: block; text-align: left; width: 100%; min-height: 44px; }
   .revision-update { position: fixed; z-index: 1000; top: env(safe-area-inset-top, 0px); left: 50%; transform: translateX(-50%); width: min(95%, 36rem); display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .4rem .7rem; max-height: calc(100dvh - env(safe-area-inset-top, 0px)); overflow: auto; flex-wrap: wrap; overflow-wrap: anywhere; border: 1px solid var(--muted); border-radius: .5rem; background: var(--raised); color: var(--ink); font-size: .8rem; }
   .revision-update button { min-height: 44px; flex-shrink: 0; }

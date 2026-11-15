@@ -122,8 +122,10 @@ class Browser:
         self.wait('(()=>{const e=document.querySelector(' + json.dumps(selector) +
                   ');if(!e)return false;const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&!e.disabled})()',
                   label='click target visible and enabled')
+        self.js('document.querySelector(' + json.dumps(selector) + ').scrollIntoView({block:"center",inline:"nearest",behavior:"instant"})')
+        self.js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))')
         rect = self.js('(()=>{const r=document.querySelector(' + json.dumps(selector) +
-                       ').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()')
+                       ').getBoundingClientRect(),v=visualViewport;return {x:(r.x+r.width/2-(v?.offsetLeft||0))*(v?.scale||1),y:(r.y+r.height/2-(v?.offsetTop||0))*(v?.scale||1)}})()')
         for kind in ('mousePressed', 'mouseReleased'):
             self.call('Input.dispatchMouseEvent', {'type': kind, **rect, 'button': 'left', 'clickCount': 1})
 
@@ -244,11 +246,24 @@ def main():
             target = browser.js('location.pathname')
             assert '/connections/' in target, 'acceptance condition'
             browser.call('Page.addScriptToEvaluateOnNewDocument', {'source': OBSERVER})
-            # A normal root visit must show the list, even with one paired computer.
-            browser.call('Page.navigate', {'url': job['origin'] + '/'})
+            browser.click('[aria-label="Toggle navigation"]')
+            assert browser.js("document.querySelector('.drawer-brand')?.textContent==='Herdr-webapp' && ![...document.querySelectorAll('.navigation-settings button')].some(b=>['Connections','Install app'].includes(b.textContent.trim()))"), 'acceptance condition'
+            browser.click('.navigation-settings .settings-button[aria-haspopup="dialog"]')
+            browser.wait("!!document.querySelector('.preferences[open] .install-option')")
+            browser.click('.version-option')
+            browser.wait("!!document.querySelector('.version-dialog[open]') && !document.querySelector('.preferences[open]')")
+            browser.click('[aria-label="Close versions"]')
+            browser.wait("!!document.querySelector('.preferences[open]') && document.activeElement.matches('.version-option')")
+            browser.click('[aria-label="Close settings"]')
+            # The branded drawer heading is the Connections action, even with one saved computer.
+            browser.click('.drawer-brand')
             browser.wait("document.querySelector('h1')?.textContent==='Connections' && !document.querySelector('.xterm')")
             browser.click('.connections-menu summary')
-            assert browser.js("JSON.stringify([...document.querySelectorAll('.connections-menu button')].map(b=>b.textContent.trim()))") == '["Settings","Install app"]', 'acceptance condition'
+            assert browser.js("JSON.stringify([...document.querySelectorAll('.connections-menu button')].map(b=>b.textContent.trim()))") == '["Settings"]', 'acceptance condition'
+            assert browser.js("document.querySelector('.connections-brand')?.textContent==='Herdr-webapp' && document.querySelector('.connections-brand').pathname==='/'"), 'acceptance condition'
+            browser.click('.connections-menu button')
+            browser.wait("!!document.querySelector('.settings-dialog[open] .install-option')")
+            browser.click('[aria-label="Close settings"]')
             browser.call('Page.navigate', {'url': job['origin'] + '/launch' + ('?forceTurn=1' if job['transport'] != 'direct' else '')})
             browser.wait('location.pathname===' + json.dumps(target))
             browser.live()
