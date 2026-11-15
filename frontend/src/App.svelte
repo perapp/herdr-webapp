@@ -1,6 +1,10 @@
 <script lang="ts">
   import SourceLink from './SourceLink.svelte';
-  import { onMount } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
+  import AgentSortControl from './AgentSortControl.svelte';
+  import { createAgentChangeTracker, groupAgents, readAgentSort, saveAgentSort, type AgentSortMode } from './lib/agentSort';
+  import { PaneHistory, readyAgents, nextReadyAgent } from './lib/paneHistory';
+  import ComputerDetailsDialog from './ComputerDetailsDialog.svelte';
   import { transportEvents } from './lib/transport';
   import type { EventSourceLike } from './lib/transport';
   import { MOBILE_QUERY, drawnTerminals, paneTitle, resolvePane, selectCreated, selectPane, visiblePanes } from './lib/navigation';
@@ -43,6 +47,19 @@
   let mobile = $state(false);
   let showKeys = $state(false);
   let showSettings = $state(false);
+  let computerDetails = $state<{ on: string | null; name: string }>();
+  let computerTrigger: HTMLButtonElement | undefined;
+  let reopenNavigation = false;
+  function openComputer(document: SharedDocument, index: number, event: MouseEvent) {
+    computerTrigger = event.currentTarget as HTMLButtonElement; reopenNavigation = sidebarOpen;
+    closeNavigation();
+    computerDetails = { on: document.on, name: machineName(document.on, snapshot.machines, index, snapshot.core) };
+  }
+  async function closeComputer() {
+    computerDetails = undefined; await tick();
+    if (reopenNavigation && mobile) { toggleNavigation(); await tick(); }
+    if (computerTrigger?.isConnected) computerTrigger.focus({ preventScroll: true });
+  }
   let viewportHeight = $state<number>();
   let drawer = $state<HTMLDialogElement>();
   let actionsMenu = $state<HTMLDetailsElement>();
@@ -67,8 +84,37 @@
   const zoomed = $derived(tab && view.zoomed[tabKey] ? findNode(tab.root, view.zoomed[tabKey]) : undefined);
   const ready = $derived(snapshot.connected && streamLive);
   const agents = $derived(agentTree(snapshot.documents, snapshot.terminals));
+  // App is mounted per authenticated connection; no navigation crosses computers.
+  const sortComputer = untrack(() => selectedComputer || null);
+  let agentSortMode = $state<AgentSortMode>(readAgentSort(sortComputer));
+  const agentChanges = createAgentChangeTracker(sortComputer);
+  let agentChangedTimes = $state<Record<string, number>>({});
+  $effect(() => {
+    agentChanges.update(agents, snapshot.terminals);
+    agentChangedTimes = Object.fromEntries(snapshot.terminals.map(terminal => [terminalAddress(terminal), agentChanges.since(terminalAddress(terminal))]));
+  });
+  const agentGroups = $derived(groupAgents(agents, snapshot.terminals, agentSortMode, address => agentChangedTimes[address] ?? 0));
+  function changeAgentSort(mode: AgentSortMode) { agentSortMode = mode; saveAgentSort(sortComputer, mode); }
+  const paneHistory = new PaneHistory();
+  let historyRevision = $state(0);
+  $effect(() => {
+    if (selected && tab && activePane && paneHistory.observe({ document: selected.document, space: selected.space, tab, pane: activePane })) historyRevision = paneHistory.revision;
+  });
+  const previousPane = $derived.by(() => { void historyRevision; return paneHistory.previous(snapshot.documents); });
+  const waitingAgents = $derived(readyAgents(agents));
+  function jumpReadyAgent() {
+    if (!ready) return;
+    const target = nextReadyAgent(agents, activeTerminal && terminalAddress(activeTerminal))?.target;
+    if (target) choosePane(target.document, target.space, target.tab, target.pane);
+  }
+  function jumpPreviousPane() {
+    if (!ready) return;
+    const target = paneHistory.take(snapshot.documents);
+    if (target) { historyRevision = paneHistory.revision; choosePane(target.document, target.space, target.tab, target.pane); }
+  }
+
   function stop() { lifecycle++; source?.close(); source = undefined; streamLive = false; }
-  function signedOut() { stop(); auth = 'signed-out'; snapshot = emptyState(); modal = null; token = ''; }
+  function signedOut() { stop(); auth = 'signed-out'; snapshot = emptyState(); modal = null; computerDetails = undefined; token = ''; }
   async function refresh() {
     const current = lifecycle;
     const before = revision;
@@ -219,6 +265,18 @@
 </script>
 
 <style>
+  .agents-heading { display: flex; align-items: center; justify-content: space-between; min-height: 44px; padding-right: 10px; }
+  .agents-heading .rail-heading { margin: 0; }
+  .agent-group-heading { padding: 8px 14px 4px; font-size: calc(10rem / 13); font-weight: 600; color: var(--muted); overflow-wrap: anywhere; }
+  .pane-jump { position: relative; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; min-width: 36px; width: 36px; min-height: 36px; padding: 0; border: 0; background: transparent; color: var(--muted); }
+  .pane-jump:not(:disabled):hover { color: var(--bright); background: var(--raised); }
+  .ready-agent-count { position: absolute; top: 0; right: 0; min-width: 15px; height: 15px; padding: 0 3px; display: grid; place-items: center; border-radius: 10px; background: var(--teal); color: var(--base); font-size: 9px; font-weight: 700; line-height: 1; }
+  .pane-jump:disabled .ready-agent-count { background: var(--raised); color: var(--muted); }
+  @media (max-width: 760px) { .pane-jump { min-width: 44px; width: 44px; min-height: 44px; } .ready-agent-count { top: 3px; right: 2px; } }
+
+  .computer-details-trigger { display: flex; align-items: center; gap: 7px; width: 100%; min-width: 0; min-height: 32px; border: 0; padding: 0 4px 0 0; background: transparent; text-align: left; color: var(--muted); font: inherit; }
+  .computer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  :global(.navigation-drawer) .computer-details-trigger { min-height: 44px; }
   .drawer-brand { display: inline-flex; align-items: center; min-height: 44px; min-width: 0; color: var(--bright); font-size: calc(14rem / 13); font-weight: 650; letter-spacing: -.02em; text-decoration: none; overflow-wrap: anywhere; }
   .drawer-brand:hover { color: var(--teal); }
   .drawer-brand:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; border-radius: 4px; }
@@ -259,6 +317,12 @@
           <AgentIndicator status={agentStatus(activeTerminal)} showIdle={false} />
           {selected ? selected.name : 'Herdr'}{#if tab}<span class="location-divider">/</span>{readable(tab.name, 'Tab')}{/if}
         </span>
+        <button class="pane-jump ready-agent-jump" aria-label={`Next unseen ready agent (${waitingAgents.length} waiting)`} title={`Next unseen ready agent — ${waitingAgents.length} waiting`} disabled={!ready || !waitingAgents.length} onclick={jumpReadyAgent}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10 2 17v4h20v-4l-2-7 M2 17h6l2 3h4l2-3h6 M8 6l3 3 6-6"/></svg><span class="ready-agent-count" aria-hidden="true">{waitingAgents.length > 99 ? '99+' : waitingAgents.length}</span>
+        </button>
+        <button class="pane-jump previous-pane-jump" aria-label="Previous pane" title="Return to previous pane" disabled={!ready || !previousPane} onclick={jumpPreviousPane}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 4-5 5 5 5 M4 9h9a7 7 0 0 1 7 7v4"/></svg>
+        </button>
         <button class="keyboard-toggle" aria-label="Terminal keyboard shortcuts" aria-pressed={showKeys} title="Show terminal keys" onclick={() => showKeys = !showKeys}>⌨</button>
       {#if !mobile}
         <details class="workspace-menu" bind:this={actionsMenu}>
@@ -299,10 +363,11 @@
   </div>
 {/if}
 {#if modal}<TopologyDialog {...modal} close={() => modal = null} saved={topologySaved} />{/if}
-<AgentPresence ready={ready && !sidebarOpen && !showSettings && !modal} terminals={snapshot.terminals} visible={drawnTerminals(mobile ? activePane : zoomed || tab?.root, selected?.document.on ?? null, view.stacks)} />
+<AgentPresence ready={ready && !sidebarOpen && !showSettings && !modal && !computerDetails} terminals={snapshot.terminals} visible={drawnTerminals(mobile ? activePane : zoomed || tab?.root, selected?.document.on ?? null, view.stacks)} />
 <NotificationPresence {ready} terminal={typeof activePane?.content?.terminal === 'string' && selected ? qualify(activePane.content.terminal, selected.document.on) : ''} />
 {#if notificationNotice}<aside role="status" class="notification-notice">{notificationNotice}<button onclick={() => notificationNotice = ''} aria-label="Dismiss notification destination message">×</button></aside>{/if}
 {#if !peerMode}<UpdateProgress connected={ready} />{/if}
+{#if computerDetails}<ComputerDetailsDialog name={computerDetails.name} on={computerDetails.on} document={snapshot.documents.find(doc => doc.on === computerDetails?.on)} connected={ready} coreVersion={snapshot.coreVersion} refresh={refresh} close={() => void closeComputer()} />{/if}
 {#if showSettings}<SettingsDialog close={() => showSettings = false} {peerMode} {serverMode} {peerBuild} {peerVersion} coreVersion={snapshot.coreVersion} connected={ready} computerName={computers.find(c => c.id === selectedComputer)?.name || machineName(null, snapshot.machines, 0, snapshot.core)} />{/if}
 
 {#snippet settingsFooter()}
@@ -326,8 +391,7 @@
   <nav class="workspace-navigation" aria-label="Computers and workspaces">
     {#each snapshot.documents as document, i (viewKey(document.on))}
       <section class="machine-group">
-        <header><span class="computer-glyph" aria-hidden="true">▱</span><h2>{machineName(document.on, snapshot.machines, i, snapshot.core)}</h2><span class="dot" class:live={snapshot.connected && streamLive && !document.error}></span><button class="icon-button" aria-label={`New workspace on ${machineName(document.on, snapshot.machines, i, snapshot.core)}`} disabled={!ready || treeBusy || !!document.error} title="New workspace" onclick={() => treeAction('new-space', document)}>+</button></header>
-        {#if document.error}<p class="document-error" role="status">Layout unavailable: {document.error}</p>{/if}
+        <header><h2><button class="computer-details-trigger" aria-label={`Computer details: ${machineName(document.on, snapshot.machines, i, snapshot.core)}`} aria-haspopup="dialog" onclick={event => openComputer(document, i, event)}><span class="computer-glyph" aria-hidden="true">▱</span><span class="computer-name">{machineName(document.on, snapshot.machines, i, snapshot.core)}</span><span class="dot" class:live={snapshot.connected && streamLive && !document.error} aria-label={snapshot.connected && streamLive && !document.error ? 'Connected' : 'Unavailable'}></span></button></h2><button class="icon-button" aria-label={`New workspace on ${machineName(document.on, snapshot.machines, i, snapshot.core)}`} disabled={!ready || treeBusy || !!document.error} title="New workspace" onclick={() => treeAction('new-space', document)}>+</button></header>
         {#each document.spaces as space, j (space.id || j)}
           {@const key = viewKey(document.on, space.id)}
           {@const name = spaceName(space, document.on, snapshot.terminals, `Workspace ${j + 1}`)}
@@ -364,10 +428,11 @@
   </nav>
   {#if treeError}<p class="document-error" role="alert">{treeError}</p>{/if}
   <section class="agent-section" aria-labelledby="drawer-agents-heading">
-    <h2 class="rail-heading" id="drawer-agents-heading">Agents</h2>
+    <div class="agents-heading"><h2 class="rail-heading" id="drawer-agents-heading">Agents</h2><AgentSortControl mode={agentSortMode} onchange={changeAgentSort} /></div>
     <nav class="agent-navigation" aria-label="Agents and sub-agents">
-      {#each agents as agent (agent.address)}
-        {@render agentBranch(agent)}
+      {#each agentGroups as group, index (`${group.id}:${index}`)}
+        <div class="agent-group-heading">{group.label || 'Workspace'}</div>
+        {#each group.members as agent (agent.address)}{@render agentBranch(agent)}{/each}
       {:else}<p class="rail-empty">No agents reporting status in your spaces.</p>{/each}
     </nav>
   </section>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { terminalUrl, touchKeys } from './terminal';
+import { ctrlJKey, terminalUrl, touchKeys } from './terminal';
 
 describe('native-style browser terminals', () => {
   it('attaches interactively on both initial connection and reconnect', () => {
@@ -14,6 +14,10 @@ describe('native-style browser terminals', () => {
   });
   it('uses secure websockets behind an HTTPS origin', () => {
     expect(terminalUrl('t1', 80, 24, 'https://herdr.example/').protocol).toBe('wss:');
+  });
+  it('provides an explicit Control J line feed rather than a carriage return', () => {
+    expect(ctrlJKey).toEqual({ label: 'Ctrl J', name: 'Control J', data: '\x0a' });
+    expect(ctrlJKey.data).not.toBe('\r');
   });
   it('provides phone keyboard shortcuts without ownership controls', () => {
     expect(touchKeys.find(k => k.label === 'Ctrl C')?.data).toBe('\x03');

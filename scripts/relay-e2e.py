@@ -320,6 +320,7 @@ class Harness:
             {'id': 'e2e-pane-other', 'type': 'block', 'content': {'terminal': other}})
         self.rpc('doc.set', {'name': 'herdr-app', 'version': document['version'], 'value': document['value']})
         self.browser('mobile')
+        require((self.root / 'ctrl-j-proof').read_text() == '10\n', 'Control J was not an exact line-feed byte')
         require((self.root / 'pane-switch-proof').read_text() == 'pane-switch-proof\n', 'pane switch shell proof failed')
         require((self.root / 'mobile-proof').read_text() == 'mobile-proof\n', 'mobile shell proof failed')
         require((self.root / 'mobile-resume-proof').read_text() == 'mobile-resume-proof\n', 'mobile resume shell proof failed')
@@ -391,7 +392,9 @@ class Harness:
             self.pane_switch_acceptance()
             report = {'ok': True, 'scope': 'focused-pane-switch', 'transport': self.args.transport,
                       'checks': ['desktop-input', 'connections-and-source-links', 'phone-input',
-                                 'pane-switch-peer-continuity', 'no-start-page-flash', 'phone-reconnect']}
+                                 'pane-switch-peer-continuity', 'no-start-page-flash', 'phone-reconnect', 'ctrl-j-exact-lf',
+                                 'lightning-command-menu', 'computer-details', 'agent-sort-menu',
+                                 'unseen-ready-agent-jump-and-counter', 'previous-pane-toggle']}
             self.save_artifacts(report)
             print(json.dumps(report))
             return

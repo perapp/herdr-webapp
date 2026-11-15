@@ -31,6 +31,22 @@ describe('terminal submit intent', () => {
     gate.markPaste({ isTrusted: true, text: 'a\nb' });
     expect(gate.allow('a\rb\r')).toBe(false);
   });
+  it('allows one trusted accessory Control J, never an unsolicited or untrusted line feed', () => {
+    const gate = new TerminalSubmission();
+    expect(gate.allow('\n')).toBe(false);
+    gate.markShortcut({ isTrusted: false }, '\n');
+    expect(gate.allow('\n')).toBe(false);
+    gate.markShortcut({ isTrusted: true }, '\n');
+    expect(gate.allow('\n')).toBe(true);
+    expect(gate.allow('\n')).toBe(false);
+    gate.markShortcut({ isTrusted: true }, '\n');
+    expect(gate.allow('unexpected flush\n')).toBe(false);
+    gate.markShortcut({ isTrusted: true }, '\n'); gate.clear();
+    expect(gate.allow('\n')).toBe(false);
+    gate.markShortcut({ isTrusted: true }, '\n');
+    gate.markShortcut({ isTrusted: true }, '\x03');
+    expect(gate.allow('\n')).toBe(false);
+  });
   it('revokes stale Enter on other keys, blur and disconnect', () => {
     const gate = new TerminalSubmission();
     gate.markEnter({ isTrusted: true });

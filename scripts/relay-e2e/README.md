@@ -12,7 +12,10 @@ python3 scripts/relay-e2e.py \
 
 For a focused pane-switch loop, add `--focus-pane-switch`: it checks desktop
 input, Connections/Settings/Versions source links, phone pane switches without
-peer replacement or start-page flashes, and authenticated reconnect. This is not
+peer replacement or start-page flashes, and authenticated reconnect. It also
+checks exact LF from Ctrl J, the lightning command opener, computer details,
+the native agent sort menu, unread-agent jump/count/acknowledgement and previous-pane
+toggling (without focusing terminal input). This is not
 a substitute for the full upload, editor and access-rotation suite.
 
 Repeat with `--transport udp`, `--transport tcp`, and `--transport tls`. Each

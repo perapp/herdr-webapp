@@ -5,6 +5,8 @@ export function terminalUrl(address: string, cols: number, rows: number, href: s
   url.search = new URLSearchParams({ terminal: address, cols: String(cols), rows: String(rows), observe: 'false', resumed: 'false', theme }).toString();
   return url;
 }
+/** Ctrl+J is LF, deliberately not Enter/CR. Shown first in the accessory's second row. */
+export const ctrlJKey = { label: 'Ctrl J', name: 'Control J', data: '\n' };
 export const touchKeys = [
   { label: 'Esc', name: 'Escape', data: '\x1b' },
   { label: 'Tab', name: 'Tab', data: '\t' },

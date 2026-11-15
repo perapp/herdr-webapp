@@ -17,6 +17,11 @@ export class TerminalSubmission {
     else if (event.inputType === 'insertText' || event.inputType === 'insertCompositionText') this.enter = false;
   }
   markEnter(event: { isTrusted: boolean }): void { if (event.isTrusted) this.enter = true; }
+  markShortcut(event: { isTrusted: boolean }, data: string): void {
+    if (!event.isTrusted) return;
+    this.enter = data === '\r' || data === '\n';
+    this.paste = undefined;
+  }
   markPaste(event: { isTrusted: boolean; text: string }): void {
     if (event.isTrusted) this.paste = event.text.replace(/\r?\n/g, '\r');
   }

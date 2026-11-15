@@ -15,7 +15,7 @@
   import '@xterm/xterm/css/xterm.css';
   import { binaryInput, inputChunks, retryDelay, validSize } from './lib/input';
   import { record } from './lib/schema';
-  import { terminalUrl, touchKeys } from './lib/terminal';
+  import { ctrlJKey, terminalUrl, touchKeys } from './lib/terminal';
   import { terminalTheme } from './lib/theme';
   import { initializeAppearance, watchAppearance } from './lib/appearance';
   import { touchScroll } from './lib/touchScroll';
@@ -137,7 +137,7 @@
     host.addEventListener('click', clickTerminal);
     sendKey = (event, data) => {
       if (!attached || !event.isTrusted) return;
-      if (data === '\r') submission.markEnter(event);
+      submission.markShortcut(event, data);
       sendInput(data); focusTerminal();
     };
     prepareImageInsertion = event => {
@@ -292,10 +292,13 @@
     {/each}
   </nav>
     <div class="terminal-attachments">
+      <button class="ctrl-j-key" aria-label={ctrlJKey.name} title="Ctrl+J · line feed" disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => sendKey(event, ctrlJKey.data)}>{ctrlJKey.label}</button>
       <input class="image-picker" bind:this={imagePicker} type="file" accept={imageAccept} aria-label="Choose image to attach"
         onchange={event => { void chooseImage(event.currentTarget.files?.[0], event); event.currentTarget.value = ''; }} />
       <span class:error={!!uploadError} class="attachment-status" role={uploadError ? 'alert' : 'status'}>{uploadError || uploadStatus}</span>
-      {#if agent}<button class="agent-commands-button" aria-label="Agent commands" title={`${agent} commands and favorites`} aria-haspopup="dialog" disabled={!attached} onclick={event => openCommands(event)}>/</button>{/if}
+      {#if agent}<button class="agent-commands-button" aria-label="Agent commands" title={`${agent} commands and favorites`} aria-haspopup="dialog" disabled={!attached} onclick={event => openCommands(event)}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m13 2-10 12h9l-1 8 10-12h-9l1-8Z"/></svg>
+      </button>{/if}
       <button class="attach-image" aria-label={uploadBusy ? 'Uploading image' : 'Attach image'} aria-busy={uploadBusy} disabled={!attached || uploadBusy} onclick={() => imagePicker?.click()} title="Attach image · PNG, JPEG, GIF or WebP · up to 8 MiB">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m8 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9a7 7 0 0 1 10 10l-9 9"/></svg>
       </button>

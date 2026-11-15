@@ -591,6 +591,20 @@ finally:
             browser.live()
             browser.click('[aria-label="Toggle navigation"]')
             assert browser.js("(()=>{const f=document.querySelector('.navigation-settings'),b=f?.querySelector('button');return !!f && f.textContent.trim()==='' && f.children.length===1 && b?.getAttribute('aria-label')==='Settings' && !!b.querySelector('svg') && b.getBoundingClientRect().width>=44 && b.getBoundingClientRect().height>=44})()"), 'acceptance condition'
+            # Real mounted controls: computer details and native sort menu.
+            assert not browser.js("!!document.querySelector('.machine-group .document-error')"), 'acceptance condition'
+            browser.click('.computer-details-trigger')
+            browser.wait("!!document.querySelector('.computer-dialog[open]') && !document.querySelector('#navigation-drawer[open]')")
+            assert browser.js("document.querySelector('.computer-dialog .connection-state').textContent.trim()==='Connected' && !!document.querySelector('.computer-dialog dl')"), 'acceptance condition'
+            browser.click('[aria-label="Close computer details"]')
+            browser.wait("!!document.querySelector('#navigation-drawer[open]') && document.activeElement.matches('.computer-details-trigger')")
+            browser.click('.sort-trigger')
+            browser.wait("!!document.querySelector('.sort-popup[role=menu]')")
+            browser.click('[role=menuitemradio]:nth-of-type(2)')
+            browser.wait("document.querySelector('.sort-trigger').getAttribute('aria-label')==='Sort agents: Grouped by space'")
+            browser.click('.sort-trigger')
+            browser.click('[role=menuitemradio]:nth-of-type(1)')
+            browser.wait("document.querySelector('.sort-trigger').getAttribute('aria-label')==='Sort agents: Priority'")
             image = browser.call('Page.captureScreenshot', {'format': 'png', 'captureBeyondViewport': False})
             screenshot = ROOT / 'drawer-settings-phone.png'
             screenshot.write_bytes(base64.b64decode(image['data']))
@@ -599,6 +613,20 @@ finally:
             proof = str(Path(job['proofDir']) / 'mobile-proof')
             browser.shell("printf '%s%s\\n' mobile- proof > " + json.dumps(proof) +
                           "; printf '%s%s\\n' MOBILE_ OK", 'MOBILE_OK')
+            # Exercise trusted accessory input against a real raw PTY: LF must
+            # arrive as byte 10, not carriage return or a literal slash/command.
+            browser.shell("printf '\\033]7501;state=idle:app=pi\\033\\\\'; printf '%s%s\\n' ACCESSORY_ READY", 'ACCESSORY_READY')
+            browser.click('[aria-label="Terminal keyboard shortcuts"]')
+            browser.wait("!!document.querySelector('.agent-commands-button svg')")
+            assert browser.js("(()=>{const key=document.querySelector('[aria-label=\"Control J\"]'),row=key?.closest('.terminal-attachments'),command=document.querySelector('.agent-commands-button');return !!row && row.firstElementChild===key && key.getBoundingClientRect().height>=44 && !!command.querySelector('svg') && command.textContent.trim()===''})()"), 'acceptance condition'
+            browser.click('.agent-commands-button')
+            browser.wait("!!document.querySelector('.command-palette[open]')")
+            browser.click('[aria-label="Close commands"]')
+            proof = str(Path(job['proofDir']) / 'ctrl-j-proof')
+            browser.shell("saved=$(stty -g); stty raw -echo; printf '%s%s' CTRL_J_ READY; IFS= read -r -N 1 key; stty \"$saved\"; printf '%d\\n' \"'$key\" > " + json.dumps(proof) + "; printf '%s%s\\n' CTRL_J_ OK", 'CTRL_J_READY')
+            browser.click('[aria-label="Control J"]')
+            browser.wait("window.__e2e.tail.includes('CTRL_J_OK')", label='shell sentinel')
+            browser.click('[aria-label="Terminal keyboard shortcuts"]')
             # Observe every DOM transition, not only the final attached terminal.
             browser.js('''window.__paneSwitch={flashes:0,peers:window.__e2e.peers.length,path:location.pathname};
               window.__paneObserver=new MutationObserver(()=>{
@@ -612,6 +640,29 @@ finally:
                 browser.wait("!document.querySelector('#navigation-drawer[open]')")
                 browser.live()
                 assert browser.js("window.__e2e.peers.length===window.__paneSwitch.peers && location.pathname===window.__paneSwitch.path && window.__paneSwitch.flashes===0"), 'acceptance condition'
+            # A real background report is released through a FIFO only after
+            # leaving the pane, so completion cannot be acknowledged prematurely.
+            signal = str(Path(job['proofDir']) / 'agent-completion-signal')
+            browser.shell("printf '\\033]7501;state=working:app=pi\\033\\\\'; mkfifo " + json.dumps(signal) +
+                          "; (IFS= read -r signal < " + json.dumps(signal) +
+                          "; printf '\\033]7501;state=done:app=pi\\033\\\\') & printf '%s%s\\n' AGENT_WAIT_ READY", 'AGENT_WAIT_READY')
+            browser.click('[aria-label="Toggle navigation"]')
+            browser.click('.pane-link:nth-child(2)')
+            browser.live()
+            browser.shell("printf '%s\\n' go > " + json.dumps(signal) + "; printf '%s%s\\n' AGENT_SIGNAL_ OK", 'AGENT_SIGNAL_OK')
+            browser.wait("Number(document.querySelector('.ready-agent-count').textContent)>0")
+            assert browser.js("(()=>{const ready=document.querySelector('.ready-agent-jump'),back=document.querySelector('.previous-pane-jump'),keys=document.querySelector('.keyboard-toggle');return ready.nextElementSibling===back && back.nextElementSibling===keys && ready.getBoundingClientRect().width>=44 && back.getBoundingClientRect().width>=44})()"), 'acceptance condition'
+            browser.click('.ready-agent-jump')
+            browser.live()
+            browser.wait("document.querySelector('.pane-link.selected .pane-number').textContent.trim()==='1'")
+            browser.wait("document.querySelector('.ready-agent-count').textContent==='0'")
+            assert not browser.js("!!document.activeElement.closest('.xterm')"), 'acceptance condition'
+            browser.click('[aria-label="Previous pane"]')
+            browser.live()
+            browser.wait("document.querySelector('.pane-link.selected .pane-number').textContent.trim()==='2'")
+            browser.click('[aria-label="Previous pane"]')
+            browser.live()
+            browser.wait("document.querySelector('.pane-link.selected .pane-number').textContent.trim()==='1'")
             proof = str(Path(job['proofDir']) / 'pane-switch-proof')
             browser.shell("printf '%s%s\\n' pane-switch- proof > " + json.dumps(proof) +
                           "; printf '%s%s\\n' PANE_SWITCH_ OK", 'PANE_SWITCH_OK')
