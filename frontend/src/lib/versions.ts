@@ -1,4 +1,4 @@
-import { channelPath } from './channel.ts';
+import { channelBase, channelPath } from './channel.ts';
 
 export interface BuildInfo { version: string | null; revision: string | null; commitDate: string | null; dirty: boolean | null }
 export function versionText(value: unknown): string | null {
@@ -26,12 +26,25 @@ export function loadedBuild(): BuildInfo {
 export function displayDate(iso: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'long' }).format(new Date(iso));
 }
-export interface VersionRow { label: string; detail: string; build: BuildInfo; unused?: boolean; core?: boolean }
-export function versionRows(peer: boolean, served: unknown, connector: unknown, connectorVersion: unknown, coreVersion: unknown, connected: boolean): VersionRow[] {
+/** Display the actual browser-facing channel endpoint, never a private access link. */
+export function versionUrl(href?: string): string | undefined {
+  try {
+    const value = href ?? (typeof location === 'undefined' ? undefined : location.href);
+    if (!value) return;
+    const url = new URL(value);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return;
+    // Ignore credentials, arbitrary paths, query parameters and fragments. The
+    // selected connector and Core use native transports, not this HTTP endpoint.
+    return url.origin + channelBase(value);
+  } catch { return; }
+}
+export interface VersionRow { label: string; detail: string; build: BuildInfo; url?: string; unused?: boolean; core?: boolean }
+export function versionRows(peer: boolean, served: unknown, connector: unknown, connectorVersion: unknown, coreVersion: unknown, connected: boolean, href?: string): VersionRow[] {
+  const url = versionUrl(href);
   return [
-    { label: 'Browser app', detail: 'Loaded in this browser', build: loadedBuild() },
-    { label: 'Webapp', detail: peer ? 'Native connector · selected computer' : 'Local server', build: peer ? normalizeBuild(connector, connectorVersion) : modeBuild(served) },
-    { label: 'Relay', detail: peer ? 'Current backend serving this channel' : 'Not used (local connection)', build: peer ? modeBuild(served) : normalizeBuild(null), unused: !peer },
+    { label: 'Browser app', detail: 'Loaded in this browser', build: loadedBuild(), url },
+    { label: 'Webapp', detail: peer ? 'Native connector · selected computer' : 'Local server', build: peer ? normalizeBuild(connector, connectorVersion) : modeBuild(served), url: peer ? undefined : url },
+    { label: 'Relay', detail: peer ? 'Current backend serving this channel' : 'Not used (local connection)', build: peer ? modeBuild(served) : normalizeBuild(null), unused: !peer, url: peer ? url : undefined },
     { label: 'Herdr Core', detail: `Root Core of the selected computer${connected ? '' : ' · disconnected, last observed'}`, build: normalizeBuild(null, coreVersion), core: true },
   ];
 }

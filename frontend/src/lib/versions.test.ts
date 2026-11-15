@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { commitDate, displayDate, fetchVersionMode, loadedBuild, modeBuild, normalizeBuild, versionRows } from './versions';
+import { commitDate, displayDate, fetchVersionMode, loadedBuild, modeBuild, normalizeBuild, versionRows, versionUrl } from './versions';
 import { emptyState, parseState } from './schema';
 import { sourceBuild } from '../../buildInfo';
 const a = 'a'.repeat(40), b = 'b'.repeat(40), iso = '2026-06-03T14:05:06+02:00';
@@ -13,6 +13,18 @@ describe('version provenance', () => {
     expect(loadedBuild().revision).toBe(a); expect(rows[0].build.version).toBe('0.0.8');
     expect(rows[1].build.version).toBe('connector'); expect(rows[2].build.revision).toBe(b);
     expect(rows[3].build).toEqual({ version: '0.1.19', revision: null, commitDate: null, dirty: null });
+  });
+  it('shows actual channel URLs only for browser-facing components, never connector/Core URLs', () => {
+    compiled();
+    const rows = versionRows(true, { publicOrigin: 'https://other.test', basePath: '/wrong/' }, null, '', '', true, 'https://relay.test/main/connections/computer?token=private#pair=private');
+    expect(rows.map(row => row.url)).toEqual(['https://relay.test/main/', undefined, 'https://relay.test/main/', undefined]);
+    const local = versionRows(false, {}, null, '', '', false, 'http://localhost:8001/launch#token=private');
+    expect(local.map(row => row.url)).toEqual(['http://localhost:8001/', 'http://localhost:8001/', undefined, undefined]);
+  });
+  it('strips URL credentials, arbitrary paths and access material and rejects non-web URLs', () => {
+    expect(versionUrl('https://user:password@relay.test:8443/main/connections/id?token=private#pair=private')).toBe('https://relay.test:8443/main/');
+    expect(versionUrl('https://relay.test/private-link/path?token=private#token=private')).toBe('https://relay.test/');
+    for (const href of ['not a URL', 'javascript:alert(1)', 'file:///main/', 'data:text/plain,private']) expect(versionUrl(href)).toBeUndefined();
   });
   it('supports legacy and null metadata without inferring a date or revision', () => {
     expect(modeBuild({ version: 'old', revision: a, buildRevision: a })).toEqual({ version: 'old', revision: null, commitDate: null, dirty: null });

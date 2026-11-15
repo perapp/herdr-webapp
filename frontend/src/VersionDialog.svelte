@@ -31,6 +31,7 @@
       <h3>{row.label}</h3><p class="detail">{row.detail}</p>
       {#if !row.unused}
         <dl>
+          {#if row.url}<dt>URL</dt><dd><a href={row.url} target="_blank" rel="noopener noreferrer">{row.url}</a></dd>{/if}
           <dt>Version</dt><dd>{row.build.version || (row.core ? 'Not reported by this Core' : 'Unknown / not reported')}</dd>
           <dt>Commit</dt><dd><code>{row.build.revision || (row.core ? 'Not reported by this Core' : 'Unknown / not reported')}</code></dd>
           <dt>Commit date</dt><dd>{#if row.build.commitDate}<time datetime={row.build.commitDate} title={row.build.commitDate}>{displayDate(row.build.commitDate)}</time>{:else}{row.core ? 'Not reported by this Core' : 'Unknown / not reported'}{/if}</dd>
