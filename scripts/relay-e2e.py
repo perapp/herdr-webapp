@@ -416,7 +416,7 @@ class Harness:
         require(all(p.poll() is None for p in self.children), 'child exited during acceptance')
         report = {'ok': True, 'transport': self.args.transport, 'externalRelay': bool(external), 'pairs': paired['pairs'],
                   'checks': ['shell-file', 'upload-bytes', 'no-enter', '20-sequential-uploads',
-                             'completion-keeps-desktop-phone-draft', 'client-browser-link', 'reload', 'resume', 'connections-root', 'launch-resume', 'phone-input', 'phone-reconnect', 'two-remembered-computers',
+                             'completion-keeps-desktop-phone-draft', 'client-browser-link', 'reload', 'resume', 'connections-root', 'launch-resume', 'phone-input', 'phone-reconnect', 'icon-only-settings-footer', 'two-remembered-computers',
                              'rotation-separate-profiles-original-capability', 'rotation-ui-confirmation',
                              'rotation-keeper-peer-unchanged', 'rotation-live-revocation', 'rotation-resume-denied',
                              'rotation-old-capability-denied', 'rotation-second-computer-existing-key',
@@ -430,7 +430,9 @@ class Harness:
             private(self.args.artifacts / ('report-' + secrets.token_hex(4) + '.json'), json.dumps(report, indent=2))
             # Only fixed-name page screenshots, never CDP traces, job/pairing data
             # or browser profile state. Retained images are owner-readable only.
-            for name in ('rotation-settings-desktop.png', 'rotation-settings-phone.png'):
+            for name in ('rotation-settings-desktop.png', 'rotation-settings-phone.png', 'drawer-settings-phone.png'):
+                if not (self.workspace / name).is_file():
+                    continue
                 destination = self.args.artifacts / (secrets.token_hex(4) + '-' + name)
                 fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, 'wb') as stream:

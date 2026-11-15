@@ -11,17 +11,15 @@
   import NotificationPresence from './NotificationPresence.svelte';
   import { notificationLayoutReady, selectNotificationTarget } from './lib/notificationTarget';
   import { channelPath } from './lib/channel';
-  import { displayVersion, modeBuild } from './lib/versions';
-  import UpdatePanel from './UpdatePanel.svelte';
   import UpdateProgress from './UpdateProgress.svelte';
-  import { initializeAppearance, watchAppearance } from './lib/appearance';
+  import { watchAppearance } from './lib/appearance';
   import type { Action } from './TopologyDialog.svelte';
   import { ApiError, errorMessage, request } from './lib/api';
   import { emptyState, parseState, readable, machineName, spaceName, viewKey, findNode, record, qualify } from './lib/schema';
   import type { SharedDocument, SharedSpace, SharedTab, LayoutNode } from './lib/schema';
   import { blankView, loadView, saveView } from './lib/view';
 
-  let { initialToken = '', peerMode = false, peerVersion = '', relayVersion = '', peerRoute = '', serverMode, peerBuild, onForget, computers = [], selectedComputer = '', onChooseComputer, onConnections }: { initialToken?: string; peerMode?: boolean; peerVersion?: string; relayVersion?: string; peerRoute?: string; serverMode?: unknown; peerBuild?: unknown; onForget?: () => void; computers?: { id: string; name: string }[]; selectedComputer?: string; onChooseComputer?: (id: string) => void; onConnections?: () => void } = $props();
+  let { initialToken = '', peerMode = false, peerVersion = '', serverMode, peerBuild, computers = [], selectedComputer = '', onConnections }: { initialToken?: string; peerMode?: boolean; peerVersion?: string; serverMode?: unknown; peerBuild?: unknown; computers?: { id: string; name: string }[]; selectedComputer?: string; onConnections?: () => void } = $props();
   let auth = $state<'checking' | 'signed-out' | 'signed-in'>('checking');
   let token = $state('');
   let loginBusy = $state(false);
@@ -36,7 +34,6 @@
   let mobile = $state(false);
   let showKeys = $state(false);
   let showSettings = $state(false);
-  let appearance = $state(initializeAppearance());
   let viewportHeight = $state<number>();
   let drawer = $state<HTMLDialogElement>();
   let actionsMenu = $state<HTMLDetailsElement>();
@@ -177,7 +174,7 @@
     history.replaceState(null, '', url.pathname + url.search);
   });
   onMount(() => {
-    const stopAppearance = watchAppearance(value => appearance = value);
+    const stopAppearance = watchAppearance(() => {});
     const media = matchMedia(MOBILE_QUERY);
     const updateMobile = () => { mobile = media.matches; closeNavigation(); };
     updateMobile();
@@ -217,11 +214,6 @@
   .drawer-brand:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; border-radius: 4px; }
   .notification-notice { position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 900; padding: 12px; background: var(--raised); border: 1px solid var(--muted); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .notification-notice button { min-width: 44px; min-height: 44px; }
-  .peer-info { padding: 7px 10px; font-size: calc(11rem / 13); color: var(--muted); min-width: 0; }
-  .peer-info summary { cursor: pointer; min-height: 28px; display: list-item; }
-  .peer-info p { margin-bottom: 8px; overflow-wrap: anywhere; }
-  .peer-info select { font-size: calc(11rem / 13); margin-bottom: 8px; }
-  .peer-info button { width: 100%; font-size: calc(11rem / 13); overflow-wrap: anywhere; }
 </style>
 
 <svelte:head><title>{selected ? `${selected.name} · Herdr` : 'Herdr · Spaces'}</title></svelte:head>
@@ -302,21 +294,9 @@
 
 {#snippet settingsFooter()}
   <footer class="navigation-settings">
-    <button class="settings-button" aria-label="Settings" aria-haspopup="dialog" onclick={() => showSettings = true}>
+    <button class="settings-button" aria-label="Settings" title="Settings" aria-haspopup="dialog" onclick={() => showSettings = true}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 3-.6 2.2-2 .9-2-.6-2 3.5 1.5 1.6v2.3L2.4 14.5l2 3.5 2-.6 2 .9L9 21h4l.6-2.7 2-.9 2 .6 2-3.5-1.5-1.6v-2.3l1.5-1.6-2-3.5-2 .6-2-.9L13 3Z"/><circle cx="11" cy="12" r="3"/></svg>
-      <span>Settings</span><small>{appearance.preference === 'system' ? 'System' : appearance.preference === 'dark' ? 'Dark' : 'Light'}</small>
     </button>
-    {#if peerMode}
-      <details class="peer-info"><summary>{peerRoute || 'Peer connection'}</summary>
-        <p>Connector {displayVersion(peerBuild, peerVersion)} · Relay {displayVersion(modeBuild(serverMode), relayVersion)}</p>
-        <p>The laptop launcher manages automatic connector updates while it is running. Manual connectors must be updated on that computer; local-server update controls are not available here.</p>
-        <label for="peer-computer">Computer</label>
-        <select id="peer-computer" value={selectedComputer} onchange={event => onChooseComputer?.(event.currentTarget.value)}>
-          {#each computers as computer (computer.id)}<option value={computer.id}>{computer.name}</option>{/each}
-        </select>
-        <button onclick={onForget}>Forget this computer</button>
-      </details>
-    {:else}<UpdatePanel />{/if}
   </footer>
 {/snippet}
 

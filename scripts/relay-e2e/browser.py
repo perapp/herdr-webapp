@@ -373,6 +373,9 @@ def rotation_acceptance(primary, job):
         primary.live()
         native_proof(primary, job, 'rotation-second-existing-proof')
         with BrowserProfile() as fresh_second:
+            # Establish phone metrics before mounting App: changing devices after
+            # attachment remounts panes and can close a just-opened navigation drawer.
+            fresh_second.call('Emulation.setDeviceMetricsOverride', {'width': 390, 'height': 844, 'deviceScaleFactor': 1, 'mobile': True})
             pair_profile(fresh_second, job, job['secondPairing'])
             fresh_second.live()
             native_proof(fresh_second, job, 'rotation-second-pairing-proof')
@@ -516,6 +519,7 @@ finally:
             browser.call('Page.addScriptToEvaluateOnNewDocument', {'source': OBSERVER})
             browser.click('[aria-label="Toggle navigation"]')
             assert browser.js("document.querySelector('.drawer-brand')?.textContent==='Herdr-webapp' && ![...document.querySelectorAll('.navigation-settings button')].some(b=>['Connections','Install app'].includes(b.textContent.trim()))"), 'acceptance condition'
+            assert browser.js("(()=>{const f=document.querySelector('.navigation-settings'),b=f?.querySelector('button');return !!f && f.textContent.trim()==='' && f.children.length===1 && b?.getAttribute('aria-label')==='Settings' && !!b.querySelector('svg') && b.getBoundingClientRect().width>=44 && b.getBoundingClientRect().height>=44})()"), 'acceptance condition'
             browser.click('.navigation-settings .settings-button[aria-haspopup="dialog"]')
             browser.wait("!!document.querySelector('.preferences[open] .install-option')")
             browser.click('.version-option')
@@ -549,10 +553,13 @@ finally:
             browser.call('Page.navigate', {'url': job['origin'] + '/' + query + '#pair=' + fragment})
             browser.wait('location.pathname!==' + json.dumps(first) + " && location.hash==='' && !!window.__e2e")
             browser.live()
-            assert browser.js("document.querySelector('#peer-computer')?.options.length") == 2, 'acceptance condition'
             proof = str(Path(job['proofDir']) / 'second-computer-proof')
             browser.shell("printf '%s%s\\n' second-computer- proof > " + json.dumps(proof) +
                           "; printf '%s%s\\n' SECOND_COMPUTER_ OK", 'SECOND_COMPUTER_OK')
+            # Computer selection remains available from Connections, not a
+            # diagnostics dropdown in the icon-only drawer footer.
+            browser.call('Page.navigate', {'url': job['origin'] + '/' + query})
+            browser.wait("document.querySelectorAll('[data-testid=open-computer]').length===2")
             # A direct route must resume the first pinned key without a fresh pairing.
             browser.call('Page.navigate', {'url': job['origin'] + first + query})
             browser.wait('location.pathname===' + json.dumps(first) + ' && !!window.__e2e')
@@ -567,6 +574,13 @@ finally:
             browser.call('Emulation.setTouchEmulationEnabled', {'enabled': True})
             browser.wait("!!document.querySelector('.terminal-pane.compact')")
             browser.live()
+            browser.click('[aria-label="Toggle navigation"]')
+            assert browser.js("(()=>{const f=document.querySelector('.navigation-settings'),b=f?.querySelector('button');return !!f && f.textContent.trim()==='' && f.children.length===1 && b?.getAttribute('aria-label')==='Settings' && !!b.querySelector('svg') && b.getBoundingClientRect().width>=44 && b.getBoundingClientRect().height>=44})()"), 'acceptance condition'
+            image = browser.call('Page.captureScreenshot', {'format': 'png', 'captureBeyondViewport': False})
+            screenshot = ROOT / 'drawer-settings-phone.png'
+            screenshot.write_bytes(base64.b64decode(image['data']))
+            screenshot.chmod(0o600)
+            browser.click('[aria-label="Close navigation"]')
             proof = str(Path(job['proofDir']) / 'mobile-proof')
             browser.shell("printf '%s%s\\n' mobile- proof > " + json.dumps(proof) +
                           "; printf '%s%s\\n' MOBILE_ OK", 'MOBILE_OK')
