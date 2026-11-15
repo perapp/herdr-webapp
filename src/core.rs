@@ -178,6 +178,9 @@ impl Core {
     }
     async fn subscribe(&self) -> Result<()> {
         let mut events = Plain::connect(&self.path, false).await?;
+        // A successful fresh hello supersedes the last-known version, even if
+        // this older Core omits it. Disconnects alone retain the last known value.
+        self.state.send_modify(|s| apply_hello(s, &events.hello));
         let snapshot = tokio::time::timeout(
             Duration::from_secs(30),
             events.call("events.subscribe", json!({})),
@@ -186,7 +189,6 @@ impl Core {
         .context("core subscription timed out")??;
         let mut seq = snapshot["seq"].as_u64().unwrap_or(0);
         self.state.send_modify(|s| {
-            s["core"] = events.hello["core"].clone();
             s["terminals"] = snapshot["terminals"].clone();
             s["connected"] = true.into();
             s["error"] = Value::Null;
@@ -203,6 +205,22 @@ impl Core {
                 self.metadata.notify_one();
             }
         }
+    }
+}
+
+fn apply_hello(state: &mut Value, hello: &Value) {
+    state["core"] = hello["core"].clone();
+    let version = hello["version"].as_str().filter(|s| {
+        !s.is_empty()
+            && s.len() <= 128
+            && s.trim() == *s
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+' | b'_'))
+    });
+    if let Some(version) = version {
+        state["coreVersion"] = json!(version);
+    } else if let Some(object) = state.as_object_mut() {
+        object.remove("coreVersion");
     }
 }
 
@@ -295,6 +313,33 @@ fn reduce_event(state: &mut Value, event: &Value) {
 mod tests {
     use super::*;
     #[test]
+    fn hello_version_is_top_level_last_known_and_cleared_on_legacy_hello() {
+        let mut state = json!({"connected":false});
+        assert!(state.get("coreVersion").is_none());
+        apply_hello(
+            &mut state,
+            &json!({"version":"0.1.42-dev+abc","core":{"id":"native"}}),
+        );
+        assert_eq!(state["coreVersion"], "0.1.42-dev+abc");
+        assert!(state["core"].get("version").is_none());
+        state["connected"] = json!(false);
+        assert_eq!(state["coreVersion"], "0.1.42-dev+abc");
+        for version in [
+            json!(null),
+            json!(42),
+            json!(""),
+            json!("bad\nvalue"),
+            json!(" padded "),
+            json!({"version":"1"}),
+        ] {
+            apply_hello(&mut state, &json!({"version":version,"core":{"id":"next"}}));
+            assert!(state.get("coreVersion").is_none());
+        }
+        apply_hello(&mut state, &json!({"version":"1.0","core":{}}));
+        apply_hello(&mut state, &json!({"core":{"version":"not-top-level"}}));
+        assert!(state.get("coreVersion").is_none());
+    }
+    #[test]
     fn missed_replaces_snapshot_and_ignores_older_events() {
         let mut state = json!({"terminals":[{"address":"t1","title":"old"}]});
         let mut seq = 3;
@@ -342,6 +387,43 @@ mod tests {
             &json!({"type":"removed","terminal":"beta/t1","data":{}}),
         );
         assert!(state["terminals"].as_array().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn subscription_propagates_fresh_hello_version_and_clears_legacy_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("core.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            for hello in [
+                json!({"generation":1,"version":"0.1.42","core":{"id":"first"}}),
+                json!({"generation":1,"core":{"id":"legacy"}}),
+            ] {
+                let (io, _) = listener.accept().await.unwrap();
+                let mut io = BufReader::new(io);
+                for result in [hello, json!({"seq":0,"terminals":[]})] {
+                    let mut line = String::new();
+                    io.read_line(&mut line).await.unwrap();
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    io.get_mut()
+                        .write_all(
+                            format!("{}\n", json!({"id":request["id"],"result":result})).as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        let core = Core::new(path);
+        assert!(core.subscribe().await.is_err());
+        assert_eq!(core.state.borrow()["coreVersion"], "0.1.42");
+        // Same transition used by monitor on disconnect; no hello means no loss
+        // of the last-known version.
+        core.state.send_modify(|s| s["connected"] = json!(false));
+        assert_eq!(core.state.borrow()["coreVersion"], "0.1.42");
+        assert!(core.subscribe().await.is_err());
+        assert!(core.state.borrow().get("coreVersion").is_none());
+        assert_eq!(core.state.borrow()["core"]["id"], "legacy");
+        server.await.unwrap();
     }
     #[tokio::test]
     async fn persistent_rpc_handshake_and_errors() {

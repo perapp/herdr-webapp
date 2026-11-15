@@ -17,10 +17,12 @@ initializeAppearance();
 async function boot() {
   const root = document.getElementById('app')!;
   try {
+    let serverMode: unknown;
     const response = await fetch(channelPath('/api/mode'), { credentials: 'same-origin', cache: 'no-store' });
     if (response.status !== 404) {
       if (!response.ok) throw new Error('Mode check failed');
       const mode = await response.json();
+      serverMode = mode;
       if (mode.mode === 'relay') {
         mount(RelayApp, { target: root, props: { pairingFragment, serverMode: mode, sourceRevision: __HERDR_SOURCE_REVISION__, relayVersion: typeof mode.version === 'string' ? mode.version : '' } });
         pairingFragment = null; token = ''; return;
@@ -28,7 +30,7 @@ async function boot() {
       if (mode.mode !== 'local') throw new Error('Unsupported server mode');
     }
     pairingFragment = null;
-    mount(App, { target: root, props: { initialToken: token } }); token = '';
+    mount(App, { target: root, props: { initialToken: token, serverMode } }); token = '';
   } catch {
     pairingFragment = null; token = '';
     // Fail closed: do not accidentally send pairing or application traffic to a relay as local HTTP.

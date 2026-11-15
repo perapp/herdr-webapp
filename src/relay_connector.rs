@@ -54,6 +54,10 @@ pub struct ConnectorConfig {
     pub reset_pairings: bool,
     pub no_dashboard: bool,
 }
+fn accepted_payload() -> Value {
+    json!({"kind":"accepted","version":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"build":crate::build_info::BuildInfo::current()})
+}
+
 fn origin_url(input: &str, allow_loopback: bool) -> Result<crate::relay_channel::RelayEndpoint> {
     crate::relay_channel::RelayEndpoint::parse(input, allow_loopback)
 }
@@ -189,12 +193,7 @@ async fn session_inner(
             relay_crypto::verify(&key, message.as_bytes(), proof)?;
         }
     }
-    e.signed(
-        id,
-        1,
-        json!({"kind":"accepted","version":env!("CARGO_PKG_VERSION"),"protocolVersion":1}),
-    )
-    .await?;
+    e.signed(id, 1, accepted_payload()).await?;
     e.send(json!({"type":"authorize","sessionId":id})).await?;
     let mut ice = None;
     let mut offer = None;
@@ -729,6 +728,17 @@ async fn shutdown_signal() {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn accepted_keeps_legacy_contract_and_embeds_build_in_signed_body() {
+        let payload = super::accepted_payload();
+        assert_eq!(payload["kind"], "accepted");
+        assert_eq!(payload["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(payload["protocolVersion"], 1);
+        assert_eq!(
+            payload["build"],
+            serde_json::to_value(crate::build_info::BuildInfo::current()).unwrap()
+        );
+    }
     use super::*;
     #[tokio::test]
     async fn channel_budget_is_concurrent_and_released_on_handler_abort() {
@@ -780,6 +790,50 @@ mod tests {
         assert!(origin_url("http://127.0.0.1:7777", true).is_ok());
         assert!(origin_url("https://user@example.com", false).is_err());
         assert!(origin_url("https://example.com/path", false).is_err());
+    }
+    #[test]
+    fn accepted_build_is_authenticated_and_legacy_body_still_verifies() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let identity = Identity::load_or_create(&dir.path().join("identity.json")).unwrap();
+        for payload in [
+            accepted_payload(),
+            json!({"kind":"accepted","version":"legacy","protocolVersion":1}),
+        ] {
+            let body = payload.to_string();
+            let signature = identity.sign(transcript("https://r", "m", "s", 1, &body).as_bytes());
+            let mut envelope = json!({"kind":"signed","seq":1,"body":body,"signature":signature});
+            assert_eq!(
+                verify_envelope(
+                    &envelope,
+                    &identity.public_key(),
+                    "https://r",
+                    "m",
+                    "s",
+                    &mut 0
+                )
+                .unwrap(),
+                payload
+            );
+            let mut forged = payload;
+            forged["build"] = json!({"version":"forged"});
+            envelope["body"] = json!(forged.to_string());
+            assert!(
+                verify_envelope(
+                    &envelope,
+                    &identity.public_key(),
+                    "https://r",
+                    "m",
+                    "s",
+                    &mut 0
+                )
+                .is_err()
+            );
+        }
     }
     #[test]
     fn signed_envelopes_reject_replay_and_mutation() {

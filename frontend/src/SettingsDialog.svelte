@@ -1,9 +1,14 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
+  import VersionDialog from './VersionDialog.svelte';
   import { initializeAppearance, setAppearance, watchAppearance } from './lib/appearance';
   import type { AppearancePreference } from './lib/appearance';
   import { initializeFontSize, watchFontSize, setFontSize, defaultFontSize, minFontSize, maxFontSize } from './lib/fontSize';
-  let { close }: { close: () => void } = $props();
+  let { close, peerMode = false, serverMode, peerBuild, peerVersion = '', coreVersion, connected = false }: { close: () => void; peerMode?: boolean; serverMode?: unknown; peerBuild?: unknown; peerVersion?: string; coreVersion?: string; connected?: boolean } = $props();
+  let showVersions = $state(false);
+  let versionButton: HTMLButtonElement;
+  function openVersions() { dialog.close(); showVersions = true; }
+  async function closeVersions() { showVersions = false; await tick(); dialog.showModal(); versionButton.focus({ preventScroll: true }); }
   let dialog: HTMLDialogElement;
   let appearance = $state(initializeAppearance());
   let saved = $state(true);
@@ -50,5 +55,8 @@
     </div>
     <button class="quiet font-size-reset" disabled={fontSize === defaultFontSize} onclick={() => fontSaved = setFontSize(defaultFontSize)}>Reset to {defaultFontSize} px</button>
   </fieldset>
+  <button class="quiet version-option" bind:this={versionButton} aria-haspopup="dialog" onclick={openVersions}>Version</button>
   <p class="settings-note" role="status">{saved && fontSaved ? 'Applies immediately. Saved only in this browser.' : 'Applied for now. Browser storage is unavailable, so this choice may not survive a reload.'}</p>
 </dialog>
+{#if showVersions}<VersionDialog close={closeVersions} {peerMode} {serverMode} {peerBuild} {peerVersion} {coreVersion} {connected} />{/if}
+<style>.version-option { min-height: 44px; width: 100%; text-align: left; }</style>

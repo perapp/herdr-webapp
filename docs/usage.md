@@ -328,6 +328,14 @@ Herdr.app. This is intentionally not a per-command sandbox or a multi-user syste
   adjustable from 8–28 px (default 13), with a slider, step buttons and reset.
   It applies immediately to all panes, refits through native resize semantics,
   and is saved only in this browser.
+  **Version** opens a read-only popup for the loaded browser app, the connected
+  webapp/connector, the serving relay, and the connected Herdr Core. Main/source
+  builds include their reported commit and commit date/time, with an explicit
+  uncommitted-changes indicator when applicable. The browser version identifies
+  its loaded assets, not a possibly newer relay. Local mode marks the relay as
+  unused; legacy or missing metadata is shown as unavailable, never inferred.
+  Current Core reports its version but not its commit/date, and disconnected Core
+  information is labeled last observed. Commit time is not build/deployment time.
 - Real xterm terminals: raw framed attach output, keyboard/paste, focus and PTY
   resize. Byte credit is replenished only after xterm parses the output.
 - A native-phone-app interaction model: terminals are **interactive immediately**.

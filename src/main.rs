@@ -1,5 +1,6 @@
 mod attachments;
 mod auth;
+mod build_info;
 mod commands;
 mod config;
 mod core;
@@ -363,9 +364,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn local_mode() -> Value {
+    json!({"mode":"local","version":relay_crypto::VERSION,"protocolVersion":relay_crypto::PROTOCOL_VERSION,"build":build_info::BuildInfo::current()})
+}
+
 pub fn router(app: Shared) -> Router {
     Router::new()
-        .route("/api/mode", get(|| async { Json(json!({"mode":"local","version":relay_crypto::VERSION,"protocolVersion":relay_crypto::PROTOCOL_VERSION})) }))
+        .route("/api/mode", get(|| async { Json(local_mode()) }))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/session", get(session))
@@ -505,6 +510,18 @@ async fn asset(uri: Uri) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_mode_adds_build_without_changing_legacy_fields() {
+        let mode = local_mode();
+        assert_eq!(mode["mode"], "local");
+        assert_eq!(mode["version"], relay_crypto::VERSION);
+        assert_eq!(mode["protocolVersion"], relay_crypto::PROTOCOL_VERSION);
+        assert_eq!(
+            mode["build"],
+            serde_json::to_value(build_info::BuildInfo::current()).unwrap()
+        );
+    }
+
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
     fn app() -> Shared {

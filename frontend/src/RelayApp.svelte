@@ -87,7 +87,7 @@
   </aside>
 {/if}
 {#if connectionState.service}
-  <App peerMode={true} peerVersion={connectionState.version} {relayVersion} peerRoute={connectionState.route} onForget={forget} computers={computers.map(c => ({ id: c.machineId, name: c.name || `Computer ${c.machineId.slice(0, 8)}` }))} selectedComputer={selected} onChooseComputer={choose} />
+  <App {serverMode} peerBuild={connectionState.build} peerMode={true} peerVersion={connectionState.version} {relayVersion} peerRoute={connectionState.route} onForget={forget} computers={computers.map(c => ({ id: c.machineId, name: c.name || `Computer ${c.machineId.slice(0, 8)}` }))} selectedComputer={selected} onChooseComputer={choose} />
 {:else}
   <main class="login-shell">
     <section class="login-card" aria-labelledby="relay-heading">

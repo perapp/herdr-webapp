@@ -342,7 +342,7 @@ pub async fn run(config: RelayConfig, catalog: Option<Router>) -> Result<()> {
 }
 async fn mode(State(s): State<Arc<Relay>>) -> Json<Value> {
     Json(
-        json!({"mode":"relay","version":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"entrypointProtocolVersion":1,"publicOrigin":s.config.public_origin,"channel":if s.config.base_path == "/" {"stable"} else {"main"},"basePath":s.config.base_path,"revision":s.config.revision,"buildRevision":crate::build_revision(),"launcherUrl":format!("{}run", s.config.base_path)}),
+        json!({"mode":"relay","version":env!("CARGO_PKG_VERSION"),"protocolVersion":1,"entrypointProtocolVersion":1,"publicOrigin":s.config.public_origin,"channel":if s.config.base_path == "/" {"stable"} else {"main"},"basePath":s.config.base_path,"revision":s.config.revision,"buildRevision":crate::build_revision(),"build":crate::build_info::BuildInfo::current(),"launcherUrl":format!("{}run", s.config.base_path)}),
     )
 }
 async fn bootstrap(State(s): State<Arc<Relay>>) -> Response {
@@ -832,6 +832,26 @@ mod tests {
             },
         );
         rx
+    }
+    #[tokio::test]
+    async fn mode_preserves_legacy_fields_and_adds_build() {
+        let mut relay = state();
+        relay.config.base_path = "/main/".into();
+        relay.config.revision = Some("a".repeat(40));
+        let Json(mode) = super::mode(State(Arc::new(relay))).await;
+        assert_eq!(mode["mode"], "relay");
+        assert_eq!(mode["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(mode["protocolVersion"], 1);
+        assert_eq!(mode["entrypointProtocolVersion"], 1);
+        assert_eq!(mode["channel"], "main");
+        assert_eq!(mode["basePath"], "/main/");
+        assert_eq!(mode["revision"], "a".repeat(40));
+        assert_eq!(mode["buildRevision"], json!(crate::build_revision()));
+        assert_eq!(mode["launcherUrl"], "/main/run");
+        assert_eq!(
+            mode["build"],
+            serde_json::to_value(crate::build_info::BuildInfo::current()).unwrap()
+        );
     }
     #[test]
     fn origins_and_config() {

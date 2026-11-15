@@ -16,7 +16,7 @@
   import type { SharedDocument, SharedSpace, SharedTab, LayoutNode } from './lib/schema';
   import { blankView, loadView, saveView } from './lib/view';
 
-  let { initialToken = '', peerMode = false, peerVersion = '', relayVersion = '', peerRoute = '', onForget, computers = [], selectedComputer = '', onChooseComputer }: { initialToken?: string; peerMode?: boolean; peerVersion?: string; relayVersion?: string; peerRoute?: string; onForget?: () => void; computers?: { id: string; name: string }[]; selectedComputer?: string; onChooseComputer?: (id: string) => void } = $props();
+  let { initialToken = '', peerMode = false, peerVersion = '', relayVersion = '', peerRoute = '', serverMode, peerBuild, onForget, computers = [], selectedComputer = '', onChooseComputer }: { initialToken?: string; peerMode?: boolean; peerVersion?: string; relayVersion?: string; peerRoute?: string; serverMode?: unknown; peerBuild?: unknown; onForget?: () => void; computers?: { id: string; name: string }[]; selectedComputer?: string; onChooseComputer?: (id: string) => void } = $props();
   let auth = $state<'checking' | 'signed-out' | 'signed-in'>('checking');
   let token = $state('');
   let loginBusy = $state(false);
@@ -274,7 +274,7 @@
   </div>
 {/if}
 {#if modal}<TopologyDialog {...modal} close={() => modal = null} saved={topologySaved} />{/if}
-{#if showSettings}<SettingsDialog close={() => showSettings = false} />{/if}
+{#if showSettings}<SettingsDialog close={() => showSettings = false} {peerMode} {serverMode} {peerBuild} {peerVersion} coreVersion={snapshot.coreVersion} connected={ready} />{/if}
 
 {#snippet settingsFooter()}
   <footer class="navigation-settings">

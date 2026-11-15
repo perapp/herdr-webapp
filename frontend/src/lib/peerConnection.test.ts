@@ -98,6 +98,18 @@ afterEach(() => {
 });
 
 describe('PeerConnection signaling authentication and epochs', () => {
+  it('carries authenticated current-session build only, and resets it on reconnect', async () => {
+    const { socket, states } = setup(); await join(socket); ice(socket);
+    const build = { version: 'native', revision: 'a'.repeat(40), commitDate: '2026-06-03T12:00:00Z', dirty: false };
+    signed(socket, { kind: 'accepted', protocolVersion: 1, version: '1.2.3', build });
+    await flush(); services[0].ready(); await flush();
+    expect(states.filter(state => state.service).every(state => state.build?.revision === build.revision)).toBe(true);
+    expect(saveComputer).toHaveBeenCalledWith(expect.not.objectContaining({ build: expect.anything() }));
+    socket.onclose?.(); await vi.advanceTimersByTimeAsync(500);
+    const retry = Socket.instances.at(-1)!; await join(retry, 'fresh'); ice(retry, 'fresh'); accept(retry, 'fresh');
+    await flush(); services.at(-1)!.ready(); await flush();
+    expect(states.at(-1)?.build).toEqual({ version: '1.2.3', revision: null, commitDate: null, dirty: null });
+  });
   it('notifies revision checks only at live signaling open, not connected route updates', async () => {
     const opened = vi.fn(), states: ConnectionState[] = [];
     const connection = new PeerConnection({ computer }, state => states.push(state), false, opened);

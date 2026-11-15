@@ -2,8 +2,10 @@ import { channelContext, channelPath } from './channel';
 import { authTranscript, signalTranscript, generateIdentity, randomNonce, pairProof, sign, verify, saveComputer } from './peerCrypto';
 import type { Pairing, Computer, BrowserIdentity } from './peerCrypto';
 import { PeerService } from './peerService';
+import { normalizeBuild, versionText } from './versions';
+import type { BuildInfo } from './versions';
 
-export interface ConnectionState { status: string; service?: PeerService; version?: string; route?: string; error?: string }
+export interface ConnectionState { status: string; service?: PeerService; version?: string; build?: BuildInfo; route?: string; error?: string }
 export interface PeerTarget { computer?: Computer; pairing?: Pairing }
 /** A reconnect creates a new signaling session, PC, service and all channel epochs. */
 export class PeerConnection {
@@ -59,6 +61,7 @@ export class PeerConnection {
       let offered = false;
       let answered = false;
       let connectorVersion = '';
+      let connectorBuild: BuildInfo | undefined;
       let ice: RTCIceServer[] | undefined;
       const send = (data: object) => { guard(); if (socket?.readyState !== WebSocket.OPEN) throw new Error('Signaling disconnected'); socket.send(JSON.stringify(data)); };
       const signed = async (body: object) => {
@@ -78,7 +81,7 @@ export class PeerConnection {
           await saveComputer(saved); guard();
           this.target = { computer: saved }; // Capability is dropped only after authenticated control ready.
           this.attempts = 0; clearTimeout(deadline);
-          this.update({ status: 'Connected', service, version: connectorVersion, route: this.forceTurn ? 'TURN requested' : 'Peer connection' });
+          this.update({ status: 'Connected', service, version: connectorVersion, build: connectorBuild, route: this.forceTurn ? 'TURN requested' : 'Peer connection' });
           // A fresh authenticated epoch renews expiring TURN credentials. Never replay input.
           if (iceExpiresAt) {
             const remaining = iceExpiresAt * 1000 - Date.now();
@@ -95,7 +98,7 @@ export class PeerConnection {
               route = local?.candidateType === 'relay' || remote?.candidateType === 'relay' ? 'Relayed (TURN)' : 'Direct';
             }
           });
-          this.update({ status: 'Connected', service, version: connectorVersion, route });
+          this.update({ status: 'Connected', service, version: connectorVersion, build: connectorBuild, route });
           // Direct sessions do not need TURN credentials or periodic interruption.
           // TURN refresh deliberately reconnects; in-place ICE renegotiation is not implemented.
           if (route === 'Direct') clearTimeout(renewal);
@@ -139,7 +142,7 @@ export class PeerConnection {
           const body = JSON.parse(envelope.body);
           if (body.kind === 'accepted') {
             if (accepted || body.protocolVersion !== 1 || typeof body.version !== 'string') throw new Error('Invalid connector acceptance');
-            accepted = true; connectorVersion = body.version; this.update({ status: 'Establishing private peer connection…' }); await offer();
+            accepted = true; connectorBuild = normalizeBuild(body.build, body.version); connectorVersion = versionText(body.version) || ''; this.update({ status: 'Establishing private peer connection…' }); await offer();
           } else if (body.kind === 'answer') {
             if (!accepted || !offered || answered || !pc || typeof body.sdp !== 'string') throw new Error('Unexpected answer');
             answered = true; await pc.setRemoteDescription({ type: 'answer', sdp: body.sdp }); guard();

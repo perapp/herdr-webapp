@@ -18,6 +18,7 @@ export interface State {
   connected: boolean;
   error?: string;
   core?: RecordValue;
+  coreVersion?: string;
   terminals: TerminalInfo[];
   machines: RecordValue[];
   documents: SharedDocument[];
@@ -69,6 +70,7 @@ export function parseState(value: unknown): State {
   return {
     connected: v.connected, error: typeof v.error === 'string' ? v.error : undefined,
     core: record(v.core) ? v.core : undefined,
+    coreVersion: typeof v.coreVersion === 'string' && v.coreVersion.length > 0 && v.coreVersion.length <= 160 && !Array.from(v.coreVersion).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ? v.coreVersion : undefined,
     terminals: list(v.terminals).map(v => object(v) as TerminalInfo),
     machines: list(v.machines).map(object), documents: list(v.documents).map(parseDocument),
   };
