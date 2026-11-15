@@ -12,6 +12,8 @@
   import { MOBILE_QUERY, adjacentPane, closeImpact, drawnTerminals, paneTitle, panePosition, resolvePane, selectCreated, selectPane, visiblePanes } from './lib/navigation';
   import { keyboardDetector, longPress, swipe } from './lib/gestures';
   import RowMenu from './RowMenu.svelte';
+  import { keepPane, mountedPanes } from './lib/keptPanes';
+  import type { KeptPane } from './lib/keptPanes';
   import type { RowMenuItem } from './RowMenu.svelte';
   import { agentTree } from './lib/agents';
   import type { AgentNode } from './lib/agents';
@@ -242,6 +244,15 @@
       { label: 'Close tab', danger: true, disabled, run: () => treeAction('close-tab', document, space, item) },
     ] };
   }
+  // Phones show one pane; the ones recently shown stay mounted and attached.
+  let keptPanes = $state<KeptPane[]>([]);
+  const shownPane = $derived(mobile && selected && tab && activePane ? { on: selected.document.on, space: selected.space.id, tab: tab.id, pane: activePane.id } : undefined);
+  $effect(() => {
+    const shown = shownPane;
+    // Leaving phone layout releases every kept stream; desktop mounts the tab.
+    untrack(() => { keptPanes = shown ? keepPane(keptPanes, shown) : mobile ? keptPanes : []; });
+  });
+  const phonePanes = $derived(mobile ? mountedPanes(keptPanes, snapshot.documents, shownPane) : []);
   const position = $derived(selected && tab && activePane ? panePosition(selected.space, tab.id, activePane.id) : undefined);
   /** Top-bar swipe: the next or previous pane of this workspace. Navigation only;
    * it never focuses input or opens the keyboard.
@@ -351,6 +362,8 @@
   .drawer-brand:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; border-radius: 4px; }
   .notification-notice { position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 900; padding: 12px; background: var(--raised); border: 1px solid var(--muted); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .notification-notice button { min-width: 44px; min-height: 44px; }
+  .kept-pane { display: flex; flex: 1; min-width: 0; min-height: 0; }
+  .kept-pane[hidden] { display: none; }
   /* Horizontal swipes on the location switch panes; vertical pans stay the browser's. */
   .mobile-location { touch-action: pan-y; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   .pane-position { flex-shrink: 0; margin-left: auto; padding: 0 4px; color: var(--muted); font-size: calc(10rem / 13); font-variant-numeric: tabular-nums; }
@@ -421,11 +434,12 @@
       {#if selected && tab}
         <div class="pane-workspace">
           {#if mobile}
-            {#if activePane}
-              {#key viewKey(selected.document.on, selected.space.id, tab.id, activePane.id)}
-                <PaneTree node={activePane} on={selected.document.on} terminals={snapshot.terminals} {focused} stacks={view.stacks} compact showKeys={showKeys} focus={(id) => view.focused[tabKey] = id} selectStack={selectStack} />
-              {/key}
-            {:else}<section class="workspace-empty"><h2>No visible panes</h2><p>Choose another tab from the menu or create one.</p><button onclick={() => openAction('new-tab')}>New tab</button></section>{/if}
+            {#each phonePanes as kept (kept.key)}
+              <div class="kept-pane" hidden={!kept.active}>
+                <PaneTree node={kept.node} on={kept.on} terminals={snapshot.terminals} focused={kept.active ? focused : ''} stacks={view.stacks} compact visible={kept.active} showKeys={kept.active && showKeys} focus={(id) => { if (kept.active) view.focused[tabKey] = id; }} selectStack={selectStack} />
+              </div>
+            {/each}
+            {#if !activePane}<section class="workspace-empty"><h2>No visible panes</h2><p>Choose another tab from the menu or create one.</p><button onclick={() => openAction('new-tab')}>New tab</button></section>{/if}
           {:else}
             {#key tabKey}
               <PaneTree node={zoomed || tab.root} on={selected.document.on} terminals={snapshot.terminals} {focused} stacks={view.stacks} {showKeys} focus={(id) => view.focused[tabKey] = id} selectStack={selectStack} />

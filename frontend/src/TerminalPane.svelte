@@ -32,7 +32,7 @@
   import { screenText } from './lib/terminalText';
   import { canReadClipboard, writeClipboard } from './lib/clipboard';
 
-  let { address, title, reported = 'unreported', active, onfocus, compact = false, showKeys = false, agent, program }: { address: string; title: string; reported?: string; active: boolean; onfocus: () => void; compact?: boolean; showKeys?: boolean; agent?: AgentKind; program?: ProgramAppearance } = $props();
+  let { address, title, reported = 'unreported', active, onfocus, compact = false, showKeys = false, visible = true, agent, program }: { address: string; title: string; reported?: string; active: boolean; onfocus: () => void; compact?: boolean; showKeys?: boolean; visible?: boolean; agent?: AgentKind; program?: ProgramAppearance } = $props();
   let host: HTMLDivElement;
   let status = $state('Connecting');
   let detail = $state('Connecting to the terminal.');
@@ -43,6 +43,11 @@
   let prepareInsertion: (event: Event) => (text: string) => boolean = () => () => false;
   let copyScreen: (event: MouseEvent) => Promise<void> = async () => {};
   let jumpBottom: () => void = () => {};
+  // A phone pane kept mounted while another is shown: still attached and
+  // receiving output, but not laid out. See lib/keptPanes.ts.
+  let conceal: () => void = () => {};
+  let reveal: () => void = () => {};
+  $effect(() => { if (visible) reveal(); else conceal(); });
   // Latched Ctrl/Alt apply to the next key only, then release.
   let mods = $state(noModifiers());
   let scrolledUp = $state(false);
@@ -178,6 +183,25 @@
     const viewport = host.querySelector('.xterm-viewport');
     viewport?.addEventListener('scroll', updateScrolled, { passive: true });
     jumpBottom = () => { term.scrollToBottom(); updateScrolled(); };
+    let parked: { bottom: boolean; line: number } | undefined;
+    conceal = () => {
+      const buffer = term.buffer.active;
+      parked ||= { bottom: buffer.viewportY >= buffer.baseY, line: buffer.viewportY };
+      stopRepeat(); scrolling.reset();
+    };
+    reveal = () => {
+      const was = parked; parked = undefined;
+      if (!was) return;
+      // Showing a pane proposes this viewport again, exactly as a fresh attach
+      // would, and restores where the reader was; the grid may have changed.
+      viewportBounds = '';
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        resize();
+        if (was.bottom) term.scrollToBottom(); else term.scrollToLine(was.line);
+        term.refresh(0, term.rows - 1); updateScrolled();
+      });
+    };
     canPaste = canReadClipboard();
     copyScreen = async event => {
       if (!event.isTrusted) return;

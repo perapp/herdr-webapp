@@ -491,6 +491,12 @@ preferences disable momentum.
 - **Swipe the top bar** left/right for the next/previous pane of the workspace
   (tabs in order, wrapping). It never focuses input or opens the keyboard.
   **Long-press the top bar** for the current pane's actions.
+- **Pane switching is instant on phones.** The six most recently shown panes
+  stay mounted and attached while another is on screen, so returning needs no
+  new stream or replay and keeps the scroll position. Kept panes still receive
+  output (and use bandwidth); they are not laid out, never take input, and
+  propose their viewport again only when shown. The least recently shown pane
+  beyond six is released, as are all of them on leaving the phone layout.
 - **Long-press** (or right-click / the Menu key) a workspace, tab or pane in the
   drawer for rename, split and close. The visible **+** still creates.
 - **Close pane / tab / workspace** follow the desktop: the last pane closes its
