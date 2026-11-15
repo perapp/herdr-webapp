@@ -36,6 +36,7 @@ check: setup
 	cargo clippy --locked --all-targets -- -D warnings
 	cargo test --locked
 	cargo test --locked -p webrtc-ice --lib turn_stream
+	python3 -B distribution/test_core_bootstrap.py
 	python3 -B distribution/test_release.py
 	python3 -B distribution/test_relay_launcher.py
 	python3 -B distribution/test_main_channel.py
@@ -67,6 +68,7 @@ dev-embedded: frontend
 	cargo run --locked -- --port 9001 $(ARGS)
 
 smoke:
+	python3 -B scripts/test_terminal_provenance.py
 	uv run --script scripts/smoke.py --binary "$(CURDIR)/target/release/herdr-webapp"
 
 clean:

@@ -64,6 +64,11 @@ but does not establish cellular, external-network or physical-phone acceptance.
   Each action opens a new CDP session. Reload registers the passive observer on
   that session **before** navigation, rather than relying on the original pairing
   session's new-document registration or injecting after the app creates its peer.
+- A printed HTTP(S) link opens a real client-browser tab directly, with no in-app dialog.
+- Desktop and phone-sized raw-PTY editors retain a partial draft across tool
+  completion repaint, CPR/DA/color queries and focus modes; only explicit Enter
+  submits it. This does not prove every physical phone IME or external agent
+  message-injection path.
 - Connections root remains a list with one remembered computer; Settings remains
   available before pairing, with Install app inside it. The Herdr-webapp menu
   heading links back to Connections. `/launch` resumes the

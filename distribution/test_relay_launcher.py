@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -115,6 +116,7 @@ def finish(sig, frame):
 signal.signal(signal.SIGTERM, finish)
 signal.signal(signal.SIGINT, finish)
 event('start')
+events.with_suffix('.control').write_text(os.environ.get('HERDR_CONNECTOR_CONTROL_SOCKET', ''))
 state = pathlib.Path(sys.argv[sys.argv.index('--state-dir') + 1])
 pair = state / 'pairing-test'
 if not pair.exists():
@@ -146,11 +148,11 @@ while True:
         if revision:
             self.manifest.update(schemaVersion=2, channel='main', revision=revision)
 
-    def launch(self):
+    def launch(self, auto_update=True):
         child = subprocess.Popen([sys.executable, str(SCRIPT), '--relay-url', self.url,
                                   '--allow-http-loopback', '--cache-dir', str(self.root / 'cache'),
                                   '--state-dir', str(self.root / 'state'), '--poll-interval', '0.1',
-                                  '--ready-timeout', '0.3', '--network-timeout', '1'],
+                                  '--ready-timeout', '0.3', '--network-timeout', '1', '--no-install-core'] + (['--auto-update'] if auto_update else []),
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.children.append(child)
         return child
@@ -183,6 +185,44 @@ while True:
             with self.assertRaises(launcher.Error):
                 launcher.probe_release(binary, asset)
             self.assertEqual(log.read_text().splitlines(), ['--package-version'])
+
+    def control(self, action, **kwargs):
+        path = self.events.with_suffix('.control').read_text()
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.settimeout(2)
+            conn.connect(path)
+            conn.sendall(json.dumps(dict(schemaVersion=1, action=action, **kwargs)).encode() + b'\n')
+            return json.loads(conn.recv(16384))
+
+    def test_default_checks_only_then_intentional_update_reuses_socket(self):
+        child = self.launch(auto_update=False)
+        self.wait_ready()
+        control = self.events.with_suffix('.control').read_text()
+        self.publish('1.1.0')
+        eventually(lambda: self.control('status')['status'] == 'available')
+        self.assertNotIn('start 1.1.0', self.log())
+        self.assertEqual(self.control('update', expectedVersion='9.9.9')['status'], 'failed')
+        self.assertEqual(self.control('update', expectedVersion='1.1.0')['status'], 'updating')
+        self.wait_ready('1.1.0')
+        self.assertEqual(self.events.with_suffix('.control').read_text(), control)
+        self.assertEqual(self.control('status')['currentVersion'], '1.1.0')
+        self.assertIsNone(child.poll())
+
+    def test_main_offers_revision_cas_and_reports_human_current_version(self):
+        self.publish('1.0.0', revision='a' * 40)
+        self.url += '/main'
+        self.launch(auto_update=False)
+        self.wait_ready()
+        data = self.control('status')
+        self.assertEqual(data['currentVersion'], '260603140506+0200-aaaaaaa')
+        self.assertEqual(data['currentRevision'], 'a' * 40)
+        self.publish('1.0.0', revision='b' * 40)
+        eventually(lambda: self.control('status')['status'] == 'available')
+        self.assertEqual(self.control('status')['availableRevision'], 'b' * 40)
+        self.assertEqual(self.control('update', expectedVersion='1.0.0')['status'], 'failed')
+        self.assertEqual(self.control('update', expectedVersion='1.0.0', expectedRevision='b' * 40)['status'], 'updating')
+        eventually(lambda: self.control('status')['currentRevision'] == 'b' * 40)
+        self.assertEqual(self.control('status')['currentVersion'], '260603140506+0200-bbbbbbb')
 
     def test_update_download_keeps_old_alive_and_retains_pairing(self):
         child = self.launch()

@@ -7,7 +7,7 @@
   import { initializeAppearance, setAppearance, watchAppearance } from './lib/appearance';
   import type { AppearancePreference } from './lib/appearance';
   import { initializeFontSize, watchFontSize, setFontSize, defaultFontSize, minFontSize, maxFontSize } from './lib/fontSize';
-  let { close, peerMode = false, serverMode, peerBuild, peerVersion = '', coreVersion, connected = false }: { close: () => void; peerMode?: boolean; serverMode?: unknown; peerBuild?: unknown; peerVersion?: string; coreVersion?: string; connected?: boolean } = $props();
+  let { close, peerMode = false, serverMode, peerBuild, peerVersion = '', coreVersion, connected = false, computerName = 'Connected computer' }: { close: () => void; peerMode?: boolean; serverMode?: unknown; peerBuild?: unknown; peerVersion?: string; coreVersion?: string; connected?: boolean; computerName?: string } = $props();
   let showVersions = $state(false);
   let installMessage = $state('');
   let versionButton: HTMLButtonElement;
@@ -103,7 +103,7 @@
     </button>
   </footer>
 </dialog>
-{#if showVersions}<VersionDialog close={closeVersions} {peerMode} {serverMode} {peerBuild} {peerVersion} {coreVersion} {connected} />{/if}
+{#if showVersions}<VersionDialog close={closeVersions} {peerMode} {serverMode} {peerBuild} {peerVersion} {coreVersion} {connected} {computerName} />{/if}
 {#if installMessage}<InstallDialog message={installMessage} close={closeInstall} />{/if}
 
 <style>

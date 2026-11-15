@@ -23,8 +23,13 @@ Once the relay is deployed with an approved release catalog:
 curl -fsSL https://herdr-webapp.perapp.dev/run | sh
 ```
 
-Run this on the computer already running Herdr Core. It requires curl and Python
-3.9+, but no GitHub login or permanent installation. The launcher verifies the
+Run this on the computer you want to use. It requires curl and Python 3.9+,
+but no GitHub login. If Core is missing, the launcher announces and installs a
+compatible stable Core using its official installer, handles PATH immediately,
+and starts it with its supported lifecycle command. A compatible running Core
+is reused without restart; an incompatible or managed installation is never
+silently replaced. Use `sh -s -- --no-install-core` for managed/custom setups.
+See [bootstrap and update controls](installation-updates.md). The launcher verifies the
 public native executable, keeps a private per-origin cache/state, and supervises
 `connect-relay`. Scan its terminal QR using your phone camera and open the link.
 The QR pins the laptop identity and carries an expiring, one-use pairing secret;
@@ -47,9 +52,23 @@ TURN credentials are short-lived; renewal currently makes a brief authenticated
 reconnection, not in-place ICE renegotiation. Direct sessions do not periodically
 reconnect. Physical iOS/Android keyboards require separate device validation.
 
-The supervisor checks compatible newer versions while the connector runs, verifies
-size/SHA-256/`--version`, and performs a readiness-gated restart with rollback if
-startup fails. Laptop identity and pairings persist; Core and its terminals are
+HTTP(S) links in terminal output open directly in the client’s browser when
+clicked/tapped, including supported OSC 8 links. There is no in-app link popup or
+remote-computer opener. Other schemes are not activated. Terminal-generated
+replies are tagged independently from real keyboard/IME input; a stale textarea
+flush cannot authorize Enter. Explicit keyboard/accessory Enter and intentional
+multiline paste remain supported. Preserving human input provenance also lets Core
+hold queued agent/completion messages while a draft is present. Core’s own bounded
+draft-wait policy is unchanged (currently 60 seconds by default); this is not an
+indefinite editor lock. `make smoke` includes an isolated Core regression proving
+that human-tagged drafts defer message delivery until an explicit Enter, while
+mis-tagged automatic bytes bypass that protection.
+
+The supervisor checks for compatible connector updates every 30 seconds. By
+default it only offers them: use Settings → Version → Connector → Update.
+`--auto-update` explicitly opts into automatic connector installation. Installation
+verifies size/SHA-256 and package/source identity, then performs a readiness-gated
+restart with rollback if startup fails. Laptop identity and pairings persist; Core and its terminals are
 never restarted. This is **not** zero-interruption updating or continuous
 end-to-end health rollback. Stopping the launcher stops its connector, not Core.
 
@@ -121,13 +140,14 @@ GitHub Actions builds and tests all three native platforms on main pushes.
 The hosted service checks the latest complete successful publication every five
 minutes, keeping the last usable main build serving during CI or download
 failures. Activation can briefly interrupt connections. The launcher verifies
-and follows the matching connector revision automatically.
+and offers the matching connector revision. Installation requires an explicit
+Update action unless its launcher was started with `--auto-update`.
 
 The main browser checks for a changed revision on reconnect and when returning
-to the foreground. It reloads automatically when safe, not on ordinary network
-interruptions. Pending pairing, input composition, uploads or unsent drafts defer
-the reload and show **Update ready**. Finish pending work, or explicitly reload
-with the displayed draft-discard warning. Pairing/preferences remain stored;
+to the foreground. A changed deployment shows **Update ready**; reload is an
+explicit action, not an automatic side effect of a network interruption. Pending
+pairing, input composition or uploads block reload. Finish pending work and use
+the displayed draft-discard warning to decide when to reload. Pairing/preferences remain stored;
 input and uploads are never replayed and the phone keyboard is not opened.
 Tabs opened before this feature need one manual refresh to install it.
 
@@ -200,8 +220,10 @@ SHA-256 checksum and executable version, and installs per user under
 `${XDG_DATA_HOME:-~/.local/share}/herdr-webapp`, with a CLI symlink in
 `~/.local/bin`. Ensure that directory is on `PATH`. Linux GNU builds target the
 Ubuntu 22.04 / glibc 2.35 baseline. Windows and Intel macOS are not supported.
-A compatible running `herdr-core` is still required; installing or updating this
-web app does not install, stop or update Core.
+The release installer also prepares a missing compatible stable Core and starts
+it if needed. Existing compatible Cores are reused; incompatible/managed ones are
+not overwritten. Pass `--no-install-core` to handle dependencies yourself.
+Starting the standalone webapp never installs or upgrades Core.
 
 Use `HERDR_WEB_VERSION=0.0.1` to select a specific release. Installation paths can
 be overridden with absolute `HERDR_WEB_INSTALL_DIR` and `HERDR_WEB_BIN_DIR` paths.
@@ -210,8 +232,9 @@ re-running the installer on a running managed installation, or use its update UI
 
 ## Updating local/LAN installations
 
-The bottom of the burger menu shows the running server version and **Check for
-updates**. Release checks run shortly after startup and hourly afterward. When a
+Settings → Version shows the loaded browser app, server/connector and shared
+Core separately, with applicable **Check for updates** and **Update** controls.
+Local server controls are also available at the bottom of the burger menu. Release checks run shortly after startup and hourly afterward. When a
 new version is available, **Update…** opens a confirmation popup. **Update and
 restart** downloads and verifies the matching GitHub release, stages it, then
 restarts only the web server. Core and its terminals keep running. The browser

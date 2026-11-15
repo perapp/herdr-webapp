@@ -33,9 +33,9 @@ curl --fail --silent --show-error --proto '=https' --max-time 60 --max-filesize 
 # With curl|sh stdin is the script pipe. Restore an interactive terminal when available.
 # Python remains a child so the shell can always remove its temporary bootstrap.
 if [ -r /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
-    python3 "$work/launcher.py" --relay-url "$origin" </dev/tty &
+    python3 "$work/launcher.py" --relay-url "$origin" "$@" </dev/tty &
 else
-    python3 "$work/launcher.py" --relay-url "$origin" </dev/null &
+    python3 "$work/launcher.py" --relay-url "$origin" "$@" </dev/null &
 fi
 child=$!
 # Forward signals only to our own child, and wait for it to reap its connector.

@@ -7,8 +7,13 @@
   import type { SocketLike } from './lib/transport';
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
+  import { WebLinksAddon } from '@xterm/addon-web-links';
+  import { openTerminalLink } from './lib/terminalLinks';
+  import { terminalInput } from './lib/terminalInput';
+  import type { InputSource } from './lib/terminalInput';
+  import { TerminalSubmission } from './lib/terminalSubmission';
   import '@xterm/xterm/css/xterm.css';
-  import { InputGate, binaryInput, inputChunks, retryDelay, validSize } from './lib/input';
+  import { binaryInput, inputChunks, retryDelay, validSize } from './lib/input';
   import { record } from './lib/schema';
   import { terminalUrl, touchKeys } from './lib/terminal';
   import { terminalTheme } from './lib/theme';
@@ -67,11 +72,13 @@
       fontSize: initializeFontSize(), lineHeight: 1.15, scrollback: 5000,
       theme: terminalTheme(appearance.dark),
       allowProposedApi: false,
+      linkHandler: { activate: openTerminalLink, allowNonHttpProtocols: false },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon(openTerminalLink));
     term.open(host);
-    const gate = new InputGate();
+    const submission = new TerminalSubmission();
     let socket: SocketLike | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
@@ -97,9 +104,9 @@
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(resize);
     });
-    const sendInput = (data: string, binary = false) => {
-      if (!attached) return;
-      const type = gate.classify(data);
+    const sendInput = (data: string, binary = false, type: InputSource = 'input') => {
+      if (!attached || socket?.readyState !== WebSocket.OPEN) return;
+      if (type === 'input' && !binary && !submission.allow(data)) return;
       if (type === 'input') {
         for (const chunk of inputChunks(data)) {
           if (binary) socket?.send(binaryInput(chunk)); else send({ type, data: chunk });
@@ -108,27 +115,27 @@
         for (const chunk of inputChunks(data)) send({ type: 'automatic', data: chunk });
       }
     };
-    const dataSub = term.onData(data => sendInput(data));
-    const binarySub = term.onBinary(data => sendInput(data, true));
-    term.attachCustomKeyEventHandler(event => { gate.mark(event); return attached; });
-    const mark = (event: Event) => gate.mark(event);
-    const scrolling = touchScroll(host, term, { attached: () => attached, mark });
-    // Hardware wheels are intentional input too when a TUI requests mouse reports.
-    host.addEventListener('wheel', mark, true);
-    // Capture precedes xterm's DOM handlers, including mobile composition/paste.
-    host.addEventListener('keydown', mark, true);
-    host.addEventListener('beforeinput', mark, true);
-    const paste = (event: ClipboardEvent) => gate.markPaste({ isTrusted: event.isTrusted, text: event.clipboardData?.getData('text/plain') || '' });
-    const input = (event: Event) => { if (event instanceof InputEvent) gate.markInput(event); };
+    const inputSub = terminalInput(term, (data, source, binary) => sendInput(data, binary, source));
+    term.attachCustomKeyEventHandler(event => { if (event.type === 'keydown') submission.markKey(event); return attached; });
+    const scrolling = touchScroll(host, term, { attached: () => attached, mark: () => {} });
+    // Capture mobile line-break and paste intent before xterm's handlers. A
+    // compositionend, focus, redraw or resize is never submission permission.
+    const beforeInput = (event: Event) => { if (event instanceof InputEvent) submission.markInput(event); };
+    const paste = (event: ClipboardEvent) => submission.markPaste({ isTrusted: event.isTrusted, text: event.clipboardData?.getData('text/plain') || '' });
+    host.addEventListener('beforeinput', beforeInput, true);
     host.addEventListener('paste', paste, true);
-    host.addEventListener('input', input, true);
-    const composition = (event: CompositionEvent) => gate.markComposition(event);
-    host.addEventListener('compositionend', composition, true);
     focusTerminal = () => { onfocus(); if (attached) term.focus(); };
-    host.addEventListener('click', focusTerminal);
+    const clickTerminal = (event: MouseEvent) => {
+      // Link activation already belongs to this gesture; don't additionally
+      // focus the textarea and summon the phone keyboard while navigating.
+      if (event.defaultPrevented || host.querySelector('.xterm-cursor-pointer')) return;
+      focusTerminal();
+    };
+    host.addEventListener('click', clickTerminal);
     sendKey = (event, data) => {
       if (!attached || !event.isTrusted) return;
-      gate.mark(event); sendInput(data); focusTerminal();
+      if (data === '\r') submission.markEnter(event);
+      sendInput(data); focusTerminal();
     };
     prepareImageInsertion = event => {
       const trusted = event.isTrusted, current = generation, target = socket;
@@ -137,7 +144,7 @@
         // insert into a replacement pane, or summon the keyboard asynchronously.
         if (!trusted || disposed || !attached || generation !== current || socket !== target || target?.readyState !== WebSocket.OPEN) return false;
         const reference = imageReference(path);
-        gate.markPaste({ isTrusted: trusted, text: reference });
+        submission.markPaste({ isTrusted: trusted, text: reference });
         term.paste(reference); // Same trusted file selection; no Enter or focus.
         return true;
       };
@@ -153,14 +160,14 @@
       if (!event.isTrusted || !isCommandText(text) || disposed || !attached || !commandTarget || commandTarget.generation !== generation || commandTarget.socket !== socket || socket?.readyState !== WebSocket.OPEN || commandTarget.agent !== agent) return false;
       // Never clear an existing draft or emulate an exclusive control lock.
       // Run is an explicit user action; ordinary Insert never sends Enter.
-      gate.markPaste({ isTrusted: event.isTrusted, text });
+      submission.markPaste({ isTrusted: event.isTrusted, text });
       term.paste(text);
-      if (run) { gate.mark(event); sendInput('\r'); }
+      if (run) { submission.markEnter(event); sendInput('\r'); }
       focusTerminal();
       return true;
     };
     const focused = () => { onfocus(); if (attached) send({ type: 'focus', focused: true }); };
-    const blurred = () => { gate.clear(); if (attached) send({ type: 'focus', focused: false }); };
+    const blurred = () => { submission.clear(); if (attached) send({ type: 'focus', focused: false }); };
     host.addEventListener('focusin', focused);
     host.addEventListener('focusout', blurred);
     function resize() {
@@ -185,7 +192,7 @@
       const current = ++generation;
       connectionEpoch = current;
       socket?.close();
-      gate.clear(); scrolling.reset();
+      submission.clear(); scrolling.reset();
       attached = false;
       automaticInput = false;
       resizeNotifications = false;
@@ -246,7 +253,7 @@
       ws.onerror = () => { if (generation === current && !final) detail = 'The terminal connection failed. Check your connection or sign in again.'; };
       ws.onclose = () => {
         if (disposed || generation !== current) return;
-        attached = false; gate.clear(); scrolling.reset(); term.options.disableStdin = true;
+        attached = false; submission.clear(); scrolling.reset(); term.options.disableStdin = true;
         if (final) return;
         const delay = retryDelay(attempt++);
         status = 'Disconnected';
@@ -258,11 +265,9 @@
     connect();
     return () => {
       disposed = true; generation++; uploadController?.abort(); clearTimeout(timer); cancelAnimationFrame(raf);
-      observer.disconnect(); socket?.close(); gate.clear(); scrolling.dispose(); dataSub.dispose(); binarySub.dispose();
-      host.removeEventListener('wheel', mark, true);
-      host.removeEventListener('keydown', mark, true); host.removeEventListener('beforeinput', mark, true); host.removeEventListener('paste', paste, true);
-      host.removeEventListener('input', input, true); host.removeEventListener('compositionend', composition, true);
-      host.removeEventListener('click', focusTerminal);
+      observer.disconnect(); socket?.close(); submission.clear(); scrolling.dispose(); inputSub.dispose();
+      host.removeEventListener('beforeinput', beforeInput, true); host.removeEventListener('paste', paste, true);
+      host.removeEventListener('click', clickTerminal);
       host.removeEventListener('focusin', focused); host.removeEventListener('focusout', blurred);
       stopAppearance(); stopFontSize();
       term.dispose();

@@ -23,6 +23,17 @@ describe('main revision reload', () => {
     const s = setup(); s.fetch.mockResolvedValue({ ok: true, json: async () => mode() });
     await s.updater.check(); expect(s.reload).not.toHaveBeenCalled();
   });
+  it('offers changed deployments without automatic reload when installation is manual', async () => {
+    const s = setup({ automatic: false }); await s.updater.check();
+    expect(s.changed.mock.lastCall?.[0].ready).toBe(true); expect(s.reload).not.toHaveBeenCalled();
+    const busy = s.updater.busy(); s.updater.manual(); expect(s.reload).not.toHaveBeenCalled();
+    busy(); expect(s.reload).not.toHaveBeenCalled(); s.updater.manual(); expect(s.reload).toHaveBeenCalledOnce();
+  });
+  it('permits intentional stable-window reload but never during critical activity', () => {
+    const s = setup({ main: false, automatic: false }), release = s.updater.busy();
+    s.updater.manual(); expect(s.reload).not.toHaveBeenCalled();
+    release(); s.updater.manual(); s.updater.manual(); expect(s.reload).toHaveBeenCalledOnce();
+  });
   it('reloads a changed revision once with a per-target guard', async () => {
     const s = setup(); await s.updater.check(); await s.updater.check();
     expect(s.reload).toHaveBeenCalledTimes(1); expect(s.values.get(`herdr.main:reload:${next}`)).toBe('1');

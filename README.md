@@ -5,8 +5,10 @@ the frontend; Herdr Core owns the terminals, spaces, tabs and panes.
 
 ## Hosted access
 
-Run on the computer already running **Herdr Core**. Requires curl and Python
-3.9+, but no GitHub login. Scan the terminal QR with your phone to connect.
+Run on the computer you want to use. Requires curl and Python 3.9+, but no
+GitHub login. Missing compatible **Herdr Core** is installed through its official
+installer and started; existing running Cores are reused without restart.
+Scan the terminal QR with your phone to connect.
 
 **Stable** — [open the app](https://herdr-webapp.perapp.dev/):
 
@@ -22,7 +24,9 @@ curl -fsSL https://herdr-webapp.perapp.dev/main/run | sh
 
 Stable and main keep separate pairings and client state. GitHub Actions builds
 main for GNU/Linux x86-64/ARM64 and Apple Silicon macOS; the server checks for
-complete verified builds every five minutes. The launcher follows updates.
+complete verified builds every five minutes. The launcher checks for updates
+every 30 seconds; install them explicitly in Settings → Version. Automatic
+connector installation requires the launcher’s optional `--auto-update` flag.
 
 Main Linux builds require glibc 2.35+ (x86-64) or 2.39+ (ARM64). See the
 [usage guide](docs/usage.md#use-the-main-branch) for details and source builds.
@@ -64,6 +68,7 @@ Release manifests and update comparisons retain their separate numeric versions.
 ## Documentation
 
 - [Usage, installation and development](docs/usage.md)
+- [Core bootstrap and per-computer updates](docs/installation-updates.md)
 - [Installed apps and remembered computers](docs/pwa.md) · [Background notifications](docs/web-push.md)
 - [Self-hosting stable and main](distribution/main-channel.md)
 - [Connector launcher and updates](distribution/relay-launcher.md)

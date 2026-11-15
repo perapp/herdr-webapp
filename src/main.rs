@@ -2,6 +2,7 @@ mod attachments;
 mod auth;
 mod build_info;
 mod commands;
+mod component_updates;
 mod config;
 mod core;
 mod dashboard;
@@ -395,6 +396,7 @@ pub fn router(app: Shared) -> Router {
         .merge(notifications::routes())
         .merge(attachments::routes())
         .merge(update::routes())
+        .merge(component_updates::routes())
         .fallback(get(asset))
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(axum::middleware::from_fn(auth::security_headers))

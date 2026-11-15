@@ -121,6 +121,15 @@ class OfflineTests(unittest.TestCase):
         self.assertEqual([c.args[1]['type'] for c in browser.call.call_args_list],
                          ['mousePressed', 'mouseReleased'])
 
+    def test_nested_raw_draft_fixture_compiles_and_completion_is_one_shot(self):
+        source = (Path(__file__).parent / 'browser.py').read_text()
+        tree = ast.parse(source)
+        code = next(n.value.func.value.value for n in ast.walk(tree)
+                    if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'code' for t in n.targets))
+        compile(code.replace('PROOF', repr('/isolated-fixture-proof')), '<raw-draft-fixture>', 'exec')
+        # OSC color replies end in BEL too; they must not retrigger the Ctrl-G paint.
+        self.assertIn(f"if data=={bytes([7])!r} and not painted:", code)
+
     def test_sources_compile_without_bytecode(self):
         directory = Path(__file__).parent
         for source in [directory.parent / 'relay-e2e.py', *directory.glob('*.py')]:

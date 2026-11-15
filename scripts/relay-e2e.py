@@ -20,7 +20,7 @@ import time
 
 HERE = Path(__file__).resolve().parent
 IMAGE = 'docker.io/coturn/coturn'
-BROWSER_LABELS = {'observer installed', 'reload observer installed', 'terminal attached',
+BROWSER_LABELS = {'draft editor ready', 'draft completion painted', 'draft guard retained', 'draft explicit enter', 'client link printed', 'observer installed', 'reload observer installed', 'terminal attached',
                   'peer connected', 'shell sentinel', 'acceptance condition',
                   'selected ICE pair missing', 'oversized SCTP frame', 'unexpected relay route',
                   'both peers must select relay', 'wrong TURN transport selected',
@@ -279,6 +279,12 @@ class Harness:
                 raise
         result = json.loads(result_path.read_text())
         label = result.get('assertion')
+        if result.get('ok') is not True:
+            kind, line = result.get('errorType'), result.get('errorLine')
+            if kind in {'AssertionError', 'RuntimeError', 'TypeError', 'KeyError', 'NavigationPending'} and isinstance(line, int):
+                caller = result.get('callerLine')
+                caller = caller if isinstance(caller, int) else 0
+                print(f'Browser fixture diagnostic: {kind} at line {line} via {caller}')
         require(result.get('ok') is True,
                 label if label in BROWSER_LABELS else 'browser acceptance failed')
         return result
@@ -345,6 +351,10 @@ class Harness:
         self.gui_call('launch', 'chromium', *browser_flags, 'about:blank')
         paired = self.browser('pair')
         require((self.root / 'shell-proof').read_text() == 'relay-shell-proof\n', 'shell file proof failed')
+        self.browser('draft-completion')
+        for name in ('draft-desktop-proof', 'draft-phone-proof'):
+            require((self.root / name).read_text() == 'draft-preserved\n', 'completion changed or submitted draft')
+            require(not (self.root / (name + '.unexpected')).exists(), 'completion submitted partial prompt')
         self.browser('uploads')
         require(not (self.root / 'unexpected-enter').exists(), 'upload submitted shell draft')
         paths = json.loads((self.workspace / 'uploads.json').read_text())
@@ -371,7 +381,7 @@ class Harness:
         require(all(p.poll() is None for p in self.children), 'child exited during acceptance')
         report = {'ok': True, 'transport': self.args.transport, 'externalRelay': bool(external), 'pairs': paired['pairs'],
                   'checks': ['shell-file', 'upload-bytes', 'no-enter', '20-sequential-uploads',
-                             'reload', 'resume', 'connections-root', 'launch-resume', 'phone-input', 'phone-reconnect', 'two-remembered-computers', '400k-output'], 'receivedBytes': large['receivedBytes']}
+                             'completion-keeps-desktop-phone-draft', 'client-browser-link', 'reload', 'resume', 'connections-root', 'launch-resume', 'phone-input', 'phone-reconnect', 'two-remembered-computers', '400k-output'], 'receivedBytes': large['receivedBytes']}
         if self.args.artifacts:
             self.args.artifacts.mkdir(parents=True, exist_ok=True)
             private(self.args.artifacts / ('report-' + secrets.token_hex(4) + '.json'), json.dumps(report, indent=2))
@@ -430,6 +440,7 @@ def main():
     harness = None
     def interrupted(*_):
         raise Failure('interrupted')
+    signal.signal(signal.SIGHUP, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     signal.signal(signal.SIGTERM, interrupted)
     try:
@@ -447,6 +458,7 @@ def main():
                         json.dumps({'ok': False, 'phase': phase, 'transport': args.transport}))
         return 1
     finally:
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         if harness:

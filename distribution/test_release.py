@@ -82,7 +82,7 @@ sys.exit('unexpected gh call')
         self.env['FIXTURE_VERSION'] = version
 
     def run_installer(self, success=True, pipe=False):
-        args = ['sh'] if pipe else ['sh', str(INSTALLER)]
+        args = ['sh', '-s', '--', '--no-install-core'] if pipe else ['sh', str(INSTALLER), '--no-install-core']
         result = subprocess.run(args, env=self.env, text=True,
                                 input=INSTALLER.read_text() if pipe else '',
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)

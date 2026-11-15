@@ -412,10 +412,15 @@ fn valid_label(label: &str, prefix: &str) -> bool {
 }
 fn allowed(method: &str, path: &str) -> bool {
     match (method, path) {
-        ("GET", "/api/session" | "/api/state" | "/api/notifications")
+        (
+            "GET",
+            "/api/session" | "/api/state" | "/api/notifications" | "/api/component-updates",
+        )
         | (
             "POST",
             "/api/rpc"
+            | "/api/component-updates/check"
+            | "/api/component-updates/install"
             | "/api/topology"
             | "/api/notifications"
             | "/api/notifications/delete"
@@ -470,6 +475,9 @@ mod tests {
             ("GET", "/api/commands?terminal=other%2Ft1"),
             ("POST", "/api/rpc"),
             ("POST", "/api/topology"),
+            ("GET", "/api/component-updates"),
+            ("POST", "/api/component-updates/check"),
+            ("POST", "/api/component-updates/install"),
         ] {
             assert!(allowed(method, path));
         }
@@ -483,6 +491,8 @@ mod tests {
             "/api/terminal",
             "/api/attachments",
             "/api/update/install",
+            "/api/component-updates?on=other",
+            "/api/component-updates/install?url=evil",
             "/api/commands?terminal=t1&x=2",
             "/api/../api/state",
         ] {

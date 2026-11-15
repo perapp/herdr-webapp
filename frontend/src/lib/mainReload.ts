@@ -18,7 +18,7 @@ export interface ReloadOptions {
   fetch: (signal: AbortSignal) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
   storage: Pick<Storage, 'getItem' | 'setItem'>;
   reload: () => void; changed: (state: ReloadState) => void;
-  visible: () => boolean; timeout?: number;
+  visible: () => boolean; timeout?: number; automatic?: boolean;
 }
 /** One page-lifetime source revision; probes never acknowledge a deployment. */
 export class MainReload implements ReloadSafety {
@@ -45,9 +45,13 @@ export class MainReload implements ReloadSafety {
   private publish(): void {
     if (this.dead) return;
     const state = this.state(); this.options.changed(state);
-    if (state.ready && !state.critical && !state.dirty && this.options.visible()) this.perform(false);
+    if (state.ready && !state.critical && !state.dirty && this.options.visible() && this.options.automatic !== false) this.perform(false);
   }
-  manual(): void { if (!this.dead && !this.state().critical) this.perform(true); }
+  manual(): void {
+    if (this.dead || this.state().critical || this.reloading) return;
+    if (this.target) this.perform(true);
+    else { this.reloading = true; this.options.reload(); }
+  }
   private perform(manual: boolean): void {
     if (!this.target || this.reloading) return;
     const key = `herdr.main:reload:${this.target}`;

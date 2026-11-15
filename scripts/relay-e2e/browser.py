@@ -140,11 +140,11 @@ class Browser:
         self.click('.terminal-host')
         self.call('Input.insertText', {'text': text})
 
-    def shell(self, text, marker):
+    def shell(self, text, marker, label='shell sentinel'):
         self.js('window.__e2e.tail=""')
         self.draft(text)
         self.key('Enter', 'Enter', 13)
-        self.wait('window.__e2e.tail.includes(' + json.dumps(marker) + ')', label='shell sentinel')
+        self.wait('window.__e2e.tail.includes(' + json.dumps(marker) + ')', label=label)
 
     def stats(self, transport):
         value = self.js('''(async()=>{
@@ -193,6 +193,66 @@ def main():
             proof = str(Path(job['proofDir']) / 'shell-proof')
             browser.shell("printf '%s%s\\n' relay-shell- proof > " + json.dumps(proof) +
                           "; printf '%s%s\\n' SHELL_ OK", 'SHELL_OK')
+        elif mode == 'draft-completion':
+            for mobile in (False, True):
+                if mobile:
+                    browser.call('Emulation.setDeviceMetricsOverride', {'width': 390, 'height': 844, 'deviceScaleFactor': 1, 'mobile': True})
+                else:
+                    browser.call('Emulation.clearDeviceMetricsOverride')
+                browser.live()
+                proof = str(Path(job['proofDir']) / ('draft-phone-proof' if mobile else 'draft-desktop-proof'))
+                code = '''import os,sys,termios,tty
+from pathlib import Path
+fd=sys.stdin.fileno();saved=termios.tcgetattr(fd);draft=bytearray();painted=False;armed=False;bad=False
+try:
+ tty.setraw(fd);os.write(1,b'\\r\\nDRAFT_READY\\r\\n')
+ while True:
+  data=os.read(fd,1)
+  if data==b'\\x07' and not painted:
+   painted=True
+   os.write(1,b'\\x1b[?2026h\\r\\x1b[2Ktool completed\\r\\n\\x1b[6n\\x1b[c\\x1b]11;?\\x07\\x1b[?1004h\\x1b[?2026lCOMPLETION_PAINTED\\r\\n')
+  elif data==b'\\x14':
+   if bytes(draft)!=b'DRAFT_NOT_SENT' or bad:raise RuntimeError('draft was submitted or changed')
+   armed=True;os.write(1,b'DRAFT_GUARD_OK\\r\\n')
+  elif data in (b'\\r',b'\\n'):
+   if painted and armed:
+    Path(PROOF).write_text('draft-preserved\\n');os.write(1,b'EXPLICIT_ENTER_OK\\r\\n');break
+   bad=True;Path(PROOF+'.unexpected').write_text('unexpected submission')
+  elif not painted:draft.extend(data)
+finally:
+ os.write(1,b'\\x1b[?1004l');termios.tcsetattr(fd,termios.TCSANOW,saved)
+'''.replace('PROOF', repr(proof))
+                encoded = base64.b64encode(code.encode()).decode()
+                browser.shell("python3 -c \"import base64;exec(base64.b64decode('" + encoded + "'))\"", 'DRAFT_READY', label='draft editor ready')
+                browser.draft('DRAFT_NOT_SENT')
+                browser.key('g', 'KeyG', 71, modifiers=2)
+                browser.wait("window.__e2e.tail.includes('COMPLETION_PAINTED')", label='draft completion painted')
+                browser.key('t', 'KeyT', 84, modifiers=2)
+                browser.wait("window.__e2e.tail.includes('DRAFT_GUARD_OK')", label='draft guard retained')
+                browser.key('Enter', 'Enter', 13)
+                browser.wait("window.__e2e.tail.includes('EXPLICIT_ENTER_OK')", label='draft explicit enter')
+            browser.call('Emulation.clearDeviceMetricsOverride')
+            # A terminal link opens in the client browser, not a remote opener/dialog.
+            browser.shell("printf '%s%s\\n' https://example.org/ herdr-client-link; printf '%s%s\\n' LINK_ READY", 'LINK_READY', label='client link printed')
+            browser.wait("(()=>{const e=[...document.querySelectorAll('.xterm-rows span')].find(e=>e.textContent==='https://example.org/herdr-client-link');if(!e)return false;const r=e.getBoundingClientRect();window.__e2e.linkPoint={x:r.x+r.width/2,y:r.y+r.height/2};return r.width>0&&r.height>0})()")
+            targets = browser.call('Target.getTargets')['targetInfos']
+            original = browser.call('Target.getTargetInfo')['targetInfo']['targetId']
+            previous = {t['targetId'] for t in targets}
+            point = browser.js('window.__e2e.linkPoint')
+            browser.call('Input.dispatchMouseEvent', {'type': 'mouseMoved', **point})
+            browser.wait("!!document.querySelector('.xterm-cursor-pointer')")
+            for kind in ('mousePressed', 'mouseReleased'):
+                browser.call('Input.dispatchMouseEvent', {'type': kind, **point, 'button': 'left', 'clickCount': 1})
+            deadline = time.monotonic() + 10
+            while True:
+                opened = [t for t in browser.call('Target.getTargets')['targetInfos'] if t['targetId'] not in previous and t['type'] == 'page']
+                if opened: break
+                assert time.monotonic() < deadline, 'acceptance condition'
+                time.sleep(.05)
+            assert any(t['url'].startswith('https://example.org/herdr-client-link') for t in opened), 'acceptance condition'
+            for target in opened: browser.call('Target.closeTarget', {'targetId': target['targetId']})
+            browser.call('Target.activateTarget', {'targetId': original})
+            assert not browser.js("!!document.querySelector('dialog[open]')"), 'acceptance condition'
         elif mode == 'uploads':
             browser.live()
             Image.new('RGB', (16, 16), (140, 110, 190)).save(ROOT / 'upload.png')
@@ -252,12 +312,14 @@ def main():
             browser.wait("!!document.querySelector('.preferences[open] .install-option')")
             browser.click('.version-option')
             browser.wait("!!document.querySelector('.version-dialog[open]') && !document.querySelector('.preferences[open]')")
+            browser.wait("!!document.querySelector('[data-component=core]') && !!document.querySelector('[data-component=connector]')")
+            assert not browser.js("!!document.querySelector('.component-updates > .update-error')"), 'acceptance condition'
             browser.click('[aria-label="Close versions"]')
             browser.wait("!!document.querySelector('.preferences[open]') && document.activeElement.matches('.version-option')")
             browser.click('[aria-label="Close settings"]')
             # The branded drawer heading is the Connections action, even with one saved computer.
             browser.click('.drawer-brand')
-            browser.wait("document.querySelector('h1')?.textContent==='Connections' && !document.querySelector('.xterm')")
+            browser.wait("!!document.querySelector('[data-testid=remembered-computers]') && !document.querySelector('.xterm')")
             browser.click('.connections-menu summary')
             assert browser.js("JSON.stringify([...document.querySelectorAll('.connections-menu button')].map(b=>b.textContent.trim()))") == '["Settings"]', 'acceptance condition'
             assert browser.js("document.querySelector('.connections-brand')?.textContent==='Herdr-webapp' && document.querySelector('.connections-brand').pathname==='/'"), 'acceptance condition'
@@ -326,12 +388,18 @@ if __name__ == '__main__':
         main()
     except Exception as error:
         # Only literal harness assertion labels may cross the private boundary.
-        allowed = {'observer installed', 'reload observer installed', 'terminal attached',
+        allowed = {'draft editor ready', 'draft completion painted', 'draft guard retained', 'draft explicit enter', 'client link printed', 'observer installed', 'reload observer installed', 'terminal attached',
                    'peer connected', 'shell sentinel', 'acceptance condition',
                    'selected ICE pair missing', 'oversized SCTP frame', 'unexpected relay route',
                    'both peers must select relay', 'wrong TURN transport selected',
                    'upload reconnected peer', 'pairing fragment persisted', 'upload ready',
                    'mixed TURN transport configuration'}
         label = str(error) if isinstance(error, AssertionError) and str(error) in allowed else 'browser operation failed'
-        (ROOT / 'result.json').write_text(json.dumps({'ok': False, 'assertion': label}))
+        trace = error.__traceback__
+        caller_line = trace.tb_lineno
+        while trace.tb_next is not None:
+            caller_line = trace.tb_lineno
+            trace = trace.tb_next
+        (ROOT / 'result.json').write_text(json.dumps({'ok': False, 'assertion': label,
+            'errorType': type(error).__name__, 'errorLine': trace.tb_lineno, 'callerLine': caller_line}))
         sys.exit(1)

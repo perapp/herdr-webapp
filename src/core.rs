@@ -73,6 +73,7 @@ impl Plain {
 
 pub struct Core {
     pub path: PathBuf,
+    pub component_updates: Arc<crate::component_updates::Updates>,
     rpc: Mutex<Option<Plain>>,
     pub state: watch::Sender<Value>,
     metadata: Notify,
@@ -87,6 +88,7 @@ impl Core {
         );
         Arc::new(Self {
             path,
+            component_updates: crate::component_updates::Updates::new(),
             rpc: Mutex::new(None),
             state,
             metadata: Notify::new(),

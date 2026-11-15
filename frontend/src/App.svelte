@@ -13,6 +13,7 @@
   import { channelPath } from './lib/channel';
   import { displayVersion, modeBuild } from './lib/versions';
   import UpdatePanel from './UpdatePanel.svelte';
+  import UpdateProgress from './UpdateProgress.svelte';
   import { initializeAppearance, watchAppearance } from './lib/appearance';
   import type { Action } from './TopologyDialog.svelte';
   import { ApiError, errorMessage, request } from './lib/api';
@@ -296,7 +297,8 @@
 {#if modal}<TopologyDialog {...modal} close={() => modal = null} saved={topologySaved} />{/if}
 <NotificationPresence {ready} terminal={typeof activePane?.content?.terminal === 'string' && selected ? qualify(activePane.content.terminal, selected.document.on) : ''} />
 {#if notificationNotice}<aside role="status" class="notification-notice">{notificationNotice}<button onclick={() => notificationNotice = ''} aria-label="Dismiss notification destination message">×</button></aside>{/if}
-{#if showSettings}<SettingsDialog close={() => showSettings = false} {peerMode} {serverMode} {peerBuild} {peerVersion} coreVersion={snapshot.coreVersion} connected={ready} />{/if}
+{#if !peerMode}<UpdateProgress connected={ready} />{/if}
+{#if showSettings}<SettingsDialog close={() => showSettings = false} {peerMode} {serverMode} {peerBuild} {peerVersion} coreVersion={snapshot.coreVersion} connected={ready} computerName={computers.find(c => c.id === selectedComputer)?.name || machineName(null, snapshot.machines, 0, snapshot.core)} />{/if}
 
 {#snippet settingsFooter()}
   <footer class="navigation-settings">
