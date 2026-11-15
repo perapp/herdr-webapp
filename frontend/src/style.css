@@ -49,3 +49,6 @@ aside{grid-column:1;grid-row:2;min-height:0;background:var(--panel);border-right
 .terminal-attachments .text-key{flex:0 0 auto;min-width:48px;min-height:44px;padding:4px 7px;font-size:calc(12rem / 13)}
 /* One row action (+) since rename and close moved to the long-press menu. */
 .tree-node>details>summary{padding-right:max(40px,2.3rem)}
+.selection-actions{position:absolute;z-index:6;display:flex;transform:translateX(-50%);border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:0 4px 16px #0004;overflow:hidden}
+.selection-actions button{min-width:56px;min-height:44px;padding:4px 12px;border:0;border-radius:0;background:transparent;color:var(--bright)}
+.selection-actions button+button{border-left:1px solid var(--line);min-width:44px}

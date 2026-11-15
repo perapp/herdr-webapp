@@ -59,6 +59,10 @@
   let mods = $state(noModifiers());
   let scrolledUp = $state(false);
   let canPaste = $state(false);
+  // Where a long-press selection ended, relative to the stage: the action bar anchors there.
+  let selectionAt = $state<{ left: number; top: number }>();
+  let stage = $state<HTMLDivElement>();
+  let clearSelection: () => void = () => {};
   let repeatTimer: ReturnType<typeof setTimeout> | undefined;
   let repeated = false;
   function stopRepeat() { clearTimeout(repeatTimer); repeatTimer = undefined; }
@@ -139,6 +143,17 @@
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon(openTerminalLink));
     term.open(host);
+    // GPU drawing: scrolling redraws every visible row, which the default DOM
+    // renderer does by rebuilding elements on the main thread. Any failure, or
+    // the browser reclaiming the context, falls back to that renderer.
+    // Loaded on demand: the add-on needs browser globals at import time.
+    let unmounted = false;
+    void import('@xterm/addon-webgl').then(({ WebglAddon }) => {
+      if (unmounted) return;
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    }).catch(() => { /* No WebGL2 here: the DOM renderer remains. */ });
     const submission = new TerminalSubmission();
     let socket: SocketLike | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -237,10 +252,16 @@
       uploadStatus = ''; uploadError = '';
       if (!text) { uploadStatus = 'Nothing on screen to copy.'; return; }
       try { await writeClipboard(text); uploadStatus = selection ? 'Selection copied.' : 'Visible screen copied.'; }
-      catch { uploadError = 'The browser blocked copying. Select the text and use the system copy action.'; }
+      catch { uploadError = 'The browser blocked copying. Tap the terminal first, then try Copy again.'; }
     };
     term.attachCustomKeyEventHandler(event => { if (event.type === 'keydown') submission.markKey(event); return attached; });
-    const scrolling = touchScroll(host, term, { attached: () => attached, mark: () => {} });
+    const scrolling = touchScroll(host, term, { attached: () => attached, mark: () => {}, selected: at => {
+      const box = stage?.getBoundingClientRect();
+      if (!box || !term.hasSelection()) return;
+      selectionAt = { left: Math.max(84, Math.min(box.width - 84, at.x - box.left)), top: Math.max(4, at.y - box.top - 64) };
+    } });
+    const selectionSub = term.onSelectionChange(() => { if (!term.hasSelection()) selectionAt = undefined; });
+    clearSelection = () => { term.clearSelection(); selectionAt = undefined; };
     // Capture mobile line-break and paste intent before xterm's handlers. A
     // compositionend, focus, redraw or resize is never submission permission.
     const beforeInput = (event: Event) => { if (event instanceof InputEvent) submission.markInput(event); };
@@ -393,7 +414,7 @@
     return () => {
       disposed = true; generation++; uploadController?.abort(); clearTimeout(timer); cancelAnimationFrame(raf);
       observer.disconnect(); socket?.close(); submission.clear(); scrolling.dispose(); inputSub.dispose();
-      stopRepeat(); scrollSub.dispose(); cursorSub.dispose(); cancelAnimationFrame(placing); viewport?.removeEventListener('scroll', updateScrolled);
+      unmounted = true; stopRepeat(); scrollSub.dispose(); cursorSub.dispose(); selectionSub.dispose(); cancelAnimationFrame(placing); viewport?.removeEventListener('scroll', updateScrolled);
       host.removeEventListener('beforeinput', beforeInput, true); host.removeEventListener('paste', paste, true);
       host.removeEventListener('click', clickTerminal);
       host.removeEventListener('focusin', focused); host.removeEventListener('focusout', blurred);
@@ -410,7 +431,11 @@
     <span class="terminal-status" class:connected={attached} role="status">{status}</span>
     {#if !attached}<button class="quiet" onclick={() => reconnect()}>Reconnect</button>{/if}
   </header>{/if}
-  <div class="terminal-stage">
+  <div class="terminal-stage" bind:this={stage}>
+    {#if selectionAt}<div class="selection-actions" role="toolbar" aria-label="Selection" style:left={`${selectionAt.left}px`} style:top={`${selectionAt.top}px`}>
+      <button onpointerdown={event => event.preventDefault()} onclick={event => { void copyScreen(event).then(() => clearSelection()); }}>Copy</button>
+      <button aria-label="Clear selection" onpointerdown={event => event.preventDefault()} onclick={() => clearSelection()}>×</button>
+    </div>{/if}
     <div class="terminal-host" bind:this={host}></div>
     {#if scrolledUp}<button class="jump-bottom" aria-label="Jump to latest output" title="Jump to latest output" onpointerdown={event => event.preventDefault()} onclick={() => jumpBottom()}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v15 M5 13l7 7 7-7"/></svg>

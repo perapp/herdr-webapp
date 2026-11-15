@@ -1,4 +1,5 @@
 import type { Terminal } from '@xterm/xterm';
+import { LONG_PRESS_MS } from './gestures';
 
 /** Fractional pixels survive across frames; xterm's public scroll API uses rows. */
 export class ScrollRows {
@@ -17,10 +18,17 @@ export class ScrollRows {
  */
 export const FLING_MS = 650;
 const MAX_VELOCITY = 8; // px/ms
+/** Programs that scroll themselves redraw per wheel step over the connection:
+ * a shorter coast, at most a few steps per frame, and a bounded backlog so the
+ * program never keeps scrolling long after the finger has gone.
+ */
+export const WHEEL_FLING_MS = 420;
+const WHEEL_STEPS_PER_FRAME = 3, WHEEL_BACKLOG = 12;
 
 /** Own single-finger scrolling, leaving taps, selection and pinch zoom alone.
  * Application wheel reports go through xterm's negotiated mouse protocol, never
- * handwritten escape sequences. Momentum is local scrollback only, not input.
+ * handwritten escape sequences. Wheel reports are paced one animation frame at
+ * a time and coast briefly after a flick; a new touch stops them at once.
  *
  * Local scrollback moves by pixels, not rows: xterm scrolls whole rows and the
  * screen is translated by the remaining fraction, then settles on a row.
@@ -28,9 +36,10 @@ const MAX_VELOCITY = 8; // px/ms
 export function touchScroll(host: HTMLElement, term: Terminal, options: {
   attached: () => boolean;
   mark: (event: TouchEvent) => void;
+  /** A long-press selection was finished at this client position. */
+  selected?: (at: { x: number; y: number }) => void;
 }): { reset: () => void; dispose: () => void } {
-  const rows = new ScrollRows();
-  let startX = 0, startY = 0, lastY = 0, lastTime = 0, sampleTime = 0;
+  let startY = 0, lastY = 0, lastTime = 0, sampleTime = 0;
   let x = 0, y = 0, velocity = 0, pending = 0, frame = 0;
   let tracking = false, dragging = false, suppressClick = false;
   let mode = '';
@@ -46,8 +55,44 @@ export function touchScroll(host: HTMLElement, term: Terminal, options: {
     style.transition = transition;
     style.transform = rowsUp ? `translate3d(0,${-rowsUp * rowHeight()}px,0)` : '';
   };
-  const stopFrame = () => { cancelAnimationFrame(frame); frame = 0; pending = 0; velocity = 0; rows.clear(); };
-  const reset = () => { stopFrame(); tracking = dragging = false; fraction = 0; shift(0); };
+  const stopFrame = () => { cancelAnimationFrame(frame); frame = 0; pending = 0; velocity = 0; owed = 0; };
+  // xterm redraws rows on its own animation frame. Moving the pixel offset
+  // before that redraw lands shows the old rows at the new offset: a one-frame
+  // jump back by a row at every row boundary. Apply both in the same frame.
+  let awaiting = false, easing = false;
+  const rendered = term.onRender?.(() => {
+    if (!awaiting) return;
+    awaiting = false; shift(fraction);
+    if (easing) { easing = false; void screen()?.offsetHeight; fraction = 0; shift(0, 'transform 110ms ease-out'); }
+  });
+  // Long press selects the word under the finger; dragging on extends it.
+  // Text is drawn on a canvas, so the browser has no selection of its own here.
+  interface Cell { col: number; row: number }
+  let press: ReturnType<typeof setTimeout> | undefined;
+  let anchor: { from: Cell; to: Cell } | undefined;
+  let touchedAt = -Infinity;
+  const cellAt = (clientX: number, clientY: number): Cell | undefined => {
+    const box = screen()?.getBoundingClientRect();
+    if (!box || !box.width || !box.height) return;
+    const clamp = (value: number, max: number) => Math.max(0, Math.min(max, Math.floor(value)));
+    return { col: clamp((clientX - box.left) / (box.width / term.cols), term.cols - 1), row: clamp((clientY - box.top) / (box.height / term.rows), term.rows - 1) + term.buffer.active.viewportY };
+  };
+  const before = (a: Cell, b: Cell) => a.row < b.row || (a.row === b.row && a.col < b.col);
+  const selectRange = (from: Cell, to: Cell) => term.select(from.col, from.row, (to.row - from.row) * term.cols + to.col - from.col + 1);
+  const beginSelection = () => {
+    press = undefined;
+    if (!tracking || dragging || !options.attached()) return;
+    const cell = cellAt(x, y);
+    if (!cell) return;
+    const line = term.buffer.active.getLine(cell.row);
+    const filled = (col: number) => !!line?.getCell(col)?.getChars().trim();
+    let from = cell.col, to = cell.col;
+    if (filled(cell.col)) { while (from > 0 && filled(from - 1)) from--; while (to < term.cols - 1 && filled(to + 1)) to++; }
+    anchor = { from: { col: from, row: cell.row }, to: { col: to, row: cell.row } };
+    selectRange(anchor.from, anchor.to); suppressClick = true;
+  };
+  const halt = () => { stopFrame(); clearTimeout(press); press = undefined; anchor = undefined; tracking = dragging = false; };
+  const reset = () => { halt(); fraction = 0; awaiting = easing = false; shift(0); };
   /** Returns false once an end of the scrollback is reached. */
   const scrollLocal = (pixels: number): boolean => {
     const total = fraction + pixels / Math.max(1, rowHeight());
@@ -58,7 +103,8 @@ export function touchScroll(host: HTMLElement, term: Terminal, options: {
     // Past the top, or at the newest line where nothing follows the last row.
     const edge = buffer.viewportY - before !== count || (pixels > 0 && buffer.viewportY >= buffer.baseY);
     fraction = edge ? 0 : total - count;
-    shift(fraction);
+    if (rendered && buffer.viewportY !== before) awaiting = true;
+    if (!awaiting) shift(fraction);
     return !edge;
   };
   /** Glide the remaining fraction to the nearest row instead of jumping. */
@@ -69,14 +115,41 @@ export function touchScroll(host: HTMLElement, term: Terminal, options: {
       // One row further, drawn where it already was, then eased into place.
       const before = term.buffer.active.viewportY;
       term.scrollLines(1);
-      if (term.buffer.active.viewportY !== before) { shift(fraction - 1); void screen()?.offsetHeight; }
+      if (rendered && term.buffer.active.viewportY !== before) { fraction -= 1; awaiting = easing = true; return; }
     }
+    if (awaiting) { easing = true; return; }
     fraction = 0;
     shift(0, 'transform 110ms ease-out');
   };
+  // Wheel rows owed to a program that scrolls itself, and the trusted touch
+  // that every report of this gesture, coasting included, originates from.
+  let owed = 0;
+  let origin: TouchEvent | undefined;
+  const wheel = (time: number) => {
+    const elapsed = Math.min(32, Math.max(0, time - lastTime));
+    lastTime = time;
+    if (!tracking) { owed += velocity * elapsed / Math.max(1, rowHeight()); velocity *= Math.exp(-elapsed / WHEEL_FLING_MS); }
+    owed = Math.max(-WHEEL_BACKLOG, Math.min(WHEEL_BACKLOG, owed));
+    const count = Math.max(-WHEEL_STEPS_PER_FRAME, Math.min(WHEEL_STEPS_PER_FRAME, Math.trunc(owed)));
+    owed -= count;
+    const target = screen();
+    for (let i = 0; target && origin && i < Math.abs(count); i++) {
+      options.mark(origin);
+      target.dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true, cancelable: true, clientX: x, clientY: y,
+        deltaY: Math.sign(count), deltaMode: WheelEvent.DOM_DELTA_LINE,
+      }));
+    }
+    if (Math.abs(owed) >= 1 || (!tracking && Math.abs(velocity) > 0.02)) frame = requestAnimationFrame(animate);
+  };
   const animate = (time: number) => {
     frame = 0;
-    if (!options.attached() || document.hidden || currentMode() !== mode || !local()) { reset(); return; }
+    if (!options.attached() || document.hidden || currentMode() !== mode) { reset(); return; }
+    if (!local()) {
+      // No guessed arrow/page input: programs must opt into mouse reporting.
+      if (term.modes.mouseTrackingMode === 'none') reset(); else wheel(time);
+      return;
+    }
     const elapsed = Math.min(32, Math.max(0, time - lastTime));
     lastTime = time;
     const pixels = pending + (tracking ? 0 : velocity * elapsed);
@@ -87,14 +160,17 @@ export function touchScroll(host: HTMLElement, term: Terminal, options: {
     else if (!tracking) settle();
   };
   const start = (event: TouchEvent) => {
-    reset();
-    suppressClick = false;
-    if (!event.isTrusted || event.touches.length !== 1 || !options.attached() || term.hasSelection()) return;
-    const touch = event.touches[0]!;
-    // A finger landing on a glide catches the page where it is.
+    // A finger landing on a glide catches the page exactly where it is: keep
+    // the sub-row offset instead of snapping to a row under the finger.
+    halt(); easing = false;
     const style = screen()?.style; if (style) style.transition = '';
-    startX = x = touch.clientX; startY = lastY = y = touch.clientY;
-    sampleTime = lastTime = performance.now(); mode = currentMode(); tracking = true;
+    suppressClick = false;
+    // A selection (a double tap selects a word) must not disable scrolling.
+    if (!event.isTrusted || event.touches.length !== 1 || !options.attached()) { reset(); return; }
+    const touch = event.touches[0]!;
+    x = touch.clientX; startY = lastY = y = touch.clientY;
+    sampleTime = lastTime = touchedAt = performance.now(); mode = currentMode(); tracking = true;
+    press = setTimeout(beginSelection, LONG_PRESS_MS);
     // Do not let xterm also install its own scrolling state for this gesture.
     event.stopPropagation();
   };
@@ -105,10 +181,18 @@ export function touchScroll(host: HTMLElement, term: Terminal, options: {
     // touchstart, so its built-in handler has no valid starting coordinate.
     event.stopPropagation();
     const touch = event.touches[0]!;
+    if (press && Math.hypot(touch.clientX - x, touch.clientY - y) > 8) { clearTimeout(press); press = undefined; }
     x = touch.clientX; y = touch.clientY;
+    if (anchor) {
+      event.preventDefault();
+      const cell = cellAt(x, y);
+      if (cell) selectRange(before(cell, anchor.from) ? cell : anchor.from, before(anchor.to, cell) ? cell : anchor.to);
+      return;
+    }
     if (!dragging) {
+      // Thumbs move in arcs. A sideways start is not a reason to ignore the
+      // rest of the gesture: wait for vertical travel, however it began.
       if (Math.abs(y - startY) < 6) return;
-      if (Math.abs(x - startX) > Math.abs(y - startY)) { reset(); return; }
       dragging = suppressClick = true;
     }
     event.preventDefault(); event.stopPropagation();
@@ -121,32 +205,35 @@ export function touchScroll(host: HTMLElement, term: Terminal, options: {
     if (local()) {
       pending += delta;
       if (!frame) { lastTime = now; frame = requestAnimationFrame(animate); }
-    } else {
-      lastTime = now;
-      // No guessed arrow/page input: programs must opt into mouse reporting.
-      if (term.modes.mouseTrackingMode === 'none') return;
-      const count = Math.max(-8, Math.min(8, rows.take(delta, rowHeight())));
-      const screen = host.querySelector('.xterm-screen');
-      for (let i = 0; screen && i < Math.abs(count); i++) {
-        options.mark(event);
-        screen.dispatchEvent(new WheelEvent('wheel', {
-          bubbles: true, cancelable: true, clientX: x, clientY: y,
-          deltaY: Math.sign(count), deltaMode: WheelEvent.DOM_DELTA_LINE,
-        }));
-      }
+    } else if (term.modes.mouseTrackingMode !== 'none') {
+      owed += delta / Math.max(1, rowHeight()); origin = event;
+      if (!frame) { lastTime = now; frame = requestAnimationFrame(animate); }
     }
   };
   const end = (event: TouchEvent) => {
     if (!tracking) return;
+    clearTimeout(press); press = undefined;
+    if (anchor) {
+      // No compatibility mouse events: xterm would clear the selection.
+      event.preventDefault(); event.stopPropagation();
+      anchor = undefined; tracking = false;
+      options.selected?.({ x, y });
+      return;
+    }
     if (dragging) { event.preventDefault(); event.stopPropagation(); }
     tracking = false;
-    if (dragging && local() && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const coasting = local() || term.modes.mouseTrackingMode !== 'none';
+    if (dragging && coasting && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
       if (performance.now() - sampleTime > 100) velocity = 0;
       if (!frame) { lastTime = performance.now(); frame = requestAnimationFrame(animate); }
+    } else if (dragging && coasting && !local()) {
+      // Reduced motion: deliver what the finger already asked for, no coasting.
+      velocity = 0;
+      if (Math.abs(owed) >= 1 && !frame) { lastTime = performance.now(); frame = requestAnimationFrame(animate); }
     } else {
       if (local() && pending) scrollLocal(pending);
       stopFrame();
-      if (local()) { if (fraction >= 0.5 && term.buffer.active.viewportY < term.buffer.active.baseY) term.scrollLines(1); fraction = 0; shift(0); }
+      if (local()) settle();
     }
     dragging = false;
   };
@@ -155,20 +242,24 @@ export function touchScroll(host: HTMLElement, term: Terminal, options: {
     suppressClick = false; event.preventDefault(); event.stopImmediatePropagation();
   };
   const cancel = () => reset();
+  // Android reports a long press as a context-menu request as well.
+  const menu = (event: MouseEvent) => { if (performance.now() - touchedAt < 1500) event.preventDefault(); };
   host.addEventListener('touchstart', start, { capture: true, passive: true });
   host.addEventListener('touchmove', move, { capture: true, passive: false });
   host.addEventListener('touchend', end, { capture: true, passive: false });
   host.addEventListener('touchcancel', cancel, true);
   host.addEventListener('click', click, true);
+  host.addEventListener('contextmenu', menu);
   document.addEventListener('visibilitychange', cancel);
   window.addEventListener('blur', cancel);
   return { reset, dispose: () => {
-    reset();
+    reset(); rendered?.dispose();
     host.removeEventListener('touchstart', start, true);
     host.removeEventListener('touchmove', move, true);
     host.removeEventListener('touchend', end, true);
     host.removeEventListener('touchcancel', cancel, true);
     host.removeEventListener('click', click, true);
+    host.removeEventListener('contextmenu', menu);
     document.removeEventListener('visibilitychange', cancel);
     window.removeEventListener('blur', cancel);
   } };

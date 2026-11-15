@@ -467,7 +467,10 @@ Architecture: `src/core.rs` owns persistent RPC and subscription connections;
 Swipe vertically inside a pane to scroll terminal history. Local history moves
 by pixels rather than whole rows, flings glide like a web page and settle on a row.
 In Pi and other mouse-aware terminal applications, swipes send negotiated wheel
-reports instead; lifting your finger stops application input immediately.
+reports instead, paced at most three per animation frame. A flick coasts for a
+moment with decaying speed and a bounded backlog; touching the screen again
+stops it at once, as do disconnects and mode changes. These programs still
+scroll by whole rows and redraw per step.
 Swiping does not open the keyboard. Tap to type. The keyboard accessory strip
 also offers **PgUp/PgDn** (open it with the keyboard button on phones).
 Applications without mouse support require their own keys; swipes never guess
@@ -480,6 +483,12 @@ preferences disable momentum.
   keyboard button overrides that until the keyboard next opens or closes.
   Keyboard detection is inferred from viewport height on touch devices and
   needs validation on physical iOS/Android devices.
+- **Long press selects text.** Hold a word for about half a second to select
+  it, keep dragging to extend the selection, then use the **Copy** / **×** bar
+  that appears above your finger. Terminal text is drawn on a GPU canvas
+  (falling back to page elements without WebGL2), so the browser's own text
+  selection does not apply. There are no drag handles and a selection cannot
+  extend past the visible screen.
 - **The keyboard does not resize the terminal.** While the on-screen keyboard
   is up, the grid keeps its full size and the pane shows the part that holds
   the cursor (the newest rows while reading history). Resizing made
