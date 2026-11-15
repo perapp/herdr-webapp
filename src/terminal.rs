@@ -339,6 +339,7 @@ pub(crate) async fn session(
     let _guard = ReaderGuard(task);
     let mut credit = Credit::default();
     let mut pending = early.pop_front();
+    let mut auth_changes = app.auth.subscribe();
     let mut auth_tick = tokio::time::interval(Duration::from_secs(5));
     let initial_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let result: Result<()> = async {
@@ -374,6 +375,9 @@ pub(crate) async fn session(
             }
             tokio::select! {
                 _ = auth_tick.tick() => ensure!(app.auth.authorized(headers), "session revoked"),
+                result = auth_changes.changed() => {
+                    ensure!(result.is_ok() && app.auth.authorized(headers), "session revoked");
+                },
                 _ = tokio::time::sleep_until(initial_deadline), if !credit.started => bail!("initial credit timeout"),
                 frame = rx.recv(), if pending.is_none() => {
                     pending = Some(frame.ok_or_else(||anyhow::anyhow!("reader ended"))??.ok_or_else(||anyhow::anyhow!("core EOF"))?);

@@ -78,6 +78,11 @@ but does not establish cellular, external-network or physical-phone acceptance.
 - Two independent connector identities share the disposable Core/layout IDs on
   purpose. Both remain remembered; explicit route switching authenticates each
   pinned identity without re-pairing and produces independent shell file proofs.
+- Two independent incognito profiles reuse the original private capability. A
+  confirmed Settings rotation keeps the initiating phone-sized profile on the
+  same live peer, closes the other profile, rejects its resumed key and the old
+  capability, and leaves the second computer’s existing key and original link
+  usable. Desktop/390px Settings screenshots and shell proofs stay private.
 - 400,000 output characters traverse the terminal beyond its initial output
   credit, followed by an unambiguous sentinel and native file proof.
 - Waits require attached/live terminal state, not merely textarea DOM existence.

@@ -35,6 +35,12 @@ Main Linux builds require glibc 2.35+ (x86-64) or 2.39+ (ARM64). See the
 WebRTC; the hosting origin is trusted to supply the application. Stopping the
 connector does not stop Core or its terminals.
 
+Private links and browser authorization do not expire automatically. The terminal
+hides its private link and QR after the first authenticated connection; press **L**
+to toggle them. **Settings → Access → Rotate access token…** keeps this browser
+profile connected while signing out other clients and invalidating old links for
+that computer/channel. Browsers can still clear their own cookies or storage.
+
 ## Local / LAN
 
 [Install a release](docs/usage.md#install-a-release), then:

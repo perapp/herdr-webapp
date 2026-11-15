@@ -17,7 +17,7 @@ use p256::elliptic_curve::rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -34,6 +34,7 @@ const DELIVERY_QUEUE: usize = 512;
 const DELIVERY_CONCURRENCY: usize = 8;
 const DELIVERY_TTL: Duration = Duration::from_secs(300);
 struct Delivery {
+    owner_epoch: u64,
     registration: Registration,
     payload: Vec<u8>,
     created: Instant,
@@ -61,6 +62,11 @@ struct Saved {
     registrations: Vec<Registration>,
     baseline: HashMap<String, String>,
 }
+#[derive(Clone, Default)]
+struct OwnerPolicy {
+    generation: u64,
+    grants: Option<BTreeMap<String, u64>>,
+}
 type ForegroundLeases = HashMap<(String, String, String), (String, Instant)>;
 pub struct Notifications {
     path: PathBuf,
@@ -68,6 +74,7 @@ pub struct Notifications {
     pub public_key: String,
     pub needs_snapshot: AtomicBool,
     saved: Mutex<Saved>,
+    owners: tokio::sync::watch::Sender<OwnerPolicy>,
     seen: Mutex<ForegroundLeases>,
     // Exclusive process lock also prevents competing writers and duplicate deliveries.
     _lock: std::fs::File,
@@ -104,6 +111,7 @@ impl Notifications {
             public_key,
             needs_snapshot: AtomicBool::new(false),
             saved: Mutex::new(saved),
+            owners: tokio::sync::watch::channel(OwnerPolicy::default()).0,
             seen: Mutex::new(HashMap::new()),
             _lock: lock,
             #[cfg(test)]
@@ -112,10 +120,66 @@ impl Notifications {
             send_gate: Mutex::new(None),
         }))
     }
-    pub async fn retain_paired(&self, pairings: &crate::relay_pairings::Pairings) -> Result<()> {
+    /// Fail closed immediately (including queued/in-flight sends), then persist.
+    /// Caller must serialize this with its authorization rotation/enrollment.
+    pub async fn keep_owner(&self, owner: &str) -> Result<()> {
+        self.retain_owners(&[owner.to_owned()]).await
+    }
+    /// Reconcile with the durable authorization store BEFORE starting observe().
+    /// Caller must propagate errors and not start delivery on reconciliation failure.
+    /// Runtime callers serialize this with their auth/pairing rotation gate.
+    /// Surviving grants keep their epochs so their in-flight delivery continues;
+    /// newly added grants never resurrect work queued before their revocation.
+    pub async fn retain_owners(&self, owners: &[String]) -> Result<()> {
+        let owners: BTreeSet<&str> = owners.iter().map(String::as_str).collect();
         let mut saved = self.saved.lock().await;
-        saved.registrations.retain(|r| pairings.known(&r.owner));
+        self.owners.send_modify(|policy| {
+            policy.generation += 1;
+            let grants = owners
+                .iter()
+                .map(|owner| {
+                    let epoch = policy.grants.as_ref().map_or(0, |grants| {
+                        grants.get(*owner).copied().unwrap_or(policy.generation)
+                    });
+                    ((*owner).to_owned(), epoch)
+                })
+                .collect();
+            policy.grants = Some(grants);
+        });
+        let mut unique = BTreeSet::new();
+        saved.registrations.retain(|r| {
+            owners.contains(r.owner.as_str())
+                && unique.insert((r.owner.clone(), r.subscription.endpoint.clone()))
+        });
+        self.seen
+            .lock()
+            .await
+            .retain(|(owner, endpoint, _), (_, at)| {
+                owners.contains(owner.as_str())
+                    && at.elapsed() < Duration::from_secs(30)
+                    && unique.contains(&(owner.clone(), endpoint.clone()))
+            });
+        // Fail closed in memory even when persistence fails. Startup must retry
+        // reconciliation against durable Auth/Pairings before any observation.
         self.save(&saved)
+    }
+    pub async fn authorize_owner(&self, owner: &str) {
+        let _saved = self.saved.lock().await;
+        self.owners.send_modify(|policy| {
+            if let Some(grants) = &mut policy.grants {
+                grants.entry(owner.to_owned()).or_insert(policy.generation);
+            }
+        });
+    }
+    fn owner_allowed(&self, owner: &str) -> bool {
+        self.owner_epoch(owner).is_some()
+    }
+    fn owner_epoch(&self, owner: &str) -> Option<u64> {
+        self.owners
+            .borrow()
+            .grants
+            .as_ref()
+            .map_or(Some(0), |grants| grants.get(owner).copied())
     }
     fn save(&self, saved: &Saved) -> Result<()> {
         let bytes = serde_json::to_vec(saved)?;
@@ -214,10 +278,17 @@ impl Notifications {
                         {
                             continue;
                         }
-                        saved.registrations.clone()
+                        saved
+                            .registrations
+                            .iter()
+                            .filter_map(|registration| {
+                                self.owner_epoch(&registration.owner)
+                                    .map(|epoch| (registration.clone(), epoch))
+                            })
+                            .collect::<Vec<_>>()
                     };
                     let event_id = uuid::Uuid::new_v4().to_string();
-                    for registration in registrations {
+                    for (registration, owner_epoch) in registrations {
                         if self.seen.lock().await.iter().any(
                             |((owner, endpoint, _), (terminal, at))| {
                                 owner == &registration.owner
@@ -232,6 +303,7 @@ impl Notifications {
                         // Consumption is already committed: overflow is dropped, never retried.
                         if queue.len() < DELIVERY_QUEUE {
                             queue.push_back(Delivery {
+                                owner_epoch,
                                 registration,
                                 payload: serde_json::to_vec(&payload).unwrap(),
                                 created: Instant::now(),
@@ -252,12 +324,23 @@ impl Notifications {
         let Some(remaining) = DELIVERY_TTL.checked_sub(delivery.created.elapsed()) else {
             return;
         };
-        if let Ok(Ok(404 | 410)) = tokio::time::timeout(
+        let mut changes = self.owners.subscribe();
+        let sending = tokio::time::timeout(
             remaining,
             self.send(&delivery.registration.subscription, &delivery.payload),
-        )
-        .await
-        {
+        );
+        tokio::pin!(sending);
+        let result = loop {
+            if self.owner_epoch(&delivery.registration.owner) != Some(delivery.owner_epoch) {
+                return;
+            }
+            tokio::select! {
+                biased;
+                changed = changes.changed() => { if changed.is_err() { return; } },
+                result = &mut sending => break result,
+            }
+        };
+        if let Ok(Ok(404 | 410)) = result {
             let mut saved = self.saved.lock().await;
             saved
                 .registrations
@@ -530,11 +613,143 @@ mod tests {
         drop(tx);
     }
     #[tokio::test]
+    async fn startup_reconciliation_repairs_stale_push_file_after_rotation_cleanup_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let service = registered_service(dir.path()).await;
+        let revoked = {
+            let mut saved = service.saved.lock().await;
+            let keeper = saved.registrations[0].clone();
+            let mut revoked = keeper.clone();
+            revoked.owner = "bob".into();
+            revoked.connection_id = "revoked".into();
+            revoked.subscription.endpoint = "https://fcm.googleapis.com/bob".into();
+            let mut legacy = keeper.clone();
+            legacy.owner = "local".into();
+            saved
+                .registrations
+                .extend([keeper, revoked.clone(), legacy]);
+            service.save(&saved).unwrap();
+            revoked
+        };
+        std::fs::set_permissions(&service.path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(service.keep_owner("alice").await.is_err());
+        assert!(!service.owner_allowed("bob"));
+        std::fs::set_permissions(&service.path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let stale: Saved =
+            serde_json::from_slice(&relay_crypto::read_private(&service.path, 1 << 20).unwrap())
+                .unwrap();
+        assert!(stale.registrations.iter().any(|r| r.owner == "bob"));
+        drop(service);
+        let service = Notifications::open(&dir.path().join("push")).unwrap();
+        // Only the durable Auth/Pairings allowlist may restore authorization.
+        service.seen.lock().await.insert(
+            (
+                "bob".into(),
+                revoked.subscription.endpoint.clone(),
+                "tab".into(),
+            ),
+            ("t1".into(), Instant::now()),
+        );
+        service.retain_owners(&["alice".to_owned()]).await.unwrap();
+        assert!(!service.owner_allowed("bob"));
+        assert!(!service.owner_allowed("local"));
+        assert!(service.seen.lock().await.is_empty());
+        let repaired: Saved =
+            serde_json::from_slice(&relay_crypto::read_private(&service.path, 1 << 20).unwrap())
+                .unwrap();
+        assert_eq!(repaired.registrations.len(), 1);
+        assert_eq!(repaired.registrations[0].owner, "alice");
+        service
+            .deliver(Delivery {
+                owner_epoch: 0,
+                registration: revoked,
+                payload: vec![],
+                created: Instant::now(),
+            })
+            .await;
+        assert!(service.attempts.lock().await.is_empty());
+        let (tx, rx) = broadcast::channel(8);
+        tx.send(Observation::Snapshot(vec![])).unwrap();
+        tx.send(Observation::Event {
+            kind: "status".into(),
+            record: record("t1", "done"),
+        })
+        .unwrap();
+        drop(tx);
+        service.clone().observe(rx).await;
+        assert_eq!(service.attempts.lock().await.len(), 1);
+    }
+    #[tokio::test]
+    async fn retaining_owner_preserves_inflight_delivery_and_existing_grant_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = registered_service(dir.path()).await;
+        service
+            .retain_owners(&["alice".into(), "bob".into()])
+            .await
+            .unwrap();
+        let epoch = service.owner_epoch("alice").unwrap();
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        *service.send_gate.lock().await = Some(gate.clone());
+        let registration = service.saved.lock().await.registrations[0].clone();
+        let delivery_service = service.clone();
+        let task = tokio::spawn(async move {
+            delivery_service
+                .deliver(Delivery {
+                    owner_epoch: epoch,
+                    registration,
+                    payload: vec![],
+                    created: Instant::now(),
+                })
+                .await
+        });
+        wait_until(async || Arc::strong_count(&gate) > 2).await;
+        service.keep_owner("alice").await.unwrap();
+        assert_eq!(service.owner_epoch("alice"), Some(epoch));
+        assert!(!service.owner_allowed("bob"));
+        gate.add_permits(1);
+        task.await.unwrap();
+        assert_eq!(service.attempts.lock().await.len(), 1);
+    }
+    #[tokio::test]
+    async fn rotation_revokes_queued_and_inflight_push_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = registered_service(dir.path()).await;
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        *service.send_gate.lock().await = Some(gate.clone());
+        let (tx, rx) = broadcast::channel(64);
+        let observer = tokio::spawn(service.clone().observe(rx));
+        tx.send(Observation::Snapshot(vec![])).unwrap();
+        for n in 0..20 {
+            tx.send(Observation::Event {
+                kind: "status".into(),
+                record: record(&format!("t{n}"), "done"),
+            })
+            .unwrap();
+        }
+        wait_until(async || {
+            service.saved.lock().await.baseline.len() == 20 && Arc::strong_count(&gate) > 2
+        })
+        .await;
+        service.keep_owner("bob").await.unwrap();
+        assert!(!service.owner_allowed("alice"));
+        assert!(service.owner_allowed("bob"));
+        drop(tx);
+        observer.await.unwrap();
+        gate.add_permits(20);
+        assert!(service.attempts.lock().await.is_empty());
+        assert!(service.saved.lock().await.registrations.is_empty());
+        drop(service);
+        let reopened = Notifications::open(&dir.path().join("push")).unwrap();
+        assert!(reopened.saved.lock().await.registrations.is_empty());
+    }
+    #[tokio::test]
     async fn expired_delivery_is_dropped_without_send() {
         let dir = tempfile::tempdir().unwrap();
         let service = registered_service(dir.path()).await;
         service
             .deliver(Delivery {
+                owner_epoch: 0,
                 registration: service.saved.lock().await.registrations[0].clone(),
                 payload: vec![],
                 created: Instant::now() - DELIVERY_TTL - Duration::from_secs(1),
@@ -641,6 +856,140 @@ mod tests {
         let status = response.status();
         let body = to_bytes(response.into_body(), 65536).await.unwrap();
         (status, serde_json::from_slice(&body).unwrap())
+    }
+    async fn local_call(app: Shared, cookie: &str, path: &str, body: Value) -> StatusCode {
+        let request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("cookie", cookie)
+            .header("origin", "http://test.local")
+            .header("host", "test.local")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        crate::router(app).oneshot(request).await.unwrap().status()
+    }
+    fn cookie_headers(cookie: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("cookie", cookie.parse().unwrap());
+        headers.insert("origin", "http://test.local".parse().unwrap());
+        headers.insert("host", "test.local".parse().unwrap());
+        headers
+    }
+    #[tokio::test]
+    async fn lan_rotation_keeps_profile_push_allows_new_login_and_denies_waiting_stale_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = Notifications::open(&dir.path().join("push")).unwrap();
+        let core = crate::core::Core::new("/nonexistent".into());
+        let _ = core.notifications.set(service.clone());
+        let app = Arc::new(crate::App {
+            core,
+            auth: crate::auth::Auth::new("test-token".into(), Some("http://test.local".into())),
+            updates: crate::update::Updater::development(),
+        });
+        let keeper = app.auth.login("test-token").unwrap();
+        let other = app.auth.login("test-token").unwrap();
+        let keeper_owner = app
+            .auth
+            .notification_owner(&cookie_headers(&keeper))
+            .unwrap();
+        let other_owner = app
+            .auth
+            .notification_owner(&cookie_headers(&other))
+            .unwrap();
+        assert_ne!(keeper_owner, other_owner);
+        let registration = |device: &str| json!({"subscription":{"endpoint":format!("https://fcm.googleapis.com/fcm/send/{device}"),"keys":{"p256dh":service.public_key,"auth":URL_SAFE_NO_PAD.encode([7u8;16])}},"connectionId":"computer","channel":"stable"});
+        assert_eq!(
+            local_call(
+                app.clone(),
+                &keeper,
+                "/api/notifications",
+                registration("keeper")
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            local_call(
+                app.clone(),
+                &other,
+                "/api/notifications",
+                registration("other")
+            )
+            .await,
+            StatusCode::OK
+        );
+        {
+            let saved = service.saved.lock().await;
+            assert_eq!(saved.registrations.len(), 2);
+            assert!(saved.registrations.iter().any(|r| r.owner == keeper_owner));
+            assert!(saved.registrations.iter().any(|r| r.owner == other_owner));
+        }
+        // Queue an old request behind the same gate held by rotation. It must
+        // recheck authorization after waking, never regrant its revoked owner.
+        let write_guard = app.auth.authorization_write().await;
+        let stale_app = app.clone();
+        let stale_cookie = other.clone();
+        let stale_body = registration("stale");
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let stale_request = tokio::spawn(async move {
+            entered.send(()).unwrap();
+            local_call(stale_app, &stale_cookie, "/api/notifications", stale_body).await
+        });
+        waiting.await.unwrap();
+        let retained = app.auth.rotate(&cookie_headers(&keeper)).unwrap();
+        assert_eq!(retained, keeper_owner);
+        service.keep_owner(&retained).await.unwrap();
+        drop(write_guard);
+        assert_eq!(stale_request.await.unwrap(), StatusCode::UNAUTHORIZED);
+        assert!(!service.owner_allowed(&other_owner));
+        assert_eq!(
+            local_call(
+                app.clone(),
+                &keeper,
+                "/api/notifications",
+                registration("keeper")
+            )
+            .await,
+            StatusCode::OK
+        );
+        let new_cookie = app
+            .auth
+            .login(&app.auth.current_token_snapshot().unwrap().token)
+            .unwrap();
+        let new_owner = app
+            .auth
+            .notification_owner(&cookie_headers(&new_cookie))
+            .unwrap();
+        assert_ne!(new_owner, keeper_owner);
+        assert_eq!(
+            local_call(
+                app.clone(),
+                &new_cookie,
+                "/api/notifications",
+                registration("new")
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert!(service.owner_allowed(&new_owner));
+        let saved = service.saved.lock().await;
+        assert_eq!(saved.registrations.len(), 2);
+        assert!(
+            saved
+                .registrations
+                .iter()
+                .all(|r| r.owner == keeper_owner || r.owner == new_owner)
+        );
+        let persisted: Saved =
+            serde_json::from_slice(&relay_crypto::read_private(&service.path, 1 << 20).unwrap())
+                .unwrap();
+        assert!(
+            persisted
+                .registrations
+                .iter()
+                .all(|r| r.owner != other_owner)
+        );
     }
     #[tokio::test]
     async fn authenticated_device_isolation_and_per_client_foreground_leases() {
@@ -915,7 +1264,16 @@ fn authorized(app: &Shared, headers: &HeaderMap) -> Result<Arc<Notifications>, A
         )
     })
 }
-async fn config(State(app): State<Shared>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
+async fn config(
+    State(app): State<Shared>,
+    extension: Option<Extension<Owner>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let _authorization = if extension.is_none() {
+        Some(app.auth.authorization_read().await)
+    } else {
+        None
+    };
     app.auth.same_origin(&headers, false)?;
     if !app.auth.authorized(&headers) {
         return Err(error(StatusCode::UNAUTHORIZED, "Authentication required"));
@@ -932,8 +1290,17 @@ struct Register {
     connection_id: String,
     channel: String,
 }
-fn owner(extension: Option<Extension<Owner>>) -> String {
-    extension.map(|v| v.0.0).unwrap_or_else(|| "local".into())
+fn owner(
+    extension: Option<Extension<Owner>>,
+    app: &Shared,
+    headers: &HeaderMap,
+) -> Result<String, ApiError> {
+    // Extensions are supplied only by the cryptographically verified peer adapter;
+    // LAN ownership always comes from the current cookie/bearer authorization.
+    match extension {
+        Some(owner) => Ok(owner.0.0),
+        None => app.auth.notification_owner(headers),
+    }
 }
 async fn register(
     State(app): State<Shared>,
@@ -941,7 +1308,16 @@ async fn register(
     headers: HeaderMap,
     Json(body): Json<Register>,
 ) -> Result<Json<Value>, ApiError> {
+    let local = extension.is_none();
+    // Lock before checking credentials: a waiting request may have been revoked.
+    // Rotation holds the corresponding write guard through auth + push cleanup.
+    let _authorization = if local {
+        Some(app.auth.authorization_read().await)
+    } else {
+        None
+    };
     let service = authorized(&app, &headers)?;
+    let owner = owner(extension, &app, &headers)?;
     let result: Result<()> = async {
         endpoint(&body.subscription.endpoint)?;
         relay_crypto::decode(&body.subscription.keys.auth, 16)?;
@@ -959,9 +1335,15 @@ async fn register(
                 && matches!(body.channel.as_str(), "stable" | "main"),
             "invalid destination"
         );
+        if local {
+            service.authorize_owner(&owner).await;
+        }
         let mut current = service.saved.lock().await;
         let mut saved = current.clone();
-        let owner = owner(extension);
+        ensure!(
+            service.owner_allowed(&owner),
+            "browser authorization revoked"
+        );
         let registration = Registration {
             owner: owner.clone(),
             subscription: body.subscription,
@@ -1000,8 +1382,13 @@ async fn delete(
     headers: HeaderMap,
     Json(body): Json<Endpoint>,
 ) -> Result<Json<Value>, ApiError> {
+    let _authorization = if extension.is_none() {
+        Some(app.auth.authorization_read().await)
+    } else {
+        None
+    };
     let service = authorized(&app, &headers)?;
-    let owner = owner(extension);
+    let owner = owner(extension, &app, &headers)?;
     let mut current = service.saved.lock().await;
     let mut saved = current.clone();
     saved
@@ -1034,8 +1421,13 @@ async fn seen(
     headers: HeaderMap,
     Json(body): Json<Seen>,
 ) -> Result<Json<Value>, ApiError> {
+    let _authorization = if extension.is_none() {
+        Some(app.auth.authorization_read().await)
+    } else {
+        None
+    };
     let service = authorized(&app, &headers)?;
-    let owner = owner(extension);
+    let owner = owner(extension, &app, &headers)?;
     if body.client_id.is_empty()
         || body.client_id.len() > 128
         || !body

@@ -37,6 +37,13 @@ describe('strict wire encodings', () => {
 });
 
 describe('pairing capability', () => {
+  it('accepts reusable permanent capabilities using the compatible v1 safe-integer expiry', async () => {
+    const p = { ...await pairing(), expiresAt: Number.MAX_SAFE_INTEGER };
+    expect(await parsePairing(fragment(p))).toEqual(p);
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 100 * 365 * 86400 * 1000);
+    expect(await parsePairing(fragment(p))).toEqual(p);
+    expect(await parsePairing(fragment(p))).toEqual(p);
+  });
   it('validates canonical key hashes and Unix-second expiry', async () => {
     const p = await pairing();
     expect(await parsePairing(fragment(p))).toEqual(p);

@@ -162,10 +162,16 @@ crashes cannot be cleaned up synchronously; abandoned download/save temporaries
 are removed under the lock next run. Same-user hostile code and writable ancestors
 raced by the same user are outside the file-ownership protection boundary.
 
-There is no pairing-schema migration/backup mechanism here: connector releases
-must preserve backward-compatible pairing state for rollback. Readiness validates
-initial health only, not ongoing application behavior. An already-ready connector
-that subsequently exits ends the supervisor; it is not endlessly restarted.
+Browser public keys and the reusable private capability commit atomically in
+`pairings.json`; `pairing.json` is a derived display fixture. Explicit policy markers
+distinguish persistent capability/session data from legacy expiring state, while
+legacy outer storage versions stay readable by installed rollback binaries. Upgrade
+preserves trusted keys and replaces a legacy expiring capability once. Downgrading
+runs that older version’s expiry behavior; upgrading again preserves only currently
+trusted state. Never restore old authorization backups after rotation, which would
+undo revocation. Readiness validates initial health only, not ongoing application
+behavior. An already-ready connector that subsequently exits ends the supervisor;
+it is not endlessly restarted.
 
 Development only: invoke Python directly with
 `--relay-url http://127.0.0.1:<port> --allow-http-loopback`. The public shell never

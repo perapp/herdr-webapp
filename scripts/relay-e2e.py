@@ -20,12 +20,13 @@ import time
 
 HERE = Path(__file__).resolve().parent
 IMAGE = 'docker.io/coturn/coturn'
-BROWSER_LABELS = {'draft editor ready', 'draft completion painted', 'draft guard retained', 'draft explicit enter', 'client link printed', 'observer installed', 'reload observer installed', 'terminal attached',
+BROWSER_LABELS = {'input page focused', 'click target visible and enabled', 'rotation confirmation visible', 'rotation-keeper-before-proof', 'rotation-other-before-proof', 'rotation-keeper-after-proof', 'rotation-second-existing-proof', 'rotation-second-pairing-proof', 'rotation-keeper-final-proof', 'draft editor ready', 'draft completion painted', 'draft guard retained', 'draft explicit enter', 'client link printed', 'observer installed', 'reload observer installed', 'terminal attached',
                   'peer connected', 'shell sentinel', 'acceptance condition',
                   'selected ICE pair missing', 'oversized SCTP frame', 'unexpected relay route',
                   'both peers must select relay', 'wrong TURN transport selected',
                   'upload reconnected peer', 'pairing fragment persisted', 'browser operation failed',
-                  'upload ready', 'mixed TURN transport configuration'}
+                  'upload ready', 'mixed TURN transport configuration', 'rotation authorization rejected',
+                  'rotation settings responsive', 'rotation completed', 'rotation keeper unchanged', 'rotation other revoked'}
 
 
 class Failure(Exception):
@@ -39,7 +40,7 @@ def require(value, label):
 
 def private(path, data):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, 'w') as stream:
+    with os.fdopen(fd, 'wb' if isinstance(data, bytes) else 'w') as stream:
         stream.write(data)
 
 
@@ -272,19 +273,37 @@ class Harness:
         self.phase = action
         result_path = self.workspace / 'result.json'
         result_path.unlink(missing_ok=True)
+        (self.workspace / 'shell-metrics.json').unlink(missing_ok=True)
         try:
-            self.gui_call('exec', 'python3', '/workspace/browser.py', action, timeout=240)
+            self.gui_call('exec', 'python3', '/workspace/browser.py', action,
+                          timeout=420 if action == 'rotation' else 240)
         except Failure:
             if not result_path.is_file():
                 raise
         result = json.loads(result_path.read_text())
+        metrics_path = self.workspace / 'shell-metrics.json'
+        if metrics_path.is_file():
+            metrics = json.loads(metrics_path.read_text())
+            allowed = {'originalCount', 'preCount', 'preSame', 'afterCount', 'afterSame', 'rotateClicks', 'confirmClicks', 'closeClicks', 'versionClicks', 'installClicks', 'confirmDisabled', 'confirmationButtons', 'confirmHit', 'rotationPeerPresent', 'dialogTotal', 'terminals', 'navigationOpen', 'connectionNotice', 'viewportWidth', 'viewportHeight', 'dialogPresent', 'bodyPresent', 'dialogWidth', 'dialogHeight', 'bodyScrollWidth', 'bodyClientWidth', 'confirmationCount', 'clickFocused', 'linkHovered', 'activeBody', 'activeInput', 'activeButton', 'focused', 'visible', 'textareaFocused', 'textareas', 'peers', 'connected',
+                       'receivedBytes', 'tailBytes', 'sentFrames', 'sentBytes', 'markerSeen'}
+            safe = {key: value for key, value in metrics.items()
+                    if key in allowed and type(value) in (bool, int)}
+            print('Shell fixture metrics: ' + json.dumps(safe))
+        if result.get('ok') is not True and self.args.artifacts:
+            self.args.artifacts.mkdir(parents=True, exist_ok=True)
+            for name in ('rotation-settings-desktop.png', 'rotation-settings-phone.png'):
+                source = self.workspace / name
+                if source.is_file():
+                    private(self.args.artifacts / (secrets.token_hex(4) + '-' + name), source.read_bytes())
         label = result.get('assertion')
         if result.get('ok') is not True:
             kind, line = result.get('errorType'), result.get('errorLine')
             if kind in {'AssertionError', 'RuntimeError', 'TypeError', 'KeyError', 'NavigationPending'} and isinstance(line, int):
                 caller = result.get('callerLine')
                 caller = caller if isinstance(caller, int) else 0
-                print(f'Browser fixture diagnostic: {kind} at line {line} via {caller}')
+                stack = result.get('stackLines', [])
+                stack = stack if isinstance(stack, list) and all(type(n) is int for n in stack) else []
+                print(f'Browser fixture diagnostic: {kind} at line {line} via {caller}; stack {stack}')
         require(result.get('ok') is True,
                 label if label in BROWSER_LABELS else 'browser acceptance failed')
         return result
@@ -351,41 +370,71 @@ class Harness:
         self.gui_call('launch', 'chromium', *browser_flags, 'about:blank')
         paired = self.browser('pair')
         require((self.root / 'shell-proof').read_text() == 'relay-shell-proof\n', 'shell file proof failed')
-        self.browser('draft-completion')
-        for name in ('draft-desktop-proof', 'draft-phone-proof'):
-            require((self.root / name).read_text() == 'draft-preserved\n', 'completion changed or submitted draft')
-            require(not (self.root / (name + '.unexpected')).exists(), 'completion submitted partial prompt')
-        self.browser('uploads')
-        require(not (self.root / 'unexpected-enter').exists(), 'upload submitted shell draft')
-        paths = json.loads((self.workspace / 'uploads.json').read_text())
-        source = (self.workspace / 'upload.png').read_bytes()
-        require(len(paths) == 21 and len(set(paths)) == 21, 'upload paths not distinct')
-        for name in paths:
-            path = Path(name)
-            require(path.is_absolute() and path.resolve().is_relative_to(self.root), 'upload escaped isolated Core')
-            require(path.read_bytes() == source, 'native uploaded bytes differ')
-        self.browser('reload')
-        require((self.root / 'reload-proof').read_text() == 'reload-proof\n', 'reload shell proof failed')
-        self.browser('resume')
-        require((self.root / 'resume-proof').read_text() == 'resume-proof\n', 'resume shell proof failed')
-        self.browser('connections')
-        require((self.root / 'launch-proof').read_text() == 'launch-proof\n', 'launch selection shell proof failed')
-        self.browser('mobile')
-        require((self.root / 'mobile-proof').read_text() == 'mobile-proof\n', 'mobile shell proof failed')
-        require((self.root / 'mobile-resume-proof').read_text() == 'mobile-resume-proof\n', 'mobile resume shell proof failed')
+        if not self.args.focus_rotation:
+            self.browser('draft-completion')
+            for name in ('draft-desktop-proof', 'draft-phone-proof'):
+                require((self.root / name).read_text() == 'draft-preserved\n', 'completion changed or submitted draft')
+                require(not (self.root / (name + '.unexpected')).exists(), 'completion submitted partial prompt')
+            self.browser('uploads')
+            require(not (self.root / 'unexpected-enter').exists(), 'upload submitted shell draft')
+            paths = json.loads((self.workspace / 'uploads.json').read_text())
+            source = (self.workspace / 'upload.png').read_bytes()
+            require(len(paths) == 21 and len(set(paths)) == 21, 'upload paths not distinct')
+            for name in paths:
+                path = Path(name)
+                require(path.is_absolute() and path.resolve().is_relative_to(self.root), 'upload escaped isolated Core')
+                require(path.read_bytes() == source, 'native uploaded bytes differ')
+            self.browser('reload')
+            require((self.root / 'reload-proof').read_text() == 'reload-proof\n', 'reload shell proof failed')
+            self.browser('resume')
+            require((self.root / 'resume-proof').read_text() == 'resume-proof\n', 'resume shell proof failed')
+            self.browser('connections')
+            require((self.root / 'launch-proof').read_text() == 'launch-proof\n', 'launch selection shell proof failed')
+            self.browser('mobile')
+            require((self.root / 'mobile-proof').read_text() == 'mobile-proof\n', 'mobile shell proof failed')
+            require((self.root / 'mobile-resume-proof').read_text() == 'mobile-resume-proof\n', 'mobile resume shell proof failed')
         self.browser('multi-computer')
         require((self.root / 'second-computer-proof').read_text() == 'second-computer-proof\n', 'second computer shell proof failed')
         require((self.root / 'first-computer-proof').read_text() == 'first-computer-proof\n', 'first computer resume proof failed')
+        self.browser('rotation')
+        for name in ('rotation-keeper-before-proof', 'rotation-other-before-proof',
+                     'rotation-keeper-after-proof', 'rotation-second-existing-proof',
+                     'rotation-second-pairing-proof', 'rotation-keeper-final-proof'):
+            require((self.root / name).read_text() == name + '\n', 'rotation native shell proof failed')
+        if self.args.focus_rotation:
+            report = {'ok': True, 'scope': 'focused-rotation', 'transport': self.args.transport,
+                      'checks': ['pair', 'two-remembered-computers', 'rotation-original-capability',
+                                 'rotation-keeper-peer-unchanged', 'rotation-live-revocation',
+                                 'rotation-resume-denied', 'rotation-old-capability-denied',
+                                 'rotation-second-computer-existing-key', 'rotation-second-computer-old-capability',
+                                 'rotation-settings-desktop-phone']}
+            self.save_artifacts(report)
+            print(json.dumps(report))
+            return
         large = self.browser('large')
         require((self.root / 'large-proof').read_text() == 'large-proof\n', 'large output shell proof failed')
         require(all(p.poll() is None for p in self.children), 'child exited during acceptance')
         report = {'ok': True, 'transport': self.args.transport, 'externalRelay': bool(external), 'pairs': paired['pairs'],
                   'checks': ['shell-file', 'upload-bytes', 'no-enter', '20-sequential-uploads',
-                             'completion-keeps-desktop-phone-draft', 'client-browser-link', 'reload', 'resume', 'connections-root', 'launch-resume', 'phone-input', 'phone-reconnect', 'two-remembered-computers', '400k-output'], 'receivedBytes': large['receivedBytes']}
+                             'completion-keeps-desktop-phone-draft', 'client-browser-link', 'reload', 'resume', 'connections-root', 'launch-resume', 'phone-input', 'phone-reconnect', 'two-remembered-computers',
+                             'rotation-separate-profiles-original-capability', 'rotation-ui-confirmation',
+                             'rotation-keeper-peer-unchanged', 'rotation-live-revocation', 'rotation-resume-denied',
+                             'rotation-old-capability-denied', 'rotation-second-computer-existing-key',
+                             'rotation-second-computer-old-capability', 'rotation-settings-desktop-phone', '400k-output'], 'receivedBytes': large['receivedBytes']}
+        self.save_artifacts(report)
+        print(json.dumps(report))
+
+    def save_artifacts(self, report):
         if self.args.artifacts:
             self.args.artifacts.mkdir(parents=True, exist_ok=True)
             private(self.args.artifacts / ('report-' + secrets.token_hex(4) + '.json'), json.dumps(report, indent=2))
-        print(json.dumps(report))
+            # Only fixed-name page screenshots, never CDP traces, job/pairing data
+            # or browser profile state. Retained images are owner-readable only.
+            for name in ('rotation-settings-desktop.png', 'rotation-settings-phone.png'):
+                destination = self.args.artifacts / (secrets.token_hex(4) + '-' + name)
+                fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write((self.workspace / name).read_bytes())
 
     def close(self):
         errors = []
@@ -428,6 +477,7 @@ def main():
     parser.add_argument('--port', type=int, default=9001)
     parser.add_argument('--relay-origin', help='Existing canonical HTTPS relay; no local relay/coturn or browser certificate exception')
     parser.add_argument('--artifacts', type=lambda p: Path(p).expanduser().resolve())
+    parser.add_argument('--focus-rotation', action='store_true', help='Run pair, multi-computer and rotation only; not full acceptance')
     args = parser.parse_args()
     require(1 <= args.port <= 65535, 'invalid port')
     if args.relay_origin is not None:

@@ -11,7 +11,7 @@ import struct
 import tempfile
 import types
 import unittest
-from unittest.mock import patch, Mock
+from unittest.mock import patch, Mock, MagicMock
 
 SPEC = importlib.util.spec_from_file_location('relay_e2e', Path(__file__).parent.parent / 'relay-e2e.py')
 runner = importlib.util.module_from_spec(SPEC)
@@ -81,7 +81,7 @@ class OfflineTests(unittest.TestCase):
         browser = object.__new__(namespace['Browser'])
         browser.js = Mock(return_value={'x': 10, 'y': 20})
         browser.call = Mock()
-        browser.wait = Mock()
+        browser.wait = Mock(return_value={'x': 10, 'y': 20})
         return browser
 
     def test_wait_retries_navigation_but_not_real_page_errors(self):
@@ -89,7 +89,7 @@ class OfflineTests(unittest.TestCase):
         wait = type(browser).wait.__get__(browser)
         pending = type(browser).call.__globals__['NavigationPending']
         browser.js.side_effect = [pending('Browser navigation pending'), True]
-        wait('true', timeout=1)
+        self.assertIs(wait('true', timeout=1), True)
         self.assertEqual(browser.js.call_count, 2)
         browser.js.side_effect = RuntimeError('page evaluation failed')
         with self.assertRaisesRegex(RuntimeError, 'page evaluation failed'):
@@ -117,9 +117,34 @@ class OfflineTests(unittest.TestCase):
     def test_click_waits_then_sends_real_pointer_events(self):
         browser = self.browser_helper()
         browser.click('button[aria-label="Settings"]')
-        self.assertIn('!e.disabled', browser.wait.call_args.args[0])
-        self.assertEqual([c.args[1]['type'] for c in browser.call.call_args_list],
+        self.assertIn('document.hasFocus()', browser.wait.call_args_list[0].args[0])
+        self.assertIn("document.visibilityState==='visible'", browser.wait.call_args_list[0].args[0])
+        expression = browser.wait.call_args.args[0]
+        self.assertIn('e.disabled', expression)
+        self.assertIn('e?.isConnected', expression)
+        self.assertIn('document.elementFromPoint', expression)
+        self.assertNotIn('requestAnimationFrame', expression)
+        browser.js.assert_not_called()
+        self.assertEqual([c.args[0] for c in browser.call.call_args_list],
+                         ['Page.bringToFront', 'Input.dispatchMouseEvent', 'Input.dispatchMouseEvent'])
+        self.assertEqual([c.args[1]['type'] for c in browser.call.call_args_list[1:]],
                          ['mousePressed', 'mouseReleased'])
+
+    def test_click_never_dispatches_before_actual_page_focus(self):
+        browser = self.browser_helper()
+        browser.wait.side_effect = AssertionError('input page focused')
+        with self.assertRaisesRegex(AssertionError, 'input page focused'):
+            browser.click('.terminal-host')
+        browser.call.assert_called_once_with('Page.bringToFront')
+
+    def test_click_does_not_replay_after_pointer_dispatch_failure(self):
+        browser = self.browser_helper()
+        browser.call.side_effect = [{}, {}, RuntimeError('CDP operation failed')]
+        with self.assertRaisesRegex(RuntimeError, 'CDP operation failed'):
+            browser.click('button')
+        self.assertEqual([c.args[0] for c in browser.call.call_args_list],
+                         ['Page.bringToFront', 'Input.dispatchMouseEvent', 'Input.dispatchMouseEvent'])
+        self.assertEqual(browser.wait.call_count, 2)
 
     def test_nested_raw_draft_fixture_compiles_and_completion_is_one_shot(self):
         source = (Path(__file__).parent / 'browser.py').read_text()
@@ -129,6 +154,127 @@ class OfflineTests(unittest.TestCase):
         compile(code.replace('PROOF', repr('/isolated-fixture-proof')), '<raw-draft-fixture>', 'exec')
         # OSC color replies end in BEL too; they must not retrigger the Ctrl-G paint.
         self.assertIn(f"if data=={bytes([7])!r} and not painted:", code)
+
+    def profile_helper(self, fail=None):
+        source = (Path(__file__).parent / 'browser.py').read_text()
+        node = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef) and n.name == 'BrowserProfile')
+        calls, pages, sockets = [], [], []
+        class FakeBrowser:
+            def __init__(self, target):
+                if fail == 'page':
+                    raise RuntimeError('private page failure')
+                self.ws = Mock()
+                pages.append(self)
+            def call(self, method, params=None):
+                calls.append((method, params))
+                if method == 'Target.createBrowserContext':
+                    return {'browserContextId': 'owned-context-' + str(len(sockets))}
+                if method == 'Target.createTarget':
+                    if fail == 'target':
+                        raise RuntimeError('private target failure')
+                    return {'targetId': 'owned-page'}
+                if method == 'Page.addScriptToEvaluateOnNewDocument' and fail == 'observer':
+                    raise RuntimeError('private observer failure')
+                if method == 'Target.disposeBrowserContext' and fail == 'dispose':
+                    raise RuntimeError('private disposal failure')
+                return {}
+        def connect(*args, **kwargs):
+            ws = Mock()
+            sockets.append(ws)
+            return ws
+        namespace = {'Browser': FakeBrowser, 'OBSERVER': 'passive observer',
+                     'urllib': types.SimpleNamespace(request=types.SimpleNamespace(urlopen=MagicMock())),
+                     'json': types.SimpleNamespace(load=Mock(return_value={'webSocketDebuggerUrl': 'private endpoint'})),
+                     'websocket': types.SimpleNamespace(create_connection=connect)}
+        exec(compile(ast.Module(body=[node], type_ignores=[]), '<browser-profile>', 'exec'), namespace)
+        return namespace['BrowserProfile'], calls, pages, sockets
+
+    def test_profiles_own_distinct_contexts_and_dispose_on_body_failure(self):
+        profile, calls, pages, sockets = self.profile_helper()
+        with self.assertRaisesRegex(AssertionError, 'body failed'):
+            with profile(), profile():
+                raise AssertionError('body failed')
+        created = [p['browserContextId'] for m, p in calls if m == 'Target.createTarget']
+        disposed = [p['browserContextId'] for m, p in calls if m == 'Target.disposeBrowserContext']
+        self.assertEqual(len(set(created)), 2)
+        self.assertEqual(disposed, list(reversed(created)))
+        self.assertTrue(all(p.ws.close.call_count == 1 for p in pages))
+        self.assertTrue(all(s.close.call_count == 1 for s in sockets))
+        self.assertFalse(any(m in ('Target.closeTarget', 'Target.activateTarget') for m, _ in calls))
+
+    def test_profile_partial_setup_and_disposal_failures_close_sockets(self):
+        for fail in ('target', 'page', 'observer', 'dispose'):
+            with self.subTest(fail=fail):
+                profile, calls, pages, sockets = self.profile_helper(fail)
+                with self.assertRaises(RuntimeError):
+                    with profile():
+                        pass
+                self.assertEqual([p for m, p in calls if m == 'Target.disposeBrowserContext'],
+                                 [{'browserContextId': 'owned-context-1'}])
+                self.assertTrue(all(p.ws.close.call_count == 1 for p in pages))
+                self.assertEqual(sockets[0].close.call_count, 1)
+
+    def test_rotation_uses_real_ui_original_capabilities_and_native_proofs(self):
+        source = (Path(__file__).parent / 'browser.py').read_text()
+        tree = ast.parse(source)
+        rotation = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'rotation_acceptance')
+        text = ast.get_source_segment(source, rotation)
+        self.assertEqual(text.count("keeper.click('[aria-label=\"Confirm access token rotation\"] .danger')"), 1)
+        self.assertEqual(text.count("job['pairing']"), 3)
+        self.assertIn("job['secondPairing']", text)
+        self.assertIn('rotationPeer.connectionState', text)
+        self.assertIn('peers.length===window.__e2e.rotationCount', text)
+        self.assertIn('denied_profile(other)', text)
+        self.assertIn('denied_profile(fresh)', text)
+        self.assertIn('rotation-second-existing-proof', text)
+        self.assertIn('rotation-second-pairing-proof', text)
+        settings = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'rotation_settings')
+        settings_text = ast.get_source_segment(source, settings)
+        self.assertIn("'width': 390", settings_text)
+        self.assertIn("screenshot.chmod(0o600)", settings_text)
+        self.assertIn('rotation_settings(keeper, False)', text)
+        self.assertIn('rotation_settings(fresh_second, True)', text)
+        self.assertIn("keeper.click('[aria-label=\"Close navigation\"]')", text)
+        self.assertNotIn('fetch(', text)
+        self.assertNotIn('/api/', text)
+        runner_source = (Path(__file__).parent.parent / 'relay-e2e.py').read_text()
+        self.assertLess(runner_source.index("self.browser('multi-computer')"), runner_source.index("self.browser('rotation')"))
+        self.assertLess(runner_source.index("self.browser('rotation')"), runner_source.index("self.browser('large')"))
+
+    def test_focused_rotation_is_explicit_and_never_claims_full_acceptance(self):
+        source = (Path(__file__).parent.parent / 'relay-e2e.py').read_text()
+        self.assertIn("'--focus-rotation'", source)
+        tree = ast.parse(source)
+        execute = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'execute')
+        focused = next(n for n in execute.body if isinstance(n, ast.If) and ast.unparse(n.test) == 'self.args.focus_rotation')
+        self.assertIsInstance(focused.body[-1], ast.Return)
+        self.assertIn('focused-rotation', ast.unparse(focused))
+        self.assertLess(source.index("self.browser('rotation')"), source.index("'scope': 'focused-rotation'"))
+        self.assertLess(source.index("'scope': 'focused-rotation'"), source.index("self.browser('large')"))
+
+    def test_private_binary_artifacts_are_owner_only_and_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'capture.png'
+            runner.private(path, b'private image')
+            self.assertEqual(path.read_bytes(), b'private image')
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with self.assertRaises(FileExistsError):
+                runner.private(path, b'other')
+
+    def test_denial_waits_for_real_auth_retries_not_sleep(self):
+        source = (Path(__file__).parent / 'browser.py').read_text()
+        node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == 'denied_profile')
+        namespace = {}
+        exec(compile(ast.Module(body=[node], type_ignores=[]), '<denied-profile>', 'exec'), namespace)
+        browser = Mock()
+        browser.js.return_value = True
+        namespace['denied_profile'](browser)
+        self.assertIn('authAttempts>=2', browser.wait.call_args.args[0])
+        self.assertIn('Connection interrupted', browser.wait.call_args.args[0])
+        self.assertIn('peers.length===0', browser.js.call_args.args[0])
+        browser.js.return_value = False
+        with self.assertRaisesRegex(AssertionError, 'rotation authorization rejected'):
+            namespace['denied_profile'](browser)
 
     def test_sources_compile_without_bytecode(self):
         directory = Path(__file__).parent

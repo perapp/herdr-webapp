@@ -24,7 +24,7 @@
     storage: { getItem: key => sessionStorage.getItem(key), setItem: (key, value) => sessionStorage.setItem(key, value) },
     reload: () => location.reload(), changed: state => { update = state; }, visible: () => document.visibilityState === 'visible' }))();
   setContext(reloadContext, updater);
-  // The one-use capability is only durable after authenticated saveComputer succeeds.
+  // Enrollment is durable only after authenticated saveComputer succeeds.
   const paired = (() => pairingFragment ? updater.busy() : undefined)();
   let captureActivity = () => {};
   function reloadUpdate() {

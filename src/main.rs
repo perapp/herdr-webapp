@@ -1,3 +1,4 @@
+mod access;
 mod attachments;
 mod auth;
 mod build_info;
@@ -267,16 +268,22 @@ async fn main() -> anyhow::Result<()> {
         .join("web-push");
     let notifications = notifications::Notifications::open(&notification_dir)?;
     let _ = core.notifications.set(notifications.clone());
-    tokio::spawn(notifications.observe(core.notification_events.subscribe()));
     let app = Arc::new(App {
         core: core.clone(),
         updates: updates.clone(),
-        auth: Auth::persistent(
+        auth: Auth::persistent_with_token_path(
             token.clone(),
             config.public_origin.clone(),
             config.session_path()?,
+            token_path.clone(),
         )?,
     });
+    let push_owners = app
+        .auth
+        .notification_owners()
+        .map_err(|_| anyhow::anyhow!("Access storage unavailable"))?;
+    notifications.retain_owners(&push_owners).await?;
+    tokio::spawn(notifications.observe(core.notification_events.subscribe()));
     let listener = if let Some(port) = config.port {
         tokio::net::TcpListener::bind((config.bind, port)).await?
     } else {
@@ -312,12 +319,54 @@ async fn main() -> anyhow::Result<()> {
         .public_origin
         .clone()
         .unwrap_or_else(|| format!("http://{}", std::net::SocketAddr::new(host, address.port())));
+    let mut access_changes = app.auth.subscribe();
+    let initial_access = app
+        .auth
+        .current_token_snapshot()
+        .map_err(|_| anyhow::anyhow!("Access storage unavailable"))?;
     let dashboard = Arc::new(dashboard::Dashboard::start(
-        &format!("{origin}/#token={token}"),
+        &format!("{origin}/#token={}", initial_access.token),
         &socket.display().to_string(),
         config.no_dashboard,
         dashboard::Mode::Local,
     )?);
+    let access_auth = app.clone();
+    let access_display = dashboard.handle();
+    let access_log = dashboard.clone();
+    let access_logger = tokio::spawn(async move {
+        let mut last_token = initial_access.token;
+        let mut revision = initial_access.revision;
+        let mut authenticated = initial_access.authenticated;
+        if authenticated {
+            access_display.first_authenticated_client();
+        }
+        while access_changes.changed().await.is_ok() {
+            let Ok(snapshot) = access_auth.auth.current_token_snapshot() else {
+                access_display.hide_private_link();
+                access_log.log("Access storage unavailable; private link hidden");
+                continue;
+            };
+            if snapshot.revision == revision {
+                continue;
+            }
+            revision = snapshot.revision;
+            if snapshot.token != last_token {
+                // Hide before installing new credentials, even after an explicit reveal.
+                access_display.hide_private_link();
+                if access_display
+                    .replace_url(format!("{origin}/#token={}", snapshot.token))
+                    .is_err()
+                {
+                    access_log.log("Private link display could not be updated");
+                }
+                last_token = snapshot.token;
+            }
+            if snapshot.authenticated && !authenticated {
+                access_display.first_authenticated_client();
+                authenticated = true;
+            }
+        }
+    });
     let mut status = core.state.subscribe();
     let logger = dashboard.clone();
     let status_logger = tokio::spawn(async move {
@@ -372,6 +421,8 @@ async fn main() -> anyhow::Result<()> {
         },
     }
     // Stop the only dashboard-owning task and restore its screen before exec.
+    access_logger.abort();
+    let _ = access_logger.await;
     status_logger.abort();
     let _ = status_logger.await;
     drop(dashboard);
@@ -401,6 +452,7 @@ pub fn router(app: Shared) -> Router {
         .merge(attachments::routes())
         .merge(update::routes())
         .merge(component_updates::routes())
+        .merge(access::router(app.core.notifications.get().cloned()))
         .fallback(get(asset))
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(axum::middleware::from_fn(auth::security_headers))
@@ -437,9 +489,16 @@ async fn logout(State(app): State<Shared>, headers: HeaderMap) -> Result<Respons
     )
         .into_response())
 }
-async fn session(State(app): State<Shared>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
+async fn session(State(app): State<Shared>, headers: HeaderMap) -> Result<Response, ApiError> {
     app.auth.require(&headers)?;
-    Ok(Json(json!({"authenticated":true})))
+    let mut response = Json(json!({"authenticated":true})).into_response();
+    if let Some(cookie) = app.auth.renew_cookie(&headers) {
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            cookie.parse().expect("generated cookie"),
+        );
+    }
+    Ok(response)
 }
 async fn state(State(app): State<Shared>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     app.auth.require(&headers)?;
@@ -449,6 +508,7 @@ async fn events(
     State(app): State<Shared>,
     headers: HeaderMap,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let mut access = app.auth.subscribe();
     app.auth.require(&headers)?;
     let mut state = app.core.state.subscribe();
     Ok(Sse::new(async_stream::stream! {
@@ -458,6 +518,7 @@ async fn events(
             yield Ok(Event::default().event("state").data(data));
             tokio::select! {
                 result=state.changed()=>if result.is_err(){break;},
+                result=access.changed()=>if result.is_err(){break;},
                 _=tokio::time::sleep(Duration::from_secs(15))=>{},
             }
         }

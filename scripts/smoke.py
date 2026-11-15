@@ -364,6 +364,44 @@ async def main(binary: Path, keep: bool, hold: bool):
             command("a", "server", "start")
             await wait_state(lambda s: s["connected"] and any(t["address"]==remote["terminal"] for t in s["terminals"]))
             print("PASS isolated core disconnect and fresh-snapshot reconnect")
+            # Rotation preserves the initiating profile and its existing socket.
+            async with httpx.AsyncClient(base_url=origin, headers={"Origin": origin}, timeout=30) as other:
+                assert (await other.post("/api/login", json={"token": token})).status_code == 200
+                other_cookie = "; ".join(f"{k}={v}" for k, v in other.cookies.items())
+                info = await client.get("/api/access")
+                assert info.status_code == 200 and info.json()["tokenLifetime"] == "untilRotated"
+                assert (await client.post("/api/access/rotate", json={}, headers={"Origin": "https://foreign.invalid"})).status_code == 403
+                async with attach(local["terminal"]) as keeper:
+                    async with connect(wsbase + "?terminal=" + local["terminal"], origin=origin,
+                                       additional_headers={"Cookie": other_cookie}) as revoked:
+                        async with asyncio.timeout(10):
+                            while True:
+                                message = await revoked.recv()
+                                if isinstance(message, str) and json.loads(message).get("type") == "attached": break
+                        await revoked.send(json.dumps({"type": "credit", "bytes": 262144}))
+                        old_token = token
+                        rotated = await client.post("/api/access/rotate", json={})
+                        assert rotated.status_code == 200 and rotated.json() == {"rotated": True}
+                        assert client.cookies.get("herdr_session") == session_before_restart
+                        assert (await other.get("/api/state")).status_code == 401
+                        assert (await other.get("/api/state", headers={"Cookie": "", "Authorization": "Bearer " + old_token})).status_code == 401
+                        assert (await other.post("/api/access/rotate", json={})).status_code == 401
+                        async with asyncio.timeout(3):
+                            try:
+                                while True:
+                                    message = await revoked.recv()
+                                    if isinstance(message, str) and json.loads(message).get("type") == "error": break
+                            except Exception as exc:
+                                from websockets.exceptions import ConnectionClosed
+                                assert isinstance(exc, ConnectionClosed)
+                        await keeper.send(json.dumps({"type": "input", "data": "printf '%s%s\\n' ROTATION_ CONTINUITY\r"}))
+                        await output_until(keeper, b"ROTATION_CONTINUITY")
+                token = token_file.read_text().strip()
+                assert token != old_token, "access file was not rotated"
+                await restart_server()
+                assert (await client.get("/api/session")).status_code == 200
+                assert (await other.get("/api/session")).status_code == 401
+            print("PASS permanent access, keeper socket continuity, other-client/token revocation and durable rotation")
             async with attach(remote["terminal"],observe=True) as ws:
                 assert (await client.post("/api/logout")).status_code == 200
                 async with asyncio.timeout(12):

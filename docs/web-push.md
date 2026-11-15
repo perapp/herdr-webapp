@@ -4,7 +4,9 @@ The **computer's connector**, not the public relay, observes native Core events 
 
 ## Authenticated API
 
-These paths use normal local authenticated/exact-Origin HTTP protections, or the existing authenticated encrypted peer control transport. They are NOT public relay endpoints. Peer registrations are bound server-side to the verified browser signing public key, not a caller-supplied owner. Local HTTP has the existing single trusted-user capability model.
+These paths use normal local authenticated/exact-Origin HTTP protections, or the existing authenticated encrypted peer control transport. They are NOT public relay endpoints. Peer registrations are bound server-side to the verified browser signing public key, not a caller-supplied owner. Local HTTP binds registrations to the server-derived hashed cookie identity (or hashed bearer identity); it never accepts an owner supplied by a request. Cookie profiles do not share a fallback owner.
+
+Access-token rotation retains only the initiating profile/key's registrations, cancels other owners' queued and in-flight delivery, and removes their foreground leases. Enrollment is serialized with rotation and rechecks authentication after waiting. Startup reconciles the push file against the authoritative durable Auth/Pairings allowlist **before** observing Core, so a failed cleanup after committed revocation cannot restore stale subscriptions on restart. Unattributable legacy `local` registrations are removed; that browser may need to enable notifications again.
 
 * `GET /api/notifications`: `{supported:true,publicKey:"<unpadded base64url P-256 public key>"}`; `{supported:false}` on backends without an observer.
 * `POST /api/notifications`: `{subscription:{endpoint,keys:{p256dh,auth}},connectionId,channel:"stable"|"main"}`. Returns `{ok:true}`. Registration is idempotent for the authenticated device and endpoint. Browser subscription JSON's optional expirationTime is accepted and ignored. `connectionId` is the secret-free computer route identifier, at most 128 ASCII letters/digits/underscore/hyphen.

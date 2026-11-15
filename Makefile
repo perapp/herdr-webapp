@@ -69,6 +69,7 @@ dev-embedded: frontend
 
 smoke:
 	python3 -B scripts/test_terminal_provenance.py
+	python3 -B scripts/test_access_privacy.py --binary "$(CURDIR)/target/release/herdr-webapp"
 	uv run --script scripts/smoke.py --binary "$(CURDIR)/target/release/herdr-webapp"
 
 clean:

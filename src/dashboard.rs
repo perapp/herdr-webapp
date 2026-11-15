@@ -71,11 +71,53 @@ impl ConnectionCard {
         })
     }
 }
+struct AccessDisplay {
+    card: Arc<ConnectionCard>,
+    visible: bool,
+    authenticated: bool,
+}
+impl AccessDisplay {
+    fn toggle(&mut self) {
+        self.visible = !self.visible;
+    }
+    fn first_authenticated_client(&mut self) {
+        if !self.authenticated {
+            self.authenticated = true;
+            self.visible = false;
+        }
+    }
+}
 struct Inner {
-    card: Mutex<Arc<ConnectionCard>>,
+    access: Mutex<AccessDisplay>,
     lines: Mutex<VecDeque<String>>,
     stop: AtomicBool,
     interactive: bool,
+}
+/// Cosmetic display control only: never changes authentication or revokes access.
+#[derive(Clone)]
+pub struct DashboardHandle {
+    inner: Arc<Inner>,
+}
+impl DashboardHandle {
+    /// Call only after successful authentication, never on an attempted connection.
+    /// Reconnects cannot undo a later intentional reveal.
+    pub fn first_authenticated_client(&self) {
+        self.inner
+            .access
+            .lock()
+            .unwrap()
+            .first_authenticated_client();
+    }
+    pub fn hide_private_link(&self) {
+        self.inner.access.lock().unwrap().visible = false;
+    }
+    /// Atomically replace URL and both QR representations, preserving visibility.
+    /// Noninteractive output never appends replacement credentials to scrollback.
+    pub fn replace_url(&self, login: impl AsRef<str>) -> Result<()> {
+        let card = Arc::new(ConnectionCard::new(login.as_ref(), self.inner.interactive)?);
+        self.inner.access.lock().unwrap().card = card;
+        Ok(())
+    }
 }
 pub struct Dashboard {
     inner: Arc<Inner>,
@@ -88,7 +130,11 @@ impl Dashboard {
         // One immutable card keeps the URL, text QR and native PNG in sync.
         let card = Arc::new(ConnectionCard::new(login, interactive)?);
         let inner = Arc::new(Inner {
-            card: Mutex::new(card.clone()),
+            access: Mutex::new(AccessDisplay {
+                card: card.clone(),
+                visible: true,
+                authenticated: false,
+            }),
             lines: Mutex::new(VecDeque::new()),
             stop: AtomicBool::new(false),
             interactive,
@@ -122,15 +168,19 @@ impl Dashboard {
         this.log(card.unavailable.as_deref().unwrap_or(mode.ready()));
         Ok(this)
     }
+    pub fn handle(&self) -> DashboardHandle {
+        DashboardHandle {
+            inner: self.inner.clone(),
+        }
+    }
     /// Swap all representations together. Never append fresh secrets to logs.
     pub fn update_link(&self, login: &str) -> Result<()> {
-        let card = Arc::new(ConnectionCard::new(login, self.inner.interactive)?);
-        *self.inner.card.lock().unwrap() = card;
-        self.log("Pairing link and QR renewed; existing trusted browsers are unchanged.");
+        self.handle().replace_url(login)?;
+        self.log("Private link and QR renewed; existing trusted browsers are unchanged.");
         Ok(())
     }
     pub fn unavailable(&self, message: &str) {
-        *self.inner.card.lock().unwrap() = Arc::new(ConnectionCard {
+        self.inner.access.lock().unwrap().card = Arc::new(ConnectionCard {
             login: String::new(),
             qr: String::new(),
             png: None,
@@ -244,7 +294,9 @@ impl Frame {
             }
             None
         };
-        rows.push("Private URL and QR grant FULL SHELL ACCESS · Do not share either.".into());
+        rows.push(
+            "Private URL and QR grant FULL SHELL ACCESS · L: hide private link and QR.".into(),
+        );
         rows.push(transport_notice(login).into());
         rows.push(format!("Core  {socket}"));
         rows.push("─ Logs (UTC) ─────────────────────────────────────────────────────────".into());
@@ -256,6 +308,40 @@ impl Frame {
             log_start,
             width,
             height,
+        }
+    }
+    fn hidden(socket: &str, mode: Mode, size: (u16, u16)) -> Self {
+        let mut frame = Self::unavailable(
+            "Private URL and QR hidden. L: show private link and QR · Access remains valid.",
+            socket,
+            mode,
+            size,
+        );
+        frame.rows[1] = format!("{} hidden", mode.label());
+        frame
+    }
+    fn for_access(
+        access: &AccessDisplay,
+        socket: &str,
+        mode: Mode,
+        size: (u16, u16),
+        supported: bool,
+        pending: bool,
+    ) -> Self {
+        if !access.visible {
+            Self::hidden(socket, mode, size)
+        } else if let Some(message) = &access.card.unavailable {
+            Self::unavailable(message, socket, mode, size)
+        } else {
+            Self::new(
+                &access.card.qr,
+                &access.card.login,
+                socket,
+                mode,
+                size,
+                supported,
+                pending,
+            )
         }
     }
     fn unavailable(message: &str, socket: &str, mode: Mode, size: (u16, u16)) -> Self {
@@ -331,13 +417,19 @@ fn run(inner: &Inner, socket: &str, mode: Mode) {
                 let _ = write_output(&probe.query());
                 probe.query_sent();
             }
-            probe.poll();
+            if probe.poll() % 2 == 1 {
+                let mut access = inner.access.lock().unwrap();
+                access.toggle();
+            }
         }
         let supported = probe.as_ref().is_some_and(GraphicsProbe::supported);
         let pending = probe.as_ref().is_some_and(|p| !p.finished());
         if let Ok(size) = terminal::size() {
-            let card = inner.card.lock().unwrap().clone();
-            let key = (size, supported, pending);
+            // Hold through output: once a hide callback returns, no stale render
+            // can race it and restore credentials on resize or log redraw.
+            let access = inner.access.lock().unwrap();
+            let card = access.card.clone();
+            let key = (size, supported, pending, access.visible);
             let changed = displayed
                 .as_ref()
                 .is_none_or(|old| !Arc::ptr_eq(old, &card));
@@ -346,19 +438,7 @@ fn run(inner: &Inner, socket: &str, mode: Mode) {
                     let _ = write_output(&dashboard_graphics::delete(probe.image_id()));
                 }
                 placed = false;
-                let next = if let Some(message) = &card.unavailable {
-                    Frame::unavailable(message, socket, mode, size)
-                } else {
-                    Frame::new(
-                        &card.qr,
-                        &card.login,
-                        socket,
-                        mode,
-                        size,
-                        supported,
-                        pending,
-                    )
-                };
+                let next = Frame::for_access(&access, socket, mode, size, supported, pending);
                 let mut output = next.full_text(&card.login);
                 if let (Some(at), Some(png), Some(probe)) =
                     (next.image, card.png.as_deref(), probe.as_ref())
@@ -426,6 +506,65 @@ impl Drop for Dashboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn first_auth_hides_until_explicit_reveal_and_rotation_preserves_visibility() {
+        let original = "https://synthetic.invalid/#token=synthetic-first";
+        let rotated = "https://synthetic.invalid/#token=synthetic-second";
+        let inner = Arc::new(Inner {
+            access: Mutex::new(AccessDisplay {
+                card: Arc::new(ConnectionCard::new(original, true).unwrap()),
+                visible: true,
+                authenticated: false,
+            }),
+            lines: Mutex::new(VecDeque::new()),
+            stop: AtomicBool::new(false),
+            interactive: true,
+        });
+        let handle = DashboardHandle {
+            inner: inner.clone(),
+        };
+        // Merely connecting (or failing auth) does not invoke the callback.
+        assert!(inner.access.lock().unwrap().visible);
+        handle.first_authenticated_client();
+        handle.replace_url(rotated).unwrap();
+        for mode in [Mode::Local, Mode::Relay] {
+            for size in [(40, 20), (120, 60)] {
+                for supported in [false, true] {
+                    let access = inner.access.lock().unwrap();
+                    let frame =
+                        Frame::for_access(&access, "synthetic.sock", mode, size, supported, false);
+                    let text = String::from_utf8(frame.full_text(&access.card.login)).unwrap();
+                    assert!(frame.image.is_none() && frame.links.is_empty());
+                    assert!(!text.contains(original) && !text.contains(rotated));
+                    assert!(!text.contains("\x1b]8;;") && !text.contains(&access.card.qr));
+                    assert!(
+                        !frame
+                            .log_text(&["synthetic log".into()])
+                            .windows(7)
+                            .any(|w| w == b"#token=")
+                    );
+                }
+            }
+        }
+        // Only intentional input changes this flag; repeated auth/reconnect does not.
+        inner.access.lock().unwrap().toggle();
+        handle.first_authenticated_client();
+        let access = inner.access.lock().unwrap();
+        let frame = Frame::for_access(
+            &access,
+            "synthetic.sock",
+            Mode::Local,
+            (120, 60),
+            true,
+            false,
+        );
+        assert!(frame.image.is_some());
+        let text = String::from_utf8(frame.full_text(&access.card.login)).unwrap();
+        assert!(text.contains(rotated) && !text.contains(original));
+        drop(access);
+        handle.hide_private_link();
+        assert!(!inner.access.lock().unwrap().visible);
+    }
     #[test]
     fn renewed_card_keeps_url_text_and_png_together() {
         let old =

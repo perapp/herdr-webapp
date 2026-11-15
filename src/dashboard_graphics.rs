@@ -49,6 +49,7 @@ pub fn png_bytes(code: &QrCode) -> anyhow::Result<Vec<u8>> {
 pub struct GraphicsProbe {
     terminal: TerminalMode,
     parser: ReplyParser,
+    keys: PrivateLinkKeys,
     timing: ProbeTiming,
     supported: bool,
 }
@@ -74,6 +75,7 @@ impl GraphicsProbe {
         Some(Self {
             terminal,
             parser: ReplyParser::new(id),
+            keys: PrivateLinkKeys::default(),
             timing: ProbeTiming::default(),
             supported: false,
         })
@@ -106,10 +108,13 @@ impl GraphicsProbe {
     }
 
     /// Bounded nonblocking drain, without changing shared file status flags.
-    pub fn poll(&mut self) {
+    /// Return intentional plain L/l presses only; protocol replies and encoded
+    /// key/paste data are drained, never interpreted as dashboard commands.
+    pub fn poll(&mut self) -> usize {
+        let mut toggles = 0;
         let fd = self.terminal.fd.as_raw_fd();
         if !is_foreground(fd) {
-            return; // Reading a background tty could otherwise raise SIGTTIN.
+            return 0; // Reading a background tty could otherwise raise SIGTTIN.
         }
         let mut bytes = [0u8; 1024];
         for _ in 0..8 {
@@ -130,6 +135,7 @@ impl GraphicsProbe {
             if n <= 0 {
                 break;
             }
+            toggles += self.keys.feed(&bytes[..n as usize]);
             let matched = self.parser.feed(&bytes[..n as usize]);
             // Timeout means "show text for now", never "discard valid proof".
             // Continue draining for our entire input-ownership lifetime.
@@ -137,6 +143,7 @@ impl GraphicsProbe {
                 self.supported = true;
             }
         }
+        toggles
     }
 
     pub fn supported(&self) -> bool {
@@ -147,6 +154,85 @@ impl GraphicsProbe {
     }
     pub fn image_id(&self) -> u32 {
         self.parser.id
+    }
+}
+
+/// Streaming input classifier, independent of read boundaries. Be conservative:
+/// incomplete escape strings remain suppressed rather than timing out into keys.
+#[derive(Default)]
+struct PrivateLinkKeys {
+    state: u8,
+    csi: Vec<u8>,
+    paste: bool,
+    osc: bool,
+}
+impl PrivateLinkKeys {
+    fn feed(&mut self, bytes: &[u8]) -> usize {
+        let mut toggles = 0;
+        for &byte in bytes {
+            match self.state {
+                0 => match byte {
+                    0x1b => self.state = 1,
+                    b'L' | b'l' if !self.paste => toggles += 1,
+                    _ => {}
+                },
+                1 => {
+                    self.state = match byte {
+                        b'[' => {
+                            self.csi.clear();
+                            2
+                        }
+                        b'O' => 3, // SS3 encoded key
+                        b']' | b'P' | b'_' | b'^' | b'X' => {
+                            self.osc = byte == b']';
+                            4
+                        }
+                        0x1b => 1,
+                        _ => 0, // Includes Alt+L: not a plain key.
+                    };
+                }
+                2 => {
+                    if (0x40..=0x7e).contains(&byte) {
+                        if byte == b'~' {
+                            if self.csi == b"200" {
+                                self.paste = true;
+                            }
+                            if self.csi == b"201" {
+                                self.paste = false;
+                            }
+                        }
+                        self.state = 0;
+                    } else if byte == 0x1b {
+                        self.state = 1;
+                    } else if self.csi.len() < 32 {
+                        self.csi.push(byte);
+                    }
+                }
+                3 => {
+                    if byte == 0x1b {
+                        self.state = 1;
+                    } else if (0x40..=0x7e).contains(&byte) {
+                        self.state = 0;
+                    }
+                }
+                4 => {
+                    if byte == 0x1b {
+                        self.state = 5;
+                    } else if byte == 7 && self.osc {
+                        self.state = 0;
+                    }
+                }
+                5 => {
+                    self.state = match byte {
+                        b'\\' => 0,
+                        0x1b => 5,
+                        _ => 4,
+                    };
+                }
+                _ => unreachable!(),
+            }
+        }
+        toggles
     }
 }
 
@@ -364,6 +450,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_plain_link_keys_toggle_not_replies_encoded_keys_or_paste() {
+        for sequence in [
+            &b"\x1b_Gi=123;LATE\x1b\\"[..],
+            &b"\x1b]10;rgb:LLLL/llll/0000\x07"[..],
+            &b"\x1bPsynthetic L l\x1b\\"[..],
+            &b"\x1b[1;2L"[..],
+            &b"\x1b[108u"[..],
+            &b"\x1bOL"[..],
+            &b"\x1bO1;2L"[..],
+            &b"\x1b_Gi=123;\x07L\x1b\\"[..],
+            &b"\x1bL"[..],
+            &b"\x1b[200~L l\x1b[201~"[..],
+        ] {
+            for split in 0..=sequence.len() {
+                let mut keys = PrivateLinkKeys::default();
+                assert_eq!(keys.feed(&sequence[..split]), 0);
+                assert_eq!(keys.feed(&sequence[split..]), 0);
+                assert_eq!(keys.feed(b"Ll"), 2);
+            }
+        }
+        let mut keys = PrivateLinkKeys::default();
+        assert_eq!(keys.feed(b"\x1b_G"), 0);
+        assert_eq!(keys.feed(&vec![b'L'; 100_000]), 0);
+        assert_eq!(keys.feed(b"\x1b\\l"), 1);
+        assert_eq!(keys.feed(b"hello"), 2); // Plain l, not an input-forwarding path.
+    }
+
+    #[test]
     fn fallback_clock_starts_after_flush_and_retries_are_sparse_and_bounded() {
         let start = Instant::now();
         let mut timing = ProbeTiming::default();
@@ -471,6 +585,65 @@ mod tests {
         assert!(!parser.feed(b"i=987654;OK\x1b\\"));
         assert!(!parser.feed(b"\x1b_Gi=987654;\x1bXOK\x1b\\"));
         assert!(parser.feed(b"noise\x1b_Gi=987654;OK\x1b\\"));
+    }
+
+    #[test]
+    fn disposable_pty_reads_hotkeys_without_enter_and_drains_protocol_replies() {
+        // An owned PTY only; never reads or changes the test runner's terminal.
+        let mut master = -1;
+        let mut slave = -1;
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let master = unsafe { OwnedFd::from_raw_fd(master) };
+        let terminal = TerminalMode::new(unsafe { OwnedFd::from_raw_fd(slave) }).unwrap();
+        let mut keys = PrivateLinkKeys::default();
+        let mut replies = ReplyParser::new(123456);
+        for (input, expected, positive) in [
+            (&b"\x1b_Gi=123456;OK\x1b\\"[..], 0, true),
+            (&b"\x1b]10;LLLL\x07\x1b[1;2L"[..], 0, false),
+            (&b"L"[..], 1, false),
+            (&b"l"[..], 1, false),
+        ] {
+            assert_eq!(
+                unsafe { libc::write(master.as_raw_fd(), input.as_ptr().cast(), input.len()) },
+                input.len() as isize
+            );
+            let mut remaining = input.len();
+            let mut toggles = 0;
+            let mut matched = false;
+            while remaining > 0 {
+                let mut pfd = libc::pollfd {
+                    fd: terminal.fd.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                assert_eq!(unsafe { libc::poll(&mut pfd, 1, 1000) }, 1);
+                let mut bytes = [0u8; 64];
+                let n = unsafe {
+                    libc::read(
+                        terminal.fd.as_raw_fd(),
+                        bytes.as_mut_ptr().cast(),
+                        bytes.len(),
+                    )
+                };
+                assert!(n > 0);
+                remaining -= n as usize;
+                toggles += keys.feed(&bytes[..n as usize]);
+                matched |= replies.feed(&bytes[..n as usize]);
+            }
+            assert_eq!(toggles, expected);
+            assert_eq!(matched, positive);
+        }
     }
 
     #[test]

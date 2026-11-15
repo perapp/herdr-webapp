@@ -3,6 +3,7 @@
   import VersionDialog from './VersionDialog.svelte';
   import InstallDialog from './InstallDialog.svelte';
   import NotificationSettings from './NotificationSettings.svelte';
+  import AccessSettings from './AccessSettings.svelte';
   import { installApp } from './lib/pwa';
   import { initializeAppearance, setAppearance, watchAppearance } from './lib/appearance';
   import type { AppearancePreference } from './lib/appearance';
@@ -91,6 +92,14 @@
     <section class="settings-section" aria-labelledby="notifications-heading">
       <h3 id="notifications-heading">Notifications</h3>
       <NotificationSettings />
+    </section>
+    <section class="settings-section" aria-labelledby="access-heading">
+      <h3 id="access-heading">Access</h3>
+      {#if !peerMode || connected}
+        <AccessSettings {peerMode} {connected} {computerName} />
+      {:else}
+        <p class="control-hint">Connect to a computer to manage its access.</p>
+      {/if}
     </section>
     <p class="settings-note" role="status">{saved && fontSaved ? 'Display changes are saved in this browser.' : 'Applied for now. Browser storage is unavailable; changes may not survive a reload.'}</p>
   </div>

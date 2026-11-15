@@ -56,6 +56,9 @@ pub struct PeerService {
     terminals: Arc<Semaphore>,
     uploads: Arc<Semaphore>,
     owner: crate::notifications::Owner,
+    access: Option<Arc<tokio::sync::Mutex<crate::relay_pairings::Pairings>>>,
+    dashboard: Option<crate::dashboard::DashboardHandle>,
+    auth_generation: Option<u64>,
 }
 impl PeerService {
     #[cfg(test)]
@@ -87,7 +90,29 @@ impl PeerService {
             terminals: Arc::new(Semaphore::new(32)),
             uploads: Arc::new(Semaphore::new(2)),
             owner: crate::notifications::Owner(owner),
+            access: None,
+            dashboard: None,
+            auth_generation: None,
         }
+    }
+
+    /// Browser identity is the connector-verified signing key, never the private
+    /// router bearer or a request-provided retainKey.
+    pub fn with_access(
+        mut self,
+        pairings: Arc<tokio::sync::Mutex<crate::relay_pairings::Pairings>>,
+    ) -> Self {
+        self.access = Some(pairings);
+        self
+    }
+
+    pub fn with_generation(mut self, generation: u64) -> Self {
+        self.auth_generation = Some(generation);
+        self
+    }
+    pub fn with_dashboard(mut self, dashboard: Option<crate::dashboard::DashboardHandle>) -> Self {
+        self.dashboard = dashboard;
+        self
     }
 
     /// Only call after authenticated session hello. Drop this future to cancel;
@@ -96,6 +121,37 @@ impl PeerService {
     /// Upload metadata uses contentType: application/octet-stream; size is exact.
     /// Unknown routes (including local updater/login/logout) are never dispatched.
     pub async fn serve_channel(
+        &self,
+        label: &str,
+        incoming: mpsc::Receiver<PeerMessage>,
+        outgoing: mpsc::Sender<PeerMessage>,
+    ) -> Result<()> {
+        let Some(shared) = &self.access else {
+            return self.serve_channel_inner(label, incoming, outgoing).await;
+        };
+        let (generation, mut changes) = {
+            let pairings = shared.lock().await;
+            let generation = self.auth_generation.unwrap_or(pairings.generation());
+            ensure!(
+                pairings.authorized_at(&self.owner.0, generation),
+                "browser revoked"
+            );
+            (generation, pairings.subscribe())
+        };
+        let channel = self.serve_channel_inner(label, incoming, outgoing);
+        tokio::pin!(channel);
+        loop {
+            tokio::select! {
+                biased;
+                changed = changes.changed() => {
+                    changed?;
+                    ensure!(shared.lock().await.authorized_at(&self.owner.0, generation), "browser revoked");
+                },
+                result = &mut channel => return result,
+            }
+        }
+    }
+    async fn serve_channel_inner(
         &self,
         label: &str,
         incoming: mpsc::Receiver<PeerMessage>,
@@ -134,6 +190,49 @@ impl PeerService {
         body: Vec<u8>,
         content_type: Option<&str>,
     ) -> Result<axum::response::Response> {
+        // Serialize authorization-sensitive dispatch with rotation. The internal
+        // Auth bearer is intentionally never rotated by this operation.
+        let mut access = match &self.access {
+            Some(pairings) => Some(pairings.lock().await),
+            None => None,
+        };
+        if let Some(pairings) = &access {
+            ensure!(
+                self.auth_generation.map_or_else(
+                    || pairings.known(&self.owner.0),
+                    |generation| pairings.authorized_at(&self.owner.0, generation)
+                ),
+                "browser revoked"
+            );
+        }
+        if path == "/api/access" || path == "/api/access/rotate" {
+            let Some(pairings) = access.as_mut() else {
+                bail!("access operation unavailable");
+            };
+            let value = match (method, path) {
+                ("GET", "/api/access") => {
+                    json!({"supported":true,"canRotate":true,"scope":"computer","tokenLifetime":"untilRotated","sessionLifetime":"untilRevoked"})
+                }
+                ("POST", "/api/access/rotate") => {
+                    ensure!(
+                        serde_json::from_slice::<Value>(&body)? == json!({}),
+                        "expected empty object"
+                    );
+                    pairings.rotate(&self.owner.0)?;
+                    if let Some(dashboard) = &self.dashboard {
+                        dashboard.hide_private_link();
+                    }
+                    if let Some(notifications) = self.app.core.notifications.get() {
+                        notifications.keep_owner(&self.owner.0).await?;
+                    }
+                    json!({"rotated":true})
+                }
+                _ => bail!("invalid access operation"),
+            };
+            return Ok(axum::response::IntoResponse::into_response(axum::Json(
+                value,
+            )));
+        }
         let mut request = Request::builder()
             .method(method)
             .uri(path)
@@ -414,11 +513,16 @@ fn allowed(method: &str, path: &str) -> bool {
     match (method, path) {
         (
             "GET",
-            "/api/session" | "/api/state" | "/api/notifications" | "/api/component-updates",
+            "/api/session"
+            | "/api/state"
+            | "/api/notifications"
+            | "/api/component-updates"
+            | "/api/access",
         )
         | (
             "POST",
             "/api/rpc"
+            | "/api/access/rotate"
             | "/api/component-updates/check"
             | "/api/component-updates/install"
             | "/api/topology"
@@ -467,6 +571,126 @@ impl TerminalWire for PeerWire {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn access_rotation_uses_verified_owner_not_internal_bearer() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let a = crate::relay_crypto::Identity::load_or_create(&dir.path().join("a"))
+            .unwrap()
+            .public_key();
+        let b = crate::relay_crypto::Identity::load_or_create(&dir.path().join("b"))
+            .unwrap()
+            .public_key();
+        let mut pairings =
+            crate::relay_pairings::Pairings::load(dir.path(), "m".into(), "p".into(), false)
+                .unwrap();
+        for key in [&a, &b] {
+            let proof =
+                crate::relay_crypto::pair_proof(&pairings.capability.secret, b"auth").unwrap();
+            pairings.reserve("s", b"auth", &proof).unwrap();
+            pairings.complete("s", key, true).unwrap();
+        }
+        let shared = Arc::new(tokio::sync::Mutex::new(pairings));
+        let core = Core::new("/nonexistent".into());
+        let current = PeerService::for_peer(core.clone(), a.clone()).with_access(shared.clone());
+        let same_browser =
+            PeerService::for_peer(core.clone(), a.clone()).with_access(shared.clone());
+        let revoked = PeerService::for_peer(core, b.clone()).with_access(shared.clone());
+        let original_headers = current.headers.clone();
+        let (kept_tx, kept_rx) = mpsc::channel(4);
+        let (kept_out, mut kept_responses) = mpsc::channel(4);
+        let kept_service = same_browser.clone();
+        let kept_task = tokio::spawn(async move {
+            kept_service
+                .serve_channel("herdr-control-v1", kept_rx, kept_out)
+                .await
+        });
+        let (revoked_tx, revoked_rx) = mpsc::channel(4);
+        let (revoked_out, mut revoked_responses) = mpsc::channel(4);
+        let revoked_service = revoked.clone();
+        let revoked_task = tokio::spawn(async move {
+            revoked_service
+                .serve_channel("herdr-control-v1", revoked_rx, revoked_out)
+                .await
+        });
+        for tx in [&kept_tx, &revoked_tx] {
+            tx.send(PeerMessage::Text(
+                json!({"type":"request","id":1,"method":"GET","path":"/api/session"}).to_string(),
+            ))
+            .await
+            .unwrap();
+        }
+        assert!(kept_responses.recv().await.is_some());
+        assert!(revoked_responses.recv().await.is_some());
+        assert!(
+            current
+                .dispatch(
+                    "POST",
+                    "/api/access/rotate",
+                    br#"{"retainKey":"other"}"#.to_vec(),
+                    None
+                )
+                .await
+                .is_err()
+        );
+        let response = current
+            .dispatch("GET", "/api/access", vec![], None)
+            .await
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(
+            body,
+            json!({"supported":true,"canRotate":true,"scope":"computer","tokenLifetime":"untilRotated","sessionLifetime":"untilRevoked"})
+        );
+        assert!(
+            current
+                .dispatch("POST", "/api/access/rotate", b"{}".to_vec(), None)
+                .await
+                .unwrap()
+                .status()
+                .is_success()
+        );
+        assert!(current.app.auth.authorized(&original_headers));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), revoked_task)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        assert!(revoked_responses.recv().await.is_none());
+        kept_tx
+            .send(PeerMessage::Text(
+                json!({"type":"request","id":2,"method":"GET","path":"/api/session"}).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(kept_responses.recv().await.is_some());
+        drop(kept_tx);
+        kept_task.await.unwrap().unwrap();
+        assert!(
+            same_browser
+                .dispatch("GET", "/api/access", vec![], None)
+                .await
+                .is_ok()
+        );
+        assert!(
+            revoked
+                .dispatch("POST", "/api/access/rotate", b"{}".to_vec(), None)
+                .await
+                .is_err()
+        );
+        assert!(
+            revoked
+                .dispatch("GET", "/api/state", vec![], None)
+                .await
+                .is_err()
+        );
+        assert!(shared.lock().await.known(&a));
+        assert!(!shared.lock().await.known(&b));
+    }
     #[test]
     fn strict_allowlist() {
         for (method, path) in [

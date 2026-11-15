@@ -1,24 +1,29 @@
-//! Private, serialized pairing capability and browser-public-key ownership.
+//! Serialized, durable connector capability and browser-public-key authorization.
 use crate::relay_crypto::{self, random_token};
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
+// Largest interoperable JS integer. Keep the v1 numeric expiry wire contract for
+// old clients, but never apply time-based expiry to a migrated capability.
+const PERMANENT_EXPIRY: u64 = 9_007_199_254_740_991;
+const RESERVATION_TIMEOUT: Duration = Duration::from_secs(150);
+const MAX_BROWSER_KEYS: usize = 64;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Stored {
     schema_version: u8,
     browser_keys: BTreeSet<String>,
+    #[serde(default)]
+    capability_version: Option<u8>,
+    #[serde(default)]
+    capability: Option<Capability>,
 }
-const CAPABILITY_SECONDS: u64 = 300;
-const RESERVATION_TIMEOUT: Duration = Duration::from_secs(150);
-const MAX_BROWSER_KEYS: usize = 64;
-
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capability {
     pub v: u8,
@@ -39,135 +44,174 @@ pub struct Pairings {
     path: PathBuf,
     capability_path: PathBuf,
     keys: BTreeSet<String>,
+    key_epochs: BTreeMap<String, u64>,
     pub capability: Capability,
     reserved: Option<Reservation>,
-    consumed: bool,
-}
-pub fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    // Every manual rotation invalidates all in-flight authentication, even for
+    // a key later re-enrolled. Existing sessions instead track key membership.
+    generation: u64,
+    changed: tokio::sync::watch::Sender<u64>,
 }
 impl Pairings {
     pub fn load(dir: &Path, machine_id: String, public_key: String, reset: bool) -> Result<Self> {
         relay_crypto::ensure_private_dir(dir)?;
         let path = dir.join("pairings.json");
-        let keys = if reset || !path.exists() {
-            BTreeSet::new()
-        } else {
+        let mut keys = BTreeSet::new();
+        let mut capability = None;
+        if !reset && path.exists() {
             let stored: Stored =
                 serde_json::from_slice(&relay_crypto::read_private(&path, 65536)?)?;
             ensure!(
-                stored.schema_version == 1 && stored.browser_keys.len() <= 64,
+                matches!(stored.schema_version, 1 | 2)
+                    && stored.browser_keys.len() <= MAX_BROWSER_KEYS,
                 "invalid pairing state"
             );
             for key in &stored.browser_keys {
                 relay_crypto::machine_id(key)?;
             }
-            stored.browser_keys
-        };
+            keys = stored.browser_keys;
+            // Keep the outer v1 envelope readable by installed rollback binaries.
+            // Only the explicit policy marker (or the early development v2
+            // envelope) can assert permanent access. Unmarked v1 is migrated once.
+            match (stored.schema_version, stored.capability_version) {
+                (1, None) => {}
+                (1 | 2, Some(2)) | (2, None) => {
+                    capability = Some(
+                        stored
+                            .capability
+                            .ok_or_else(|| anyhow::anyhow!("missing permanent capability"))?,
+                    );
+                }
+                _ => anyhow::bail!("unsupported pairing capability policy"),
+            }
+        }
+        let capability = capability.unwrap_or_else(|| Capability {
+            v: 1,
+            machine_id: machine_id.clone(),
+            public_key: public_key.clone(),
+            secret: random_token(32),
+            expires_at: PERMANENT_EXPIRY,
+            channel: None,
+            base_path: None,
+        });
+        ensure!(
+            capability.machine_id == machine_id
+                && capability.public_key == public_key
+                && capability.v == 1
+                && capability.expires_at == PERMANENT_EXPIRY,
+            "invalid capability identity"
+        );
+        relay_crypto::decode(&capability.secret, 32)?;
+        let (changed, _) = tokio::sync::watch::channel(0);
         let this = Self {
             path,
             capability_path: dir.join("pairing.json"),
+            key_epochs: keys.iter().map(|key| (key.clone(), 0)).collect(),
             keys,
-            capability: Capability {
-                v: 1,
-                machine_id,
-                public_key,
-                secret: random_token(32),
-                expires_at: now() + CAPABILITY_SECONDS,
-                channel: None,
-                base_path: None,
-            },
+            capability,
             reserved: None,
-            consumed: false,
+            generation: 0,
+            changed,
         };
         this.persist()?;
-        if this.at_capacity() {
-            this.remove_capability()?;
-        } else {
-            this.persist_capability(&this.capability)?;
-        }
+        this.publish()?;
         Ok(this)
+    }
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
     pub fn available(&self) -> bool {
         !self.at_capacity()
-            && !self.consumed
-            && now() < self.capability.expires_at
-            && !self.reservation_live()
     }
     pub fn at_capacity(&self) -> bool {
         self.keys.len() >= MAX_BROWSER_KEYS
     }
-    fn remove_capability(&self) -> Result<()> {
-        match std::fs::remove_file(&self.capability_path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
+    fn publish(&self) -> Result<()> {
+        if self.at_capacity() {
+            match std::fs::remove_file(&self.capability_path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e.into()),
+            }
+        } else {
+            let bytes = serde_json::to_vec(&self.capability)?;
+            if self.capability_path.exists()
+                && relay_crypto::read_private(&self.capability_path, 4096)? == bytes
+            {
+                return Ok(());
+            }
+            relay_crypto::write_private(&self.capability_path, &bytes)
         }
     }
-    fn persist_capability(&self, capability: &Capability) -> Result<()> {
-        relay_crypto::write_private(&self.capability_path, &serde_json::to_vec(capability)?)
-    }
-    /// Persist channel metadata with every subsequent generation, not just startup.
     pub fn set_channel(&mut self, main: bool) -> Result<()> {
-        let mut capability = self.capability.clone();
-        capability.channel = main.then(|| "main".into());
-        capability.base_path = main.then(|| "/main/".into());
-        if !self.at_capacity() && !self.consumed {
-            self.persist_capability(&capability)?;
+        self.capability.channel = main.then(|| "main".into());
+        self.capability.base_path = main.then(|| "/main/".into());
+        self.persist()?;
+        self.publish()
+    }
+    pub fn refresh(&mut self) -> Result<bool> {
+        if !self.reservation_live() {
+            self.reserved = None;
         }
-        self.capability = capability;
-        Ok(())
+        self.publish()?;
+        Ok(false)
     }
     fn reservation_live(&self) -> bool {
         self.reserved
             .as_ref()
             .is_some_and(|r| Instant::now() < r.deadline)
     }
-    /// Caller holds the pairing mutex. Commit the new secret only after its atomic
-    /// private-file replacement succeeds; retries must never publish phantom codes.
-    pub fn refresh(&mut self) -> Result<bool> {
-        self.refresh_at(now())
-    }
-    fn refresh_at(&mut self, timestamp: u64) -> Result<bool> {
-        if self.reserved.is_some() && !self.reservation_live() {
-            self.reserved = None;
-        }
-        if self.at_capacity() {
-            self.remove_capability()?;
-            return Ok(false);
-        }
-        if self.reservation_live() || (!self.consumed && timestamp < self.capability.expires_at) {
-            return Ok(false);
-        }
-        let mut capability = self.capability.clone();
-        capability.secret = random_token(32);
-        capability.expires_at = timestamp + CAPABILITY_SECONDS;
-        self.persist_capability(&capability)?;
-        self.capability = capability;
-        self.consumed = false;
-        Ok(true)
-    }
     fn persist(&self) -> Result<()> {
         relay_crypto::write_private(
             &self.path,
             &serde_json::to_vec(&Stored {
                 schema_version: 1,
+                capability_version: Some(2),
                 browser_keys: self.keys.clone(),
+                capability: Some(self.capability.clone()),
             })?,
         )
+    }
+    pub fn authorized_owners(&self) -> Vec<String> {
+        self.keys.iter().cloned().collect()
     }
     pub fn known(&self, key: &str) -> bool {
         self.keys.contains(key)
     }
+    /// Re-enrollment cannot resurrect an older live session of a revoked key.
+    pub fn authorized_at(&self, key: &str, generation: u64) -> bool {
+        self.known(key)
+            && self
+                .key_epochs
+                .get(key)
+                .is_some_and(|epoch| *epoch <= generation)
+    }
+    /// Atomic authoritative commit; pairing.json is only a derived display fixture.
+    pub fn rotate(&mut self, caller: &str) -> Result<()> {
+        ensure!(self.known(caller), "browser authorization revoked");
+        let old_keys = self.keys.clone();
+        let old = self.capability.clone();
+        self.keys.retain(|key| key == caller);
+        self.capability.secret = random_token(32);
+        if let Err(e) = self.persist() {
+            self.keys = old_keys;
+            self.capability = old;
+            return Err(e);
+        }
+        self.reserved = None;
+        self.key_epochs.retain(|key, _| key == caller);
+        self.generation += 1;
+        self.changed.send_replace(self.generation);
+        // Never roll back committed revocation if updating the display fails.
+        let _ = self.publish();
+        Ok(())
+    }
     pub fn reserve(&mut self, session: &str, transcript: &[u8], proof: &str) -> Result<()> {
         ensure!(
-            !self.at_capacity()
-                && !self.consumed
-                && now() < self.capability.expires_at
-                && !self.reservation_live(),
+            !self.at_capacity() && !self.reservation_live(),
             "pairing capability unavailable"
         );
         relay_crypto::verify_pair_proof(&self.capability.secret, transcript, proof)?;
@@ -182,212 +226,214 @@ impl Pairings {
             self.reserved = None;
         }
     }
-    /// Caller holds the shared pairing mutex throughout validation and persistence.
     pub fn complete(&mut self, session: &str, key: &str, pairing: bool) -> Result<()> {
         if !pairing {
             ensure!(self.known(key), "unknown browser key");
             return Ok(());
         }
         ensure!(
-            !self.consumed
-                && self.reservation_live()
-                && self.reserved.as_ref().is_some_and(|r| r.session == session),
+            self.reservation_live() && self.reserved.as_ref().is_some_and(|r| r.session == session),
             "pairing ownership lost"
         );
-        if self.at_capacity() && !self.keys.contains(key) {
-            bail!("pairing key limit reached");
-        }
+        ensure!(
+            !self.at_capacity() || self.known(key),
+            "pairing key limit reached"
+        );
         let inserted = self.keys.insert(key.into());
-        if let Err(error) = self.persist() {
+        if let Err(e) = self.persist() {
             if inserted {
                 self.keys.remove(key);
             }
-            return Err(error);
+            return Err(e);
         }
-        self.consumed = true;
+        if inserted {
+            self.key_epochs.insert(key.into(), self.generation);
+        }
         self.reserved = None;
-        // The secret is no longer useful; do not leave an apparently live QR fixture.
-        let _ = std::fs::remove_file(&self.capability_path);
+        let _ = self.publish();
         Ok(())
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
-    fn fixture() -> (tempfile::TempDir, Pairings) {
+    use std::os::unix::fs::PermissionsExt;
+    fn directory() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let p = Pairings::load(dir.path(), "machine".into(), "public".into(), false).unwrap();
-        (dir, p)
+        dir
     }
-    fn reserve(p: &mut Pairings, session: &str) {
+    fn enroll(p: &mut Pairings, key: &str) {
         let proof = relay_crypto::pair_proof(&p.capability.secret, b"auth").unwrap();
-        p.reserve(session, b"auth", &proof).unwrap();
+        p.reserve("s", b"auth", &proof).unwrap();
+        p.complete("s", key, true).unwrap();
     }
-
-    #[test]
-    fn expiry_rotates_once_preserving_metadata_and_private_atomic_file() {
-        let (dir, mut p) = fixture();
-        p.set_channel(true).unwrap();
-        let original = p.capability.clone();
-        let previous = std::fs::File::open(&p.capability_path).unwrap();
-        assert!(!p.refresh_at(original.expires_at - 1).unwrap());
-        assert!(p.refresh_at(original.expires_at).unwrap());
-        assert_ne!(p.capability.secret, original.secret);
-        assert_eq!(
-            p.capability.expires_at,
-            original.expires_at + CAPABILITY_SECONDS
-        );
-        assert_eq!(p.capability.machine_id, original.machine_id);
-        assert_eq!(p.capability.public_key, original.public_key);
-        assert!(!p.refresh_at(original.expires_at + 1).unwrap());
-        let file = dir.path().join("pairing.json");
-        let value: serde_json::Value =
-            serde_json::from_slice(&relay_crypto::read_private(&file, 4096).unwrap()).unwrap();
-        assert_eq!(value["channel"], "main");
-        assert_eq!(value["basePath"], "/main/");
-        assert_eq!(value["secret"], p.capability.secret);
-        let metadata = std::fs::metadata(file).unwrap();
-        assert_eq!(metadata.mode() & 0o777, 0o600);
-        assert_eq!(metadata.uid(), unsafe { libc::getuid() });
-        assert_ne!(metadata.ino(), previous.metadata().unwrap().ino());
+    fn key(dir: &Path, name: &str) -> String {
+        relay_crypto::Identity::load_or_create(&dir.join(name))
+            .unwrap()
+            .public_key()
     }
-
     #[test]
-    fn live_reservation_survives_expiry_but_stale_reservation_is_bounded() {
-        let (_dir, mut p) = fixture();
-        reserve(&mut p, "live");
+    fn reusable_persistent_capability_and_rotation() {
+        let dir = directory();
+        let mut p = Pairings::load(dir.path(), "m".into(), "p".into(), false).unwrap();
+        let a = key(dir.path(), "a");
+        let b = key(dir.path(), "b");
         let original = p.capability.secret.clone();
-        p.capability.expires_at = now();
+        enroll(&mut p, &a);
+        enroll(&mut p, &b);
+        assert_eq!(p.capability.secret, original);
         assert!(!p.refresh().unwrap());
+        drop(p);
+        let mut p = Pairings::load(dir.path(), "m".into(), "p".into(), false).unwrap();
         assert_eq!(p.capability.secret, original);
-        p.complete("live", "trusted", true).unwrap();
-        assert!(p.refresh().unwrap());
-        assert!(p.known("trusted"));
-        p.complete("resume", "trusted", false).unwrap();
-        reserve(&mut p, "stale");
-        p.reserved.as_mut().unwrap().deadline = Instant::now() - Duration::from_secs(1);
-        p.capability.expires_at = now();
-        assert!(p.complete("stale", "intruder", true).is_err());
-        assert!(p.refresh().unwrap());
-        assert!(!p.known("intruder"));
-        reserve(&mut p, "next");
-        p.release("stale");
-        p.complete("next", "next-browser", true).unwrap();
-    }
-
-    #[test]
-    fn failed_proof_and_released_reservation_do_not_rotate_valid_capability() {
-        let (_dir, mut p) = fixture();
-        let original = p.capability.secret.clone();
-        assert!(p.reserve("bad", b"auth", "bad proof").is_err());
-        reserve(&mut p, "first");
-        p.release("first");
-        assert!(!p.refresh().unwrap());
-        assert_eq!(p.capability.secret, original);
-        reserve(&mut p, "retry");
-        p.complete("retry", "trusted", true).unwrap();
-        assert!(p.refresh().unwrap());
-        let old_proof = relay_crypto::pair_proof(&original, b"auth").unwrap();
-        assert!(p.reserve("old", b"auth", &old_proof).is_err());
-        assert!(p.known("trusted"));
-    }
-
-    #[test]
-    fn failed_rotation_does_not_publish_secret_and_retries_after_repair() {
-        let (_dir, mut p) = fixture();
-        p.capability.expires_at = now();
-        let original = p.capability.secret.clone();
-        std::fs::set_permissions(&p.capability_path, std::fs::Permissions::from_mode(0o644))
-            .unwrap();
-        assert!(p.refresh().is_err());
-        assert_eq!(p.capability.secret, original);
-        std::fs::set_permissions(&p.capability_path, std::fs::Permissions::from_mode(0o600))
-            .unwrap();
-        assert!(p.refresh().unwrap());
+        assert!(p.known(&a) && p.known(&b));
+        let proof = relay_crypto::pair_proof(&original, b"auth").unwrap();
+        p.reserve("pending", b"auth", &proof).unwrap();
+        p.rotate(&a).unwrap();
+        assert!(p.known(&a) && !p.known(&b));
+        assert!(p.rotate(&b).is_err());
+        assert!(p.complete("pending", &b, true).is_err());
+        assert!(p.reserve("old", b"auth", &proof).is_err());
+        drop(p);
+        let p = Pairings::load(dir.path(), "m".into(), "p".into(), false).unwrap();
+        assert!(p.known(&a) && !p.known(&b));
         assert_ne!(p.capability.secret, original);
     }
-
     #[test]
-    fn persistence_failure_preserves_reservation_and_does_not_trust_browser() {
-        let (_dir, mut p) = fixture();
-        reserve(&mut p, "owner");
+    fn revoked_key_reenrollment_does_not_resurrect_old_sessions() {
+        let dir = directory();
+        let mut p = Pairings::load(dir.path(), "m".into(), "p".into(), false).unwrap();
+        let a = key(dir.path(), "a");
+        let b = key(dir.path(), "b");
+        enroll(&mut p, &a);
+        enroll(&mut p, &b);
+        let old_epoch = p.generation();
+        p.rotate(&a).unwrap();
+        enroll(&mut p, &b);
+        assert!(p.authorized_at(&a, old_epoch));
+        assert!(!p.authorized_at(&b, old_epoch));
+        assert!(p.authorized_at(&b, p.generation()));
+    }
+    #[test]
+    fn failed_commit_preserves_authorizations_secret_and_reservation() {
+        let dir = directory();
+        let mut p = Pairings::load(dir.path(), "m".into(), "p".into(), false).unwrap();
+        let a = key(dir.path(), "a");
+        let b = key(dir.path(), "b");
+        enroll(&mut p, &a);
+        enroll(&mut p, &b);
+        let secret = p.capability.secret.clone();
+        let proof = relay_crypto::pair_proof(&secret, b"auth").unwrap();
+        p.reserve("pending", b"auth", &proof).unwrap();
         std::fs::set_permissions(&p.path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(p.complete("owner", "new", true).is_err());
-        assert!(!p.known("new"));
-        assert!(!p.refresh().unwrap());
+        assert!(p.rotate(&a).is_err());
+        assert_eq!(p.capability.secret, secret);
+        assert!(p.known(&b));
+        assert_eq!(p.generation(), 0);
         std::fs::set_permissions(&p.path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        p.complete("owner", "new", true).unwrap();
-        assert!(p.refresh().unwrap());
-    }
-
-    #[test]
-    fn capacity_removes_fixture_without_rotating_or_revoking_trust() {
-        let (_dir, mut p) = fixture();
-        p.keys = (0..MAX_BROWSER_KEYS).map(|n| format!("key-{n}")).collect();
-        let original = p.capability.secret.clone();
-        assert!(!p.refresh().unwrap());
-        assert!(!p.capability_path.exists());
-        assert!(!p.available());
-        assert_eq!(p.capability.secret, original);
-        p.complete("resume", "key-0", false).unwrap();
-        let proof = relay_crypto::pair_proof(&original, b"auth").unwrap();
-        assert!(p.reserve("new", b"auth", &proof).is_err());
-        assert!(p.complete("resume", "unknown", false).is_err());
-    }
-
-    #[tokio::test]
-    async fn concurrent_rotation_and_completion_serialize_without_revoking_known_keys() {
-        let (_dir, mut p) = fixture();
-        reserve(&mut p, "owner");
-        p.capability.expires_at = now();
-        let shared = std::sync::Arc::new(tokio::sync::Mutex::new(p));
-        let rotating = shared.clone();
-        let completing = shared.clone();
-        let (rotation, completion) =
-            tokio::join!(async move { rotating.lock().await.refresh() }, async move {
-                completing.lock().await.complete("owner", "trusted", true)
-            });
-        rotation.unwrap();
-        completion.unwrap();
-        let mut p = shared.lock().await;
-        p.refresh().unwrap();
-        assert!(p.available());
-        p.complete("resume", "trusted", false).unwrap();
-        assert!(p.complete("owner", "intruder", true).is_err());
+        p.complete("pending", &b, true).unwrap();
     }
     #[test]
-    fn capability_ownership_is_exclusive_and_consumed_once() {
-        let dir = tempfile::Builder::new()
-            .tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap())
-            .unwrap();
-        std::fs::set_permissions(
-            dir.path(),
-            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    fn rotation_isolated_by_connector_state_and_channel() {
+        let a_dir = directory();
+        let b_dir = directory();
+        let mut a = Pairings::load(a_dir.path(), "m".into(), "p".into(), false).unwrap();
+        let mut b = Pairings::load(b_dir.path(), "m".into(), "p".into(), false).unwrap();
+        a.set_channel(false).unwrap();
+        b.set_channel(true).unwrap();
+        let owner = key(a_dir.path(), "owner");
+        enroll(&mut a, &owner);
+        enroll(&mut b, &owner);
+        let b_secret = b.capability.secret.clone();
+        a.rotate(&owner).unwrap();
+        assert_eq!(b.capability.secret, b_secret);
+        assert!(b.known(&owner));
+        assert_eq!(b.generation(), 0);
+    }
+    #[test]
+    fn canonical_envelope_remains_readable_by_legacy_connector_after_rotation() {
+        #[derive(Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LegacyStored {
+            schema_version: u8,
+            browser_keys: BTreeSet<String>,
+        }
+        let read_legacy = |path: &Path| {
+            let legacy: LegacyStored =
+                serde_json::from_slice(&relay_crypto::read_private(path, 65536).unwrap()).unwrap();
+            assert_eq!(legacy.schema_version, 1);
+            legacy
+        };
+        let dir = directory();
+        let mut p = Pairings::load(dir.path(), "m".into(), "p".into(), false).unwrap();
+        let a = key(dir.path(), "a");
+        let b = key(dir.path(), "b");
+        enroll(&mut p, &a);
+        enroll(&mut p, &b);
+        let legacy = read_legacy(&p.path);
+        assert_eq!(legacy.browser_keys, BTreeSet::from([a.clone(), b.clone()]));
+        p.rotate(&a).unwrap();
+        let legacy = read_legacy(&p.path);
+        assert_eq!(legacy.browser_keys, BTreeSet::from([a.clone()]));
+        let secret = p.capability.secret.clone();
+        let path = p.path.clone();
+        drop(p);
+        let p = Pairings::load(dir.path(), "m".into(), "p".into(), false).unwrap();
+        assert_eq!(p.capability.secret, secret);
+        assert!(!p.known(&b));
+        drop(p);
+        // A rollback writer strips unknown policy fields, but persists only the
+        // currently trusted keys. The next upgrade renews access once, safely.
+        relay_crypto::write_private(&path, &serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let p = Pairings::load(dir.path(), "m".into(), "p".into(), false).unwrap();
+        assert_ne!(p.capability.secret, secret);
+        assert!(p.known(&a) && !p.known(&b));
+        read_legacy(&path);
+    }
+    #[test]
+    fn unknown_capability_policy_is_rejected_without_rewriting_state() {
+        let dir = directory();
+        let p = Pairings::load(dir.path(), "m".into(), "p".into(), false).unwrap();
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&relay_crypto::read_private(&p.path, 65536).unwrap()).unwrap();
+        assert_eq!(stored["schemaVersion"], 1);
+        assert_eq!(stored["capabilityVersion"], 2);
+        stored["capabilityVersion"] = serde_json::json!(3);
+        let bytes = serde_json::to_vec(&stored).unwrap();
+        relay_crypto::write_private(&p.path, &bytes).unwrap();
+        assert!(Pairings::load(dir.path(), "m".into(), "p".into(), false).is_err());
+        assert_eq!(relay_crypto::read_private(&p.path, 65536).unwrap(), bytes);
+    }
+    #[test]
+    fn legacy_keys_preserved_but_expired_capability_never_revived() {
+        let dir = directory();
+        relay_crypto::ensure_private_dir(dir.path()).unwrap();
+        let a = key(dir.path(), "a");
+        relay_crypto::write_private(
+            &dir.path().join("pairings.json"),
+            &serde_json::to_vec(&serde_json::json!({"schemaVersion":1,"browserKeys":[a]})).unwrap(),
         )
         .unwrap();
-        let mut p = Pairings::load(dir.path(), "machine".into(), "public".into(), true).unwrap();
-        let browser = relay_crypto::Identity::load_or_create(&dir.path().join("browser-test.json"))
-            .unwrap()
-            .public_key();
-        let original_secret = p.capability.secret.clone();
-        let proof = relay_crypto::pair_proof(&p.capability.secret, b"auth").unwrap();
-        p.reserve("a", b"auth", &proof).unwrap();
-        assert!(p.reserve("b", b"auth", &proof).is_err());
-        p.release("b");
-        assert!(p.complete("b", &browser, true).is_err());
-        p.complete("a", &browser, true).unwrap();
-        assert!(p.reserve("b", b"auth", &proof).is_err());
-        assert!(p.known(&browser));
-        assert!(p.refresh().unwrap());
-        assert!(p.reserve("b", b"auth", &proof).is_err());
-        assert!(p.known(&browser));
-        let loaded = Pairings::load(dir.path(), "machine".into(), "public".into(), false).unwrap();
-        assert!(loaded.known(&browser));
-        assert_ne!(loaded.capability.secret, original_secret);
-        let reset = Pairings::load(dir.path(), "machine".into(), "public".into(), true).unwrap();
-        assert!(!reset.known(&browser));
+        let expired = Capability {
+            v: 1,
+            machine_id: "m".into(),
+            public_key: "p".into(),
+            secret: random_token(32),
+            expires_at: 1,
+            channel: None,
+            base_path: None,
+        };
+        relay_crypto::write_private(
+            &dir.path().join("pairing.json"),
+            &serde_json::to_vec(&expired).unwrap(),
+        )
+        .unwrap();
+        let mut p = Pairings::load(dir.path(), "m".into(), "p".into(), false).unwrap();
+        assert!(p.known(&a));
+        assert_eq!(p.capability.expires_at, PERMANENT_EXPIRY);
+        assert_ne!(p.capability.secret, expired.secret);
+        let proof = relay_crypto::pair_proof(&expired.secret, b"auth").unwrap();
+        assert!(p.reserve("expired", b"auth", &proof).is_err());
     }
 }

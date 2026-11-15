@@ -34,7 +34,7 @@ export class PeerConnection {
     const fail = () => {
       if (!current() || ended) return;
       dispose(); this.epoch++;
-      this.update({ status: 'Connection interrupted', error: 'Reconnecting automatically. Input and pending operations are not replayed.' });
+      this.update({ status: 'Connection interrupted', error: 'Reconnecting automatically. Input and pending operations are not replayed. If access was rotated, use the computer’s new private link.' });
       const delay = Math.min(15_000, 500 * 2 ** Math.min(this.attempts++, 5)) + Math.random() * 250;
       this.retry = setTimeout(() => { if (!this.stopped) void this.connect(); }, delay);
     };

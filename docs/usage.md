@@ -32,15 +32,22 @@ silently replaced. Use `sh -s -- --no-install-core` for managed/custom setups.
 See [bootstrap and update controls](installation-updates.md). The launcher verifies the
 public native executable, keeps a private per-origin cache/state, and supervises
 `connect-relay`. Scan its terminal QR using your phone camera and open the link.
-The QR pins the laptop identity and carries an expiring, one-use pairing secret;
-it never points to the laptop's changing IP. Paired browser keys are nonextractable
-P-256 keys persisted in IndexedDB. Pairing grants full trusted-user shell access.
-The running connector automatically renews the link and QR after five minutes
-or successful pairing; existing trusted browsers and active terminals are unchanged.
-In-progress pairing is protected by a bounded reservation. The pinned terminal card
-updates in place; refreshed credentials are not appended to captured logs.
-`connect-relay --reset-pairings` explicitly forgets paired browser
-keys on startup. Deleting browser storage also requires pairing again.
+The QR pins the laptop identity and carries a reusable private access capability;
+it never points to the laptop's changing IP. The link does not expire automatically.
+Paired browser keys are nonextractable P-256 keys persisted in IndexedDB, with no
+server-imposed authorization expiry. Pairing grants full trusted-user shell access.
+The interactive terminal hides both link and QR after the first authenticated
+client connects. Press **L** there to show or hide them; hiding does not revoke access.
+In-progress handshakes still have bounded timeouts. Private display updates stay
+in place, not appended to captured logs; plain/noninteractive output cannot erase
+credentials already printed.
+Use **Settings → Access → Rotate access token…** to keep this browser profile signed
+in while revoking all other browsers and old links for the selected computer/channel.
+Core and running terminals stay up; other computers and stable/main are unchanged.
+A previous one-use/expiring capability is replaced once during migration; existing
+paired keys remain trusted. `connect-relay --reset-pairings` forgets all paired keys
+and rotates the private capability on startup. Deleting browser storage requires
+pairing again; browsers can still clear or evict their own storage.
 
 Terminal operations, input, output and uploads use encrypted WebRTC DataChannels,
 directly when possible and through separately configured coturn when necessary.
@@ -311,19 +318,29 @@ Herdr.app. This is intentionally not a per-command sandbox or a multi-user syste
   the token on the sign-in screen. The fragment is removed before the UI starts;
   it is not sent in HTTP request URLs or saved in local storage.
 - Successful sign-in creates a random, opaque, HttpOnly, SameSite=Strict
-  session cookie, valid for seven days. Sessions survive server restarts using a
-  private session store beside the token file (token filename + `.sessions`).
-  Only hashed session IDs are stored; rotating the access token revokes all
-  sessions. A private `.sessions.lock` sidecar prevents concurrent writers; only
-  one server can use a given token/session store at a time. Do not delete the
-  lock file while a server is running.
-  The logout API revokes that session, including open streams (within five seconds
-  for terminals and fifteen seconds for state streams). Access tokens are not logged
-  by API handlers. **Both interactive and plain launcher output contain the private URL and QR.**
-- Keep the QR, token file and captured launcher output private. To revoke the
-  access token and all sessions, stop this web server, remove its token file,
-  and restart it. Existing in-memory sessions from older versions require one
-  final sign-in after upgrading.
+  session cookie with **no server-imposed expiry**. Sessions survive restarts using
+  the private token filename + `.sessions` store; only hashed session IDs are stored.
+  The browser receives a 400-day cookie, renewed when the app checks `/api/session`;
+  browsers may cap its lifetime or clear/evict storage independently. Still-valid
+  legacy seven-day sessions migrate without changing identity; already-expired ones
+  are not revived. A private `.sessions.lifetime` sidecar records permanent session
+  policy without breaking older rollback readers. Older binaries still apply their
+  original expiry behavior while they are running. A private `.sessions.lock`
+  prevents concurrent writers; do not delete either sidecar while the server runs.
+- **Settings → Access → Rotate access token…** preserves the initiating browser
+  profile (including its tabs and live terminal streams), revokes other profiles,
+  old bearer tokens and their push subscriptions, and atomically updates the private
+  token file. No Core or terminal restart is needed. A private `.sessions.rotation`
+  recovery journal may briefly accompany the store; do not edit/delete it manually.
+  Logout revokes just that session, including its open streams. API handlers never
+  return or log private tokens or access links.
+- The interactive launcher hides the private link and QR after the first
+  authenticated client connects. Press **L** in that terminal to toggle visibility;
+  rotation never reveals a hidden link. This is display privacy, not revocation.
+  **Plain/noninteractive launcher output remains sensitive:** printed credentials
+  cannot be erased retroactively. Keep QR codes, token files and captured output
+  private. For emergency full revocation, stop this server, remove its token file,
+  then restart; the changed token invalidates the old persisted sessions.
 - All browser mutations and WebSocket upgrades require the exact same Origin.
   There is no permissive CORS, and neither `Forwarded` nor `X-Forwarded-Host` is
   trusted. The UI uses escaped text, a restrictive CSP, and no mod execution.

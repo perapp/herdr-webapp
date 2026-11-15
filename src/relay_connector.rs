@@ -99,6 +99,7 @@ struct Endpoint {
     core: Arc<Core>,
     force_turn: bool,
     outgoing: mpsc::Sender<Value>,
+    dashboard: Option<crate::dashboard::DashboardHandle>,
 }
 impl Endpoint {
     async fn signed(&self, session: &str, seq: u64, body: Value) -> Result<()> {
@@ -184,7 +185,7 @@ async fn session_inner(
         "herdr-auth-v1\n{}\n{}\n{id}\n{key}\n{nonce}",
         e.origin, e.machine
     );
-    {
+    let (generation, mut changes) = {
         let mut pairings = e.pairings.lock().await;
         if pairing {
             pairings.reserve(id, message.as_bytes(), proof)?;
@@ -192,7 +193,41 @@ async fn session_inner(
             ensure!(pairings.known(&key), "unknown browser key");
             relay_crypto::verify(&key, message.as_bytes(), proof)?;
         }
+        (pairings.generation(), pairings.subscribe())
+    };
+    let ready = Arc::new(AtomicBool::new(false));
+    let work = session_authenticated(
+        e.clone(),
+        id,
+        incoming,
+        key.clone(),
+        pairing,
+        generation,
+        ready.clone(),
+    );
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            biased;
+            changed = changes.changed() => {
+                changed?;
+                let pairings = e.pairings.lock().await;
+                ensure!(ready.load(Ordering::SeqCst) && pairings.authorized_at(&key, generation), "browser authorization revoked during handshake/session");
+            },
+            result = &mut work => return result,
+        }
     }
+}
+#[allow(clippy::too_many_arguments)]
+async fn session_authenticated(
+    e: Arc<Endpoint>,
+    id: &str,
+    incoming: &mut mpsc::Receiver<Value>,
+    key: String,
+    pairing: bool,
+    generation: u64,
+    ready: Arc<AtomicBool>,
+) -> Result<()> {
     e.signed(id, 1, accepted_payload()).await?;
     e.send(json!({"type":"authorize","sessionId":id})).await?;
     let mut ice = None;
@@ -283,9 +318,8 @@ async fn session_inner(
         }
         let local = pc.local_description().await.context("missing local SDP")?;
         e.signed(id, 2, json!({"kind":"answer","sdp":local.sdp})).await?;
-        let ready = Arc::new(AtomicBool::new(false));
         let control = Arc::new(AtomicBool::new(false));
-        let service = PeerService::for_peer(e.core.clone(), key.clone());
+        let service = PeerService::for_peer(e.core.clone(), key.clone()).with_access(e.pairings.clone()).with_generation(generation).with_dashboard(e.dashboard.clone());
         let channel_budget = Arc::new(Semaphore::new(MAX_CONCURRENT_CHANNELS));
         let hello_deadline = tokio::time::sleep(Duration::from_secs(30));
         tokio::pin!(hello_deadline);
@@ -307,7 +341,7 @@ async fn session_inner(
                 handlers.spawn(async move {
                     // Release admission on every exit, including abort and panic.
                     let _permit = permit;
-                    let outcome = serve_data_channel(channel.clone(), service, e, id, key, pairing, ready).await;
+                    let outcome = serve_data_channel(channel.clone(), service, e, id, key, pairing, generation, ready).await;
                     let _ = channel.close().await;
                     (is_control, outcome.is_ok())
                 });
@@ -323,6 +357,7 @@ async fn session_inner(
     let _ = pc.close().await;
     result
 }
+#[allow(clippy::too_many_arguments)]
 async fn serve_data_channel(
     dc: Arc<RTCDataChannel>,
     service: PeerService,
@@ -330,6 +365,7 @@ async fn serve_data_channel(
     session: String,
     key: String,
     pairing: bool,
+    generation: u64,
     ready: Arc<AtomicBool>,
 ) -> Result<()> {
     let label = dc.label().to_owned();
@@ -406,7 +442,20 @@ async fn serve_data_channel(
         })
         .await?;
         hello?;
-        e.pairings.lock().await.complete(&session, &key, pairing)?;
+        {
+            let mut pairings = e.pairings.lock().await;
+            ensure!(
+                pairings.generation() == generation,
+                "authentication generation revoked"
+            );
+            pairings.complete(&session, &key, pairing)?;
+            if let Some(notifications) = e.core.notifications.get() {
+                notifications.authorize_owner(&key).await;
+            }
+        }
+        if let Some(dashboard) = &e.dashboard {
+            dashboard.first_authenticated_client();
+        }
         // Persistence/authentication precede anything the browser can observe.
         // A failed ready send exits this control handler and tears down the session.
         ready.store(true, Ordering::SeqCst);
@@ -494,13 +543,13 @@ fn pairing_login(pairings: &Pairings, root_url: &str) -> Result<String> {
     Ok(format!("{root_url}#pair={fragment}"))
 }
 
-const PAIRING_CAPACITY_STATUS: &str = "Browser pairing limit reached (64). Trusted browsers and active terminals remain connected. Reset pairings explicitly to trust new browsers.";
+const PAIRING_CAPACITY_STATUS: &str = "Browser pairing limit reached (64). Trusted browsers and active terminals remain connected. Rotate private access in Settings to trust new browsers.";
 const PAIRING_PENDING_STATUS: &str =
-    "Pairing in progress. A new code will appear after completion or timeout.";
+    "Private access is temporarily unavailable; retry after the current enrollment completes.";
 const PAIRING_WRITE_STATUS: &str = "Pairing code unavailable: private state could not be updated. Check state directory ownership, permissions and free space; retrying automatically. Trusted browsers are unaffected.";
 
-/// No transport dependency: refresh even during a healthy, indefinitely open
-/// relay connection, during registration, or throughout reconnect backoff.
+/// No transport dependency: retry publishing the stable capability even during
+/// healthy connections, registration, and reconnect backoff. Never auto-rotate.
 async fn pairing_lifecycle(
     pairings: Arc<Mutex<Pairings>>,
     root_url: String,
@@ -576,7 +625,10 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
     let core = Core::new(config.core_socket.clone());
     let notifications =
         crate::notifications::Notifications::open(&config.state_dir.join("web-push"))?;
-    notifications.retain_paired(&*pairings.lock().await).await?;
+    // Pairings is the authoritative durable allowlist, not notifications.json:
+    // a previous rotation may have committed before push cleanup failed.
+    let authorized_owners = pairings.lock().await.authorized_owners();
+    notifications.retain_owners(&authorized_owners).await?;
     let _ = core.notifications.set(notifications.clone());
     // Dropping the set aborts both process-lifetime workers on every exit path.
     let mut background = JoinSet::new();
@@ -733,6 +785,7 @@ where
         core,
         force_turn: config.force_turn,
         outgoing,
+        dashboard: dashboard.map(crate::dashboard::Dashboard::handle),
     });
     let mut sessions = HashMap::<String, mpsc::Sender<Value>>::new();
     let mut workers = JoinSet::new();
@@ -805,7 +858,7 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
-    async fn pairing_lifecycle_rotates_without_any_relay_connection() {
+    async fn pairing_lifecycle_keeps_permanent_capability_without_relay_connection() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(
             dir.path(),
@@ -822,20 +875,11 @@ mod tests {
             "https://example.test".into(),
             None,
         ));
-        // First tick is immediate. Expire only after it, proving the periodic
-        // tick rather than startup/reconnect drives regeneration.
+        // First tick is immediate; publication does not consume or rotate access.
         tokio::task::yield_now().await;
-        shared.lock().await.capability.expires_at = 0;
-        tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                if shared.lock().await.capability.secret != original {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap();
+        // A valid permanent capability is not refreshed by elapsed wall time.
+        shared.lock().await.refresh().unwrap();
+        assert_eq!(shared.lock().await.capability.secret, original);
         let mut p = shared.lock().await;
         let login = pairing_display(&mut p, "https://example.test").unwrap();
         let fragment = login.strip_prefix("https://example.test#pair=").unwrap();
@@ -857,7 +901,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut p = Pairings::load(dir.path(), "machine".into(), "public".into(), false).unwrap();
-        p.capability.expires_at = 0;
         let path = dir.path().join("pairing.json");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(
