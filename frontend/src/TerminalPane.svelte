@@ -28,6 +28,9 @@
   import CommandPalette from './CommandPalette.svelte';
   import { isCommandText } from './lib/commands';
   import type { AgentKind } from './lib/commands';
+  import { applyModifiers, noModifiers } from './lib/modifiers';
+  import { screenText } from './lib/terminalText';
+  import { canReadClipboard, writeClipboard } from './lib/clipboard';
 
   let { address, title, reported = 'unreported', active, onfocus, compact = false, showKeys = false, agent, program }: { address: string; title: string; reported?: string; active: boolean; onfocus: () => void; compact?: boolean; showKeys?: boolean; agent?: AgentKind; program?: ProgramAppearance } = $props();
   let host: HTMLDivElement;
@@ -37,7 +40,50 @@
   let reconnect: () => void = () => {};
   let focusTerminal: () => void = () => onfocus();
   let sendKey: (event: MouseEvent, data: string) => void = () => {};
-  let prepareImageInsertion: (event: Event) => (path: string) => boolean = () => () => false;
+  let prepareInsertion: (event: Event) => (text: string) => boolean = () => () => false;
+  let copyScreen: (event: MouseEvent) => Promise<void> = async () => {};
+  let jumpBottom: () => void = () => {};
+  // Latched Ctrl/Alt apply to the next key only, then release.
+  let mods = $state(noModifiers());
+  let scrolledUp = $state(false);
+  let canPaste = $state(false);
+  let repeatTimer: ReturnType<typeof setTimeout> | undefined;
+  let repeated = false;
+  function stopRepeat() { clearTimeout(repeatTimer); repeatTimer = undefined; }
+  /** Held arrow keys repeat like hardware keys. The originating trusted press
+   * authorizes each repeat; release, cancel, leave or disconnect stops it.
+   */
+  function pressKey(event: PointerEvent, key: { data: string; repeat?: boolean }) {
+    event.preventDefault(); stopRepeat(); repeated = false;
+    if (!key.repeat || !event.isTrusted) return;
+    const tick = () => {
+      if (!attached) { stopRepeat(); return; }
+      repeated = true; sendKey(event, key.data);
+      repeatTimer = setTimeout(tick, 70);
+    };
+    repeatTimer = setTimeout(tick, 400);
+  }
+  function releaseKey(event: MouseEvent, data: string) {
+    stopRepeat();
+    // The click ending a repeating hold already sent its keys.
+    if (repeated) { repeated = false; return; }
+    sendKey(event, data);
+  }
+  function toggleModifier(event: MouseEvent, key: 'ctrl' | 'alt') {
+    if (!event.isTrusted || !attached) return;
+    mods[key] = !mods[key];
+    focusTerminal();
+  }
+  async function pasteClipboard(event: MouseEvent) {
+    if (!event.isTrusted || !attached) return;
+    const insert = prepareInsertion(event);
+    try {
+      const text = await navigator.clipboard.readText();
+      uploadStatus = ''; uploadError = '';
+      if (!text) uploadStatus = 'The clipboard has no text.';
+      else if (!insert(text)) uploadError = 'The terminal connection changed before the paste. Try again.';
+    } catch { uploadStatus = ''; uploadError = 'Clipboard access was denied. Allow it for this site, or paste from the keyboard.'; }
+  }
   let imagePicker = $state<HTMLInputElement>();
   let uploadBusy = $state(false);
   let uploadStatus = $state('');
@@ -50,14 +96,14 @@
   let insertCommand = $state<(event: MouseEvent, text: string, run: boolean) => boolean>(() => false);
   async function chooseImage(file: File | undefined, event: Event) {
     if (!file || !event.isTrusted || uploadBusy || !attached) return;
-    const insert = prepareImageInsertion(event);
+    const insert = prepareInsertion(event);
     const finishUpload = reloadSafety?.busy();
     uploadController = new AbortController();
     uploadBusy = true; uploadError = ''; uploadStatus = `Uploading ${file.name}…`;
     try {
       const path = await uploadImage(address, file, uploadController.signal);
       if (uploadController.signal.aborted) return;
-      if (!insert(path)) {
+      if (!insert(imageReference(path))) {
         uploadStatus = ''; uploadError = 'Image uploaded, but the terminal connection changed. Attach it again when connected.';
         return;
       }
@@ -118,7 +164,30 @@
         for (const chunk of inputChunks(data)) send({ type: 'automatic', data: chunk });
       }
     };
-    const inputSub = terminalInput(term, (data, source, binary) => sendInput(data, binary, source));
+    const modified = (data: string) => {
+      if (!mods.ctrl && !mods.alt) return data;
+      // One key consumes the latch. A latched Ctrl+M/Ctrl+J is still a line
+      // ending and stays subject to the submission guard: use Enter or Ctrl J.
+      const next = applyModifiers(data, mods);
+      mods = noModifiers();
+      return next;
+    };
+    const inputSub = terminalInput(term, (data, source, binary) => sendInput(source === 'input' && !binary ? modified(data) : data, binary, source));
+    const updateScrolled = () => { scrolledUp = term.buffer.active.viewportY < term.buffer.active.baseY; };
+    const scrollSub = term.onScroll(updateScrolled);
+    const viewport = host.querySelector('.xterm-viewport');
+    viewport?.addEventListener('scroll', updateScrolled, { passive: true });
+    jumpBottom = () => { term.scrollToBottom(); updateScrolled(); };
+    canPaste = canReadClipboard();
+    copyScreen = async event => {
+      if (!event.isTrusted) return;
+      const selection = term.getSelection();
+      const text = selection || screenText(term.buffer.active, term.rows);
+      uploadStatus = ''; uploadError = '';
+      if (!text) { uploadStatus = 'Nothing on screen to copy.'; return; }
+      try { await writeClipboard(text); uploadStatus = selection ? 'Selection copied.' : 'Visible screen copied.'; }
+      catch { uploadError = 'The browser blocked copying. Select the text and use the system copy action.'; }
+    };
     term.attachCustomKeyEventHandler(event => { if (event.type === 'keydown') submission.markKey(event); return attached; });
     const scrolling = touchScroll(host, term, { attached: () => attached, mark: () => {} });
     // Capture mobile line-break and paste intent before xterm's handlers. A
@@ -137,18 +206,18 @@
     host.addEventListener('click', clickTerminal);
     sendKey = (event, data) => {
       if (!attached || !event.isTrusted) return;
-      submission.markShortcut(event, data);
-      sendInput(data); focusTerminal();
+      const bytes = modified(data);
+      submission.markShortcut(event, bytes);
+      sendInput(bytes); focusTerminal();
     };
-    prepareImageInsertion = event => {
+    prepareInsertion = event => {
       const trusted = event.isTrusted, current = generation, target = socket;
-      return path => {
-        // Upload completion is not a new gesture. Never queue across a reconnect,
-        // insert into a replacement pane, or summon the keyboard asynchronously.
+      return text => {
+        // An upload or clipboard read completing is not a new gesture. Never queue
+        // across a reconnect, insert into a replacement pane, or summon the keyboard.
         if (!trusted || disposed || !attached || generation !== current || socket !== target || target?.readyState !== WebSocket.OPEN) return false;
-        const reference = imageReference(path);
-        submission.markPaste({ isTrusted: trusted, text: reference });
-        term.paste(reference); // Same trusted file selection; no Enter or focus.
+        submission.markPaste({ isTrusted: trusted, text });
+        term.paste(text); // Same trusted gesture; no Enter or focus.
         return true;
       };
     };
@@ -195,8 +264,8 @@
       const current = ++generation;
       connectionEpoch = current;
       socket?.close();
-      submission.clear(); scrolling.reset();
-      attached = false;
+      submission.clear(); scrolling.reset(); stopRepeat();
+      attached = false; mods = noModifiers(); scrolledUp = false;
       automaticInput = false;
       resizeNotifications = false;
       viewportBounds = '';
@@ -269,6 +338,7 @@
     return () => {
       disposed = true; generation++; uploadController?.abort(); clearTimeout(timer); cancelAnimationFrame(raf);
       observer.disconnect(); socket?.close(); submission.clear(); scrolling.dispose(); inputSub.dispose();
+      stopRepeat(); scrollSub.dispose(); viewport?.removeEventListener('scroll', updateScrolled);
       host.removeEventListener('beforeinput', beforeInput, true); host.removeEventListener('paste', paste, true);
       host.removeEventListener('click', clickTerminal);
       host.removeEventListener('focusin', focused); host.removeEventListener('focusout', blurred);
@@ -285,14 +355,22 @@
     <span class="terminal-status" class:connected={attached} role="status">{status}</span>
     {#if !attached}<button class="quiet" onclick={() => reconnect()}>Reconnect</button>{/if}
   </header>{/if}
-  <div class="terminal-host" bind:this={host}></div>
+  <div class="terminal-stage">
+    <div class="terminal-host" bind:this={host}></div>
+    {#if scrolledUp}<button class="jump-bottom" aria-label="Jump to latest output" title="Jump to latest output" onpointerdown={event => event.preventDefault()} onclick={() => jumpBottom()}>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v15 M5 13l7 7 7-7"/></svg>
+    </button>{/if}
+  </div>
   {#if showKeys}<div class="terminal-accessories"><nav class="terminal-keys" aria-label="Terminal keyboard shortcuts">
-    {#each touchKeys as key (key.name)}
-      <button aria-label={key.name} disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => sendKey(event, key.data)}>{key.label}</button>
-    {/each}
+    {#each touchKeys.slice(0, 2) as key (key.name)}{@render accessoryKey(key)}{/each}
+    <button class="modifier-key" aria-label="Control modifier" aria-pressed={mods.ctrl} title="Ctrl · applies to the next key" disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => toggleModifier(event, 'ctrl')}>Ctrl</button>
+    <button class="modifier-key" aria-label="Alt modifier" aria-pressed={mods.alt} title="Alt · applies to the next key" disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => toggleModifier(event, 'alt')}>Alt</button>
+    {#each touchKeys.slice(2) as key (key.name)}{@render accessoryKey(key)}{/each}
   </nav>
     <div class="terminal-attachments">
       <button class="ctrl-j-key" aria-label={ctrlJKey.name} title="Ctrl+J · line feed" disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => sendKey(event, ctrlJKey.data)}>{ctrlJKey.label}</button>
+      {#if canPaste}<button class="text-key" aria-label="Paste from clipboard" title="Paste clipboard text" disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => void pasteClipboard(event)}>Paste</button>{/if}
+      <button class="text-key" aria-label="Copy selection or visible screen" title="Copy the selection, or the visible screen when nothing is selected" onpointerdown={event => event.preventDefault()} onclick={event => void copyScreen(event)}>Copy</button>
       <input class="image-picker" bind:this={imagePicker} type="file" accept={imageAccept} aria-label="Choose image to attach"
         onchange={event => { void chooseImage(event.currentTarget.files?.[0], event); event.currentTarget.value = ''; }} />
       <span class:error={!!uploadError} class="attachment-status" role={uploadError ? 'alert' : 'status'}>{uploadError || uploadStatus}</span>
@@ -306,4 +384,7 @@
   </div>{/if}
   {#if !attached}<footer class="terminal-detail" role="status">{detail}{#if compact}<button class="quiet" onclick={() => reconnect()}>Reconnect</button>{/if}</footer>{/if}
 </section>
+{#snippet accessoryKey(key: (typeof touchKeys)[number])}
+  <button aria-label={key.name} disabled={!attached} onpointerdown={event => pressKey(event, key)} onpointerup={stopRepeat} onpointercancel={stopRepeat} onpointerleave={stopRepeat} onclick={event => releaseKey(event, key.data)}>{key.label}</button>
+{/snippet}
 {#if paletteAgent}<CommandPalette {address} agent={paletteAgent} connected={attached && agent === paletteAgent && connectionEpoch === paletteEpoch} close={() => paletteAgent = undefined} insert={insertCommand} />{/if}

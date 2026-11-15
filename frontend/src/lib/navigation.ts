@@ -71,3 +71,31 @@ export function selectCreated(view: BrowserView, result: unknown): boolean {
   delete view.zoomed[key];
   return true;
 }
+
+/** The pane a top-bar swipe moves to: tabs in order, panes within them, wrapping. */
+export function adjacentPane(space: SharedSpace, tabId: string, paneId: string, delta: -1 | 1): { tab: SharedTab; pane: LayoutNode } | undefined {
+  const all = space.tabs.flatMap(tab => visiblePanes(tab.root).map(pane => ({ tab, pane })));
+  const index = all.findIndex(entry => entry.tab.id === tabId && entry.pane.id === paneId);
+  if (index < 0 || all.length < 2) return;
+  return all[(index + delta + all.length) % all.length];
+}
+export function panePosition(space: SharedSpace, tabId: string, paneId: string): { index: number; count: number } | undefined {
+  const all = space.tabs.flatMap(tab => visiblePanes(tab.root).map(pane => ({ tab, pane })));
+  const index = all.findIndex(entry => entry.tab.id === tabId && entry.pane.id === paneId);
+  return index < 0 || all.length < 2 ? undefined : { index: index + 1, count: all.length };
+}
+function nodes(node: LayoutNode): LayoutNode[] { return [node, ...node.children.flatMap(nodes)]; }
+const isPane = (node: LayoutNode) => node.type === 'block' && (typeof node.content?.terminal === 'string' || typeof node.content?.mod === 'string');
+/** What a close takes with it, mirroring the server: the last pane closes its
+ * tab and the last tab its workspace. Hidden panes count; they end too.
+ */
+export function closeImpact(space: SharedSpace, tabId?: string, paneId?: string): { closes: 'pane' | 'tab' | 'space'; terminals: number } {
+  const terminals = (list: LayoutNode[]) => list.filter(node => typeof node.content?.terminal === 'string').length;
+  const tab = space.tabs.find(item => item.id === tabId);
+  const everything = () => ({ closes: 'space' as const, terminals: terminals(space.tabs.flatMap(item => nodes(item.root))) });
+  if (!tab) return everything();
+  const inTab = nodes(tab.root);
+  const pane = inTab.find(node => node.id === paneId);
+  if (pane && inTab.filter(isPane).some(node => node.id !== pane.id)) return { closes: 'pane', terminals: terminals(nodes(pane)) };
+  return space.tabs.length > 1 ? { closes: 'tab', terminals: terminals(inTab) } : everything();
+}

@@ -9,7 +9,10 @@
   import ComputerDetailsDialog from './ComputerDetailsDialog.svelte';
   import { transportEvents } from './lib/transport';
   import type { EventSourceLike } from './lib/transport';
-  import { MOBILE_QUERY, drawnTerminals, paneTitle, resolvePane, selectCreated, selectPane, visiblePanes } from './lib/navigation';
+  import { MOBILE_QUERY, adjacentPane, closeImpact, drawnTerminals, paneTitle, panePosition, resolvePane, selectCreated, selectPane, visiblePanes } from './lib/navigation';
+  import { keyboardDetector, longPress, swipe } from './lib/gestures';
+  import RowMenu from './RowMenu.svelte';
+  import type { RowMenuItem } from './RowMenu.svelte';
   import { agentTree } from './lib/agents';
   import type { AgentNode } from './lib/agents';
   import PaneTree from './PaneTree.svelte';
@@ -48,7 +51,12 @@
   let error = $state('');
   let sidebarOpen = $state(false);
   let mobile = $state(false);
-  let showKeys = $state(false);
+  // Accessory keys follow the on-screen keyboard; the toggle overrides that
+  // until the keyboard next opens or closes.
+  let keyboardOpen = $state(false);
+  let keysOverride = $state<boolean>();
+  const showKeys = $derived(keysOverride ?? keyboardOpen);
+  let rowMenu = $state<{ title: string; items: RowMenuItem[] } | null>(null);
   let showSettings = $state(false);
   let computerDetails = $state<{ on: string | null; name: string }>();
   let computerTrigger: HTMLButtonElement | undefined;
@@ -68,7 +76,7 @@
   let actionsMenu = $state<HTMLDetailsElement>();
   let view = $state(blankView());
   let viewLoaded = $state(false);
-  let modal = $state<{ action: Action; document: SharedDocument; machine: string; space?: string; tab?: string; pane?: string; initialName?: string } | null>(null);
+  let modal = $state<{ action: Action; document: SharedDocument; machine: string; space?: string; tab?: string; pane?: string; initialName?: string; impact?: ReturnType<typeof closeImpact> } | null>(null);
   let source: EventSourceLike | undefined;
   let lifecycle = 0;
   let revision = 0;
@@ -187,12 +195,61 @@
   async function topologySaved(result: unknown) {
     await refresh(); selectCreated(view, result);
   }
-  function treeAction(action: Action, document: SharedDocument, space?: SharedSpace, item?: SharedTab) {
+  function treeAction(action: Action, document: SharedDocument, space?: SharedSpace, item?: SharedTab, pane?: LayoutNode) {
     if (!ready || treeBusy || document.error) return;
     closeNavigation();
     modal = { action, document, machine: machineName(document.on, snapshot.machines, snapshot.documents.indexOf(document), snapshot.core),
-      space: space?.id, tab: item?.id,
+      space: space?.id, tab: action === 'close-space' ? undefined : item?.id, pane: action === 'split' || action === 'close-pane' ? pane?.id : undefined,
+      impact: space && action.startsWith('close-') ? closeImpact(space, action === 'close-space' ? undefined : item?.id, action === 'close-pane' ? pane?.id : undefined) : undefined,
       initialName: action === 'rename-space' ? space?.name : action === 'rename-tab' ? item?.name : '' };
+  }
+  // Long press (or the context-menu gesture) on a navigation row. Creation keeps
+  // its visible + button; rename, split and close live here.
+  function spaceMenu(document: SharedDocument, space: SharedSpace, name: string) {
+    const disabled = !ready || treeBusy || !!document.error;
+    rowMenu = { title: name, items: [
+      { label: 'New tab', disabled, run: () => treeAction('new-tab', document, space) },
+      { label: 'Rename workspace', disabled, run: () => treeAction('rename-space', document, space) },
+      { label: 'Close workspace', danger: true, disabled, run: () => treeAction('close-space', document, space) },
+    ] };
+  }
+  function tabMenu(document: SharedDocument, space: SharedSpace, item: SharedTab, name: string) {
+    const disabled = !ready || treeBusy || !!document.error;
+    rowMenu = { title: name, items: [
+      { label: 'New pane', disabled, run: () => void newPane(document, space, item) },
+      { label: 'Rename tab', disabled, run: () => treeAction('rename-tab', document, space, item) },
+      { label: 'Close tab', danger: true, disabled, run: () => treeAction('close-tab', document, space, item) },
+    ] };
+  }
+  function paneMenu(document: SharedDocument, space: SharedSpace, item: SharedTab, pane: LayoutNode, name: string) {
+    const disabled = !ready || treeBusy || !!document.error;
+    rowMenu = { title: name, items: [
+      { label: 'Split pane', disabled, run: () => treeAction('split', document, space, item, pane) },
+      { label: 'Close pane', danger: true, disabled, run: () => treeAction('close-pane', document, space, item, pane) },
+    ] };
+  }
+  /** Phone equivalent of the desktop ⋯ menu, for the pane on screen. */
+  function currentMenu() {
+    if (!selected || !tab) return;
+    const { document, space } = selected, pane = activePane, item = tab;
+    const disabled = !ready || !!document.error;
+    rowMenu = { title: `${selected.name} / ${readable(item.name, 'Tab')}`, items: [
+      { label: 'New tab', disabled, run: () => treeAction('new-tab', document, space) },
+      { label: 'Split pane', disabled: disabled || !pane, run: () => treeAction('split', document, space, item, pane) },
+      { label: 'Rename tab', disabled, run: () => treeAction('rename-tab', document, space, item) },
+      { label: 'Rename workspace', disabled, run: () => treeAction('rename-space', document, space) },
+      { label: 'Close pane', danger: true, disabled: disabled || !pane, run: () => treeAction('close-pane', document, space, item, pane) },
+      { label: 'Close tab', danger: true, disabled, run: () => treeAction('close-tab', document, space, item) },
+    ] };
+  }
+  const position = $derived(selected && tab && activePane ? panePosition(selected.space, tab.id, activePane.id) : undefined);
+  /** Top-bar swipe: the next or previous pane of this workspace. Navigation only;
+   * it never focuses input or opens the keyboard.
+   */
+  function swipePane(direction: -1 | 1) {
+    if (!selected || !tab || !activePane) return;
+    const next = adjacentPane(selected.space, tab.id, activePane.id, direction);
+    if (next) choosePane(selected.document, selected.space, next.tab, next.pane);
   }
   async function newPane(document: SharedDocument, space: SharedSpace, item: SharedTab) {
     if (!ready || treeBusy || document.error) return;
@@ -217,8 +274,9 @@
     modal = {
       action, document, machine: machineName(document.on, snapshot.machines, snapshot.documents.indexOf(document), snapshot.core),
       space: action !== 'new-space' ? selected?.space.id : undefined,
-      tab: action === 'rename-tab' || action === 'split' ? tab?.id : undefined,
-      pane: action === 'split' ? pane?.id : undefined,
+      tab: action === 'rename-tab' || action === 'split' || action === 'close-tab' || action === 'close-pane' ? tab?.id : undefined,
+      pane: action === 'split' || action === 'close-pane' ? pane?.id : undefined,
+      impact: selected && action.startsWith('close-') ? closeImpact(selected.space, action === 'close-space' ? undefined : tab?.id, action === 'close-pane' ? pane?.id : undefined) : undefined,
       initialName: action === 'rename-space' ? selected?.space.name : action === 'rename-tab' ? tab?.name : '',
     };
   }
@@ -242,7 +300,15 @@
     const escapeActions = (event: KeyboardEvent) => { if (event.key === 'Escape') dismissActions(); };
     document.addEventListener('pointerdown', outsideActions);
     document.addEventListener('keydown', escapeActions);
-    const updateViewport = () => { viewportHeight = window.visualViewport?.scale === 1 ? window.visualViewport.height : undefined; };
+    const keyboard = keyboardDetector(), coarse = matchMedia('(any-pointer: coarse)');
+    const updateViewport = () => {
+      const viewport = window.visualViewport;
+      viewportHeight = viewport?.scale === 1 ? viewport.height : undefined;
+      // Pinch zoom shrinks the visual viewport too: only an unzoomed touch device counts.
+      if (!viewport || viewport.scale !== 1) return;
+      const open = coarse.matches && keyboard(viewport.width, viewport.height);
+      if (open !== keyboardOpen) { keyboardOpen = open; keysOverride = undefined; }
+    };
     updateViewport();
     window.visualViewport?.addEventListener('resize', updateViewport);
     view = loadView();
@@ -285,6 +351,12 @@
   .drawer-brand:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; border-radius: 4px; }
   .notification-notice { position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 900; padding: 12px; background: var(--raised); border: 1px solid var(--muted); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .notification-notice button { min-width: 44px; min-height: 44px; }
+  /* Horizontal swipes on the location switch panes; vertical pans stay the browser's. */
+  .mobile-location { touch-action: pan-y; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  .pane-position { flex-shrink: 0; margin-left: auto; padding: 0 4px; color: var(--muted); font-size: calc(10rem / 13); font-variant-numeric: tabular-nums; }
+  :global(.workspace-menu-items) .danger:not(:disabled) { color: var(--error); }
+  /* Long press opens row actions: no text selection or iOS callout underneath. */
+  :global(.workspace-navigation) :is(summary, .pane-link) { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 </style>
 
 <svelte:head><title>{selected ? `${selected.name} · Herdr` : 'Herdr · Spaces'}</title></svelte:head>
@@ -317,10 +389,11 @@
       <div class="app-brand">
         <button class="navigation-toggle" aria-label="Toggle navigation" aria-expanded={sidebarOpen} aria-controls="navigation-drawer" onclick={toggleNavigation}>☰</button>
       </div>
-      <span class="mobile-location" title={selected ? `${selected.machine} / ${selected.name} / ${readable(tab?.name, 'Workspace')} / ${activePane ? paneTitle(activePane, selected.document.on, snapshot.terminals) : ''}` : 'Herdr'}>
+      <span class="mobile-location" use:swipe={swipePane} use:longPress={currentMenu} title={selected ? `${selected.machine} / ${selected.name} / ${readable(tab?.name, 'Workspace')} / ${activePane ? paneTitle(activePane, selected.document.on, snapshot.terminals) : ''}` : 'Herdr'}>
           <ProgramIcon program={terminalProgram(activeTerminal)} />
           <AgentIndicator status={agentStatus(activeTerminal)} showIdle={false} />
           {selected ? selected.name : 'Herdr'}{#if tab}<span class="location-divider">/</span>{readable(tab.name, 'Tab')}{/if}
+          {#if position}<span class="pane-position" aria-label={`Pane ${position.index} of ${position.count}`}>{position.index}/{position.count}</span>{/if}
         </span>
         <button class="pane-jump ready-agent-jump" aria-label={`Next unseen ready agent (${waitingAgents.length} waiting)`} title={`Next unseen ready agent — ${waitingAgents.length} waiting`} disabled={!ready || !waitingAgents.length} onclick={jumpReadyAgent}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10 2 17v4h20v-4l-2-7 M2 17h6l2 3h4l2-3h6 M8 6l3 3 6-6"/></svg><span class="ready-agent-count" aria-hidden="true">{waitingAgents.length > 99 ? '99+' : waitingAgents.length}</span>
@@ -328,7 +401,7 @@
         <button class="pane-jump previous-pane-jump" aria-label="Previous pane" title="Return to previous pane" disabled={!ready || !previousPane} onclick={jumpPreviousPane}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 4-5 5 5 5 M4 9h9a7 7 0 0 1 7 7v4"/></svg>
         </button>
-        <button class="keyboard-toggle" aria-label="Terminal keyboard shortcuts" aria-pressed={showKeys} title="Show terminal keys" onclick={() => showKeys = !showKeys}>⌨</button>
+        <button class="keyboard-toggle" aria-label="Terminal keyboard shortcuts" aria-pressed={showKeys} title="Show terminal keys" onclick={() => keysOverride = !showKeys}>⌨</button>
       {#if !mobile}
         <details class="workspace-menu" bind:this={actionsMenu}>
           <summary aria-label="Workspace actions" title="Workspace actions">⋯</summary>
@@ -368,6 +441,7 @@
   </div>
 {/if}
 {#if modal}<TopologyDialog {...modal} close={() => modal = null} saved={topologySaved} />{/if}
+{#if rowMenu}<RowMenu title={rowMenu.title} items={rowMenu.items} close={() => rowMenu = null} />{/if}
 <AgentPresence ready={ready && !sidebarOpen && !showSettings && !modal && !computerDetails} terminals={snapshot.terminals} visible={drawnTerminals(mobile ? activePane : zoomed || tab?.root, selected?.document.on ?? null, view.stacks)} />
 <NotificationPresence {ready} terminal={typeof activePane?.content?.terminal === 'string' && selected ? qualify(activePane.content.terminal, selected.document.on) : ''} />
 {#if notificationNotice}<aside role="status" class="notification-notice">{notificationNotice}<button onclick={() => notificationNotice = ''} aria-label="Dismiss notification destination message">×</button></aside>{/if}
@@ -388,6 +462,9 @@
   <button disabled={!ready || !selected} onclick={() => action('rename-space')}>Rename workspace</button>
   <button disabled={!ready || !tab} onclick={() => action('rename-tab')}>Rename tab</button>
   <button disabled={!ready || !focused} onclick={() => action('split')}>Split pane</button>
+  <button class="danger" disabled={!ready || !focused} onclick={() => action('close-pane')}>Close pane</button>
+  <button class="danger" disabled={!ready || !tab} onclick={() => action('close-tab')}>Close tab</button>
+  <button class="danger" disabled={!ready || !selected} onclick={() => action('close-space')}>Close workspace</button>
   {#if !mobile}<button disabled={!focused} onclick={() => { dismissActions(); view.zoomed[tabKey] = zoomed ? '' : focused; }}>{zoomed ? 'Show all panes' : 'Zoom pane'}</button>{/if}
 {/snippet}
 
@@ -402,27 +479,25 @@
           {@const name = spaceName(space, document.on, snapshot.terminals, `Workspace ${j + 1}`)}
             <div class="tree-node workspace-node">
               <details class="workspace-branch" open={expandedSpaces[key] ?? spaceKey === key}>
-                <summary onclick={event => { event.preventDefault(); expandedSpaces[key] = !(expandedSpaces[key] ?? spaceKey === key); }}><span class="space-badge" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span><span>{name}</span></summary>
+                <summary use:longPress={() => spaceMenu(document, space, name)} onclick={event => { event.preventDefault(); expandedSpaces[key] = !(expandedSpaces[key] ?? spaceKey === key); }}><span class="space-badge" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span><span>{name}</span></summary>
                 {#each space.tabs as item, k (item.id || k)}
                   {@const tabName = readable(item.name, String(k + 1))}
                   <div class="tree-node tab-node">
                     <details class="tab-branch" open>
-                      <summary><span aria-hidden="true">▣</span><span>{tabName}</span></summary>
+                      <summary use:longPress={() => tabMenu(document, space, item, tabName)}><span aria-hidden="true">▣</span><span>{tabName}</span></summary>
                       <div class="pane-branches">
                         {#each visiblePanes(item.root) as pane, n (pane.id || n)}
-                          <button class="pane-link" class:selected={spaceKey === key && tab?.id === item.id && focused === pane.id} aria-current={spaceKey === key && tab?.id === item.id && focused === pane.id ? 'page' : undefined} onclick={() => choosePane(document, space, item, pane)}><span class="pane-number">{n + 1}</span><span>{paneTitle(pane, document.on, snapshot.terminals, n)}</span></button>
+                          <button class="pane-link" class:selected={spaceKey === key && tab?.id === item.id && focused === pane.id} aria-current={spaceKey === key && tab?.id === item.id && focused === pane.id ? 'page' : undefined} use:longPress={() => paneMenu(document, space, item, pane, paneTitle(pane, document.on, snapshot.terminals, n))} onclick={() => choosePane(document, space, item, pane)}><span class="pane-number">{n + 1}</span><span>{paneTitle(pane, document.on, snapshot.terminals, n)}</span></button>
                         {:else}<span class="rail-empty">No visible panes</span>{/each}
                       </div>
                     </details>
                     <div class="tree-node-actions">
-                      <button class="tree-action" aria-label={`Rename tab ${tabName}`} title="Rename tab" disabled={!ready || treeBusy || !!document.error} onclick={() => treeAction('rename-tab', document, space, item)}>✎</button>
                       <button class="tree-action tree-create" aria-label={`New pane in ${tabName}`} title="New pane" disabled={!ready || treeBusy || !!document.error} onclick={() => void newPane(document, space, item)}>+</button>
                     </div>
                   </div>
                 {:else}<button class="empty-workspace" onclick={() => chooseSpace(key)}>Open empty workspace</button>{/each}
               </details>
               <div class="tree-node-actions">
-                <button class="tree-action" aria-label={`Rename workspace ${name}`} title="Rename workspace" disabled={!ready || treeBusy || !!document.error} onclick={() => treeAction('rename-space', document, space)}>✎</button>
                 <button class="tree-action tree-create" aria-label={`New tab in ${name}`} title="New tab" disabled={!ready || treeBusy || !!document.error} onclick={() => treeAction('new-tab', document, space)}>+</button>
               </div>
             </div>

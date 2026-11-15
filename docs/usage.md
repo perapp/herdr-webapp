@@ -473,6 +473,33 @@ Applications without mouse support require their own keys; swipes never guess
 Up/Down arrow input. Pinch zoom is left to the browser, and reduced-motion
 preferences disable momentum.
 
+### Phone gestures, keys and closing
+
+- **Accessory keys** appear with the on-screen keyboard and hide with it. The
+  keyboard button overrides that until the keyboard next opens or closes.
+  Keyboard detection is inferred from viewport height on touch devices and
+  needs validation on physical iOS/Android devices.
+- **Ctrl** and **Alt** latch for the next key only (Ctrl then `r` sends Ctrl+R;
+  Alt then ← sends the xterm modified-arrow sequence). A latched Ctrl+M/Ctrl+J
+  is not a way to submit: use Enter or **Ctrl J**. Held arrow keys repeat.
+- **Copy** copies the selection, or the visible screen when nothing is selected.
+  **Paste** inserts clipboard text without pressing Enter; it is offered only
+  where the browser can read the clipboard (HTTPS or localhost, not the plain
+  HTTP LAN URL).
+- A round **↓** button appears while scrolled up in history and returns to the
+  latest output.
+- **Swipe the top bar** left/right for the next/previous pane of the workspace
+  (tabs in order, wrapping). It never focuses input or opens the keyboard.
+  **Long-press the top bar** for the current pane's actions.
+- **Long-press** (or right-click / the Menu key) a workspace, tab or pane in the
+  drawer for rename, split and close. The visible **+** still creates.
+- **Close pane / tab / workspace** follow the desktop: the last pane closes its
+  tab and the last tab its workspace, after a confirmation that states how
+  many terminals end. Closing ends those programs and their sub-agents (except
+  sub-agents kept in a tab of their own) and cannot be undone. Programs are
+  ended before the shared layout is written; if a running desktop removes the
+  same pane first, that newer layout is accepted instead of failing.
+
 ### Agent commands and favorites
 
 Open the accessory keys and tap **/** beside the paperclip. The command palette

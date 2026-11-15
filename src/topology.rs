@@ -85,6 +85,9 @@ pub async fn handle(
         read["value"].clone()
     };
     validate_document(&doc)?;
+    if body.action.starts_with("close-") {
+        return close(&app, &body, doc).await;
+    }
     // Plan against a placeholder first: missing targets, invalid geometry and
     // unsupported schemas must fail BEFORE a program is started.
     let mut plan = Plan::new(&body);
@@ -178,7 +181,15 @@ impl Request {
     fn validate(&self) -> Result<(), ApiError> {
         if !matches!(
             self.action.as_str(),
-            "rename-space" | "rename-tab" | "new-space" | "new-tab" | "new-pane" | "split"
+            "rename-space"
+                | "rename-tab"
+                | "new-space"
+                | "new-tab"
+                | "new-pane"
+                | "split"
+                | "close-space"
+                | "close-tab"
+                | "close-pane"
         ) {
             return Err(bad("Unknown topology action"));
         }
@@ -200,12 +211,18 @@ impl Request {
         if self.action != "new-space" && self.space.is_none() {
             return Err(bad("space is required"));
         }
-        if matches!(self.action.as_str(), "rename-tab" | "new-pane" | "split") && self.tab.is_none()
+        if matches!(
+            self.action.as_str(),
+            "rename-tab" | "new-pane" | "split" | "close-tab" | "close-pane"
+        ) && self.tab.is_none()
         {
             return Err(bad("tab is required"));
         }
-        if self.action == "split" && self.pane.is_none() {
+        if matches!(self.action.as_str(), "split" | "close-pane") && self.pane.is_none() {
             return Err(bad("pane is required"));
+        }
+        if self.action.starts_with("close-") && (self.name.is_some() || self.folder.is_some()) {
+            return Err(bad("name and folder are not valid for close actions"));
         }
         if self.action.starts_with("rename-") && self.name.is_none() {
             return Err(bad("name is required"));
@@ -430,6 +447,299 @@ fn split(node: &mut Value, target: &str, axis: &str, new: &Value, container: &st
         }
     }
     false
+}
+
+/// What a close removed: local terminal references and which containers went too.
+#[derive(Debug, Default, PartialEq)]
+struct Closed {
+    terminals: Vec<String>,
+    tab: bool,
+    space: bool,
+}
+fn find_node<'a>(node: &'a Value, id: &str) -> Option<&'a Value> {
+    if node["id"] == id {
+        return Some(node);
+    }
+    node.get("children")
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(|c| find_node(c, id))
+}
+fn any_pane(node: &Value) -> bool {
+    splittable(node)
+        || node
+            .get("children")
+            .and_then(Value::as_array)
+            .is_some_and(|c| c.iter().any(any_pane))
+}
+fn collect_terminals(node: &Value, out: &mut Vec<String>) {
+    if let Some(t) = node.pointer("/content/terminal").and_then(Value::as_str) {
+        out.push(t.to_owned());
+    }
+    for c in node
+        .get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        collect_terminals(c, out);
+    }
+}
+/// A pixel-sized slot has no share to hand back.
+fn weight(node: &Value) -> Option<f64> {
+    if node.pointer("/size/px").is_some_and(|v| !v.is_null()) {
+        return None;
+    }
+    Some(
+        node.pointer("/size/weight")
+            .and_then(Value::as_f64)
+            .unwrap_or(1.0),
+    )
+}
+/// Desktop Node::remove geometry: the share returns to the neighbor it was
+/// split from (the one before, else the next); a stack activates the child
+/// that slides into the slot.
+fn remove_node(node: &mut Value, id: &str) -> Option<Value> {
+    let kind = node["type"].as_str().map(str::to_owned);
+    let was_active = node["active"] == id;
+    let children = node.get_mut("children").and_then(Value::as_array_mut)?;
+    let Some(i) = children.iter().position(|c| c["id"] == id) else {
+        return children.iter_mut().find_map(|c| remove_node(c, id));
+    };
+    let removed = children.remove(i);
+    if matches!(kind.as_deref(), Some("row" | "column"))
+        && let Some(gone) = weight(&removed)
+        && let Some(n) = children.get_mut(i.saturating_sub(1))
+        && let Some(w) = weight(n)
+    {
+        if n.get("size").is_none_or(Value::is_null) {
+            n["size"] = json!({});
+        }
+        n["size"]["weight"] = json!(w + gone);
+    }
+    let next = children
+        .get(i)
+        .or(children.last())
+        .map(|n| n["id"].clone())
+        .unwrap_or(Value::Null);
+    if kind.as_deref() == Some("stack") && was_active {
+        node["active"] = next;
+    }
+    Some(removed)
+}
+/// Desktop collapse: emptied rows/columns vanish and single-child ones give
+/// way to that child, which takes the slot size. Stack children keep identity.
+fn collapse(node: &mut Value) {
+    let in_stack = node["type"] == "stack";
+    let Some(children) = node.get_mut("children").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for c in children.iter_mut() {
+        collapse(c);
+    }
+    if in_stack {
+        return;
+    }
+    let container = |n: &Value| matches!(n["type"].as_str(), Some("row" | "column"));
+    let count = |n: &Value| n["children"].as_array().map_or(0, Vec::len);
+    children.retain(|n| !(container(n) && count(n) == 0));
+    for n in children.iter_mut() {
+        if container(n) && count(n) == 1 {
+            let size = n.get("size").cloned();
+            let mut only = n["children"].as_array_mut().unwrap().remove(0);
+            match size {
+                Some(size) => only["size"] = size,
+                None => {
+                    only.as_object_mut().unwrap().remove("size");
+                }
+            }
+            *n = only;
+        }
+    }
+}
+/// Desktop close semantics: the last pane takes its tab, the last tab its space.
+fn close_apply(doc: &mut Value, r: &Request) -> Result<Closed, ApiError> {
+    let ss = doc
+        .get_mut("spaces")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| bad("Space not found on this machine"))?;
+    let si = ss
+        .iter()
+        .position(|s| s["id"].as_str() == r.space.as_deref())
+        .ok_or_else(|| bad("Space not found on this machine"))?;
+    let mut closed = Closed::default();
+    if r.action != "close-space" {
+        let tabs = ss[si]
+            .get_mut("tabs")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| bad("Tab not found in requested space"))?;
+        let ti = tabs
+            .iter()
+            .position(|t| t["id"].as_str() == r.tab.as_deref())
+            .ok_or_else(|| bad("Tab not found in requested space"))?;
+        let mut close_tab = r.action == "close-tab";
+        if r.action == "close-pane" {
+            let id = r.pane.as_deref().unwrap();
+            let missing = || bad("Pane not found in requested tab");
+            let root = tabs[ti].get_mut("root").ok_or_else(missing)?;
+            let target = find_node(root, id).ok_or_else(missing)?;
+            if !splittable(target) {
+                return Err(bad("Only terminal or module panes can be closed"));
+            }
+            if target["closable"] == false {
+                return Err(unsupported("This pane is marked as not closable"));
+            }
+            if root["id"] == id {
+                close_tab = true;
+            } else {
+                let removed = remove_node(root, id).ok_or_else(missing)?;
+                collapse(root);
+                collect_terminals(&removed, &mut closed.terminals);
+                close_tab = !any_pane(root);
+            }
+        }
+        if close_tab {
+            let removed = tabs.remove(ti);
+            collect_terminals(&removed["root"], &mut closed.terminals);
+            closed.tab = true;
+        }
+        if !(closed.tab && tabs.is_empty()) {
+            return Ok(closed);
+        }
+    }
+    let removed = ss.remove(si);
+    for tab in removed["tabs"].as_array().into_iter().flatten() {
+        collect_terminals(&tab["root"], &mut closed.terminals);
+    }
+    closed.tab = true;
+    closed.space = true;
+    Ok(closed)
+}
+/// Closing ends the whole tree: Core keeps a sub-agent running when its parent
+/// dies. Kept sub-agents (given a tab of their own) are the person's: spared.
+fn doomed(live: &Value, mut addresses: Vec<String>) -> Vec<String> {
+    let mut i = 0;
+    while i < addresses.len() {
+        for t in live.as_array().into_iter().flatten() {
+            let kept = t
+                .pointer("/labels/herdr.space")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty());
+            if t["parent"].as_str() == Some(addresses[i].as_str())
+                && !kept
+                && let Some(a) = t["address"].as_str()
+                && !addresses.iter().any(|d| d == a)
+            {
+                addresses.push(a.to_owned());
+            }
+        }
+        i += 1;
+    }
+    addresses
+}
+fn error_kind(e: &anyhow::Error) -> Option<String> {
+    serde_json::from_str::<Value>(&e.to_string())
+        .ok()?
+        .pointer("/data/kind")?
+        .as_str()
+        .map(str::to_owned)
+}
+/// Programs end first, then the layout. A live labeled terminal without a pane
+/// would be adopted back by a running desktop (recreating a closed space); a
+/// pane whose program has ended is something the desktop also removes itself,
+/// so a conflicting write is re-planned against the newer document instead of
+/// failing after the irreversible step.
+async fn close(app: &Shared, body: &Request, mut doc: Value) -> Result<Json<Value>, ApiError> {
+    // Missing targets and non-closable panes fail before anything is ended.
+    let closed = close_apply(&mut doc, body)?;
+    validate_document(&doc)?;
+    let live = app.core.state.borrow()["terminals"].clone();
+    let terminals = doomed(
+        &live,
+        closed
+            .terminals
+            .iter()
+            .map(|t| match &body.on {
+                Some(machine) => format!("{machine}/{t}"),
+                None => t.clone(),
+            })
+            .collect(),
+    );
+    for (i, address) in terminals.iter().enumerate() {
+        if let Err(e) = app
+            .core
+            .call("terminal.kill", json!({"terminal":address}))
+            .await
+            && error_kind(&e).as_deref() != Some("not_found")
+        {
+            return Err(error(
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "Could not end terminal {address} ({i} of {} already ended); the layout was not changed. Refresh before retrying: {e}",
+                    terminals.len()
+                ),
+            ));
+        }
+    }
+    let mut version = body.version;
+    for _ in 0..4 {
+        match app
+            .core
+            .call(
+                "doc.set",
+                json!({"name":"herdr-app","on":body.on,"version":version,"value":doc}),
+            )
+            .await
+        {
+            Ok(written) => {
+                let version = written["version"].as_u64().ok_or_else(|| {
+                    error(
+                        StatusCode::BAD_GATEWAY,
+                        "doc.set returned no version; the terminals ended but the layout write outcome is unknown. Refresh before retrying",
+                    )
+                })?;
+                return Ok(Json(
+                    json!({"on":body.on,"version":version,"value":doc,"closed":{"tab":closed.tab,"space":closed.space},"ended":terminals}),
+                ));
+            }
+            Err(e) => {
+                let ApiError(status, message) = rpc_error(e);
+                if status != StatusCode::CONFLICT {
+                    return Err(error(
+                        status,
+                        format!(
+                            "The terminals ended, but the layout was not updated: {message}. Refresh before retrying"
+                        ),
+                    ));
+                }
+            }
+        }
+        let read = app
+            .core
+            .call("doc.get", json!({"name":"herdr-app","on":body.on}))
+            .await
+            .map_err(rpc_error)?;
+        version = read["version"]
+            .as_u64()
+            .ok_or_else(|| unsupported("doc.get returned no valid version"))?;
+        doc = if read["value"].is_null() {
+            json!({"spaces":[]})
+        } else {
+            read["value"].clone()
+        };
+        validate_document(&doc)?;
+        // Another client already removed the ended pane: nothing left to write.
+        if close_apply(&mut doc, body).is_err() {
+            return Ok(Json(
+                json!({"on":body.on,"version":version,"value":doc,"closed":{"tab":closed.tab,"space":closed.space},"ended":terminals}),
+            ));
+        }
+        validate_document(&doc)?;
+    }
+    Err(error(
+        StatusCode::CONFLICT,
+        "The terminals ended, but the layout kept changing elsewhere. Refresh before retrying",
+    ))
 }
 
 // Current desktop documents are unversioned. Preserve arbitrary extension
@@ -786,6 +1096,139 @@ mod tests {
     fn request(action: &str) -> Request {
         serde_json::from_value(json!({"action":action,"on":null,"space":"s","tab":"t","pane":"p","name":"renamed","version":4})).unwrap()
     }
+    fn close_request(action: &str, pane: &str) -> Request {
+        serde_json::from_value(
+            json!({"action":action,"on":null,"space":"s","tab":"t","pane":pane,"version":4}),
+        )
+        .unwrap()
+    }
+    #[test]
+    fn close_pane_returns_its_share_and_collapses_like_desktop() {
+        let mut d = doc();
+        // p(0.6) | column[ a , stack[b*, c] ]
+        d["spaces"][0]["tabs"][0]["root"]["children"][1] = json!({"id":"col","type":"column","size":{"weight":0.4},"children":[
+            {"id":"a","type":"block","content":{"terminal":"t2"}},
+            {"id":"st","type":"stack","active":"b","children":[
+                {"id":"b","type":"block","content":{"terminal":"t3"}},
+                {"id":"c","type":"block","content":{"terminal":"t4"}}]}]});
+        validate_document(&d).unwrap();
+        let r = close_request("close-pane", "b");
+        r.validate().unwrap();
+        let closed = close_apply(&mut d, &r).unwrap();
+        assert_eq!(
+            closed,
+            Closed {
+                terminals: vec!["t3".into()],
+                tab: false,
+                space: false
+            }
+        );
+        validate_document(&d).unwrap();
+        assert_eq!(
+            d["spaces"][0]["tabs"][0]["root"]["children"][1]["children"][1]["active"],
+            "c"
+        );
+        // Removing `a` leaves a one-child column: the stack takes its slot and size.
+        let closed = close_apply(&mut d, &close_request("close-pane", "a")).unwrap();
+        assert_eq!(closed.terminals, ["t2"]);
+        validate_document(&d).unwrap();
+        let root = &d["spaces"][0]["tabs"][0]["root"];
+        assert_eq!(root["extra"], "root");
+        assert_eq!(root["children"][1]["id"], "st");
+        assert_eq!(root["children"][1]["size"], json!({"weight":0.4}));
+        // The share goes to the neighbor before it; unknown size fields survive.
+        close_apply(&mut d, &close_request("close-pane", "st")).unwrap_err();
+        let closed = close_apply(&mut d, &close_request("close-pane", "c")).unwrap();
+        assert_eq!(closed.terminals, ["t4"]);
+        let mut d2 = doc();
+        close_apply(&mut d2, &close_request("close-pane", "q")).unwrap();
+        let p = &d2["spaces"][0]["tabs"][0]["root"]["children"][0];
+        assert_eq!(p["size"], json!({"weight":1.6,"extra":true}));
+        assert_eq!(p["content"]["extra"], "keep");
+        assert_eq!(d2["extension"], doc()["extension"]);
+    }
+    #[test]
+    fn closing_the_last_pane_closes_tab_then_space() {
+        let mut d = doc();
+        d["spaces"][0]["tabs"].as_array_mut().unwrap().push(json!({"id":"u","root":{"id":"u","type":"row","children":[{"id":"z","type":"block","content":{"terminal":"t7"}}]}}));
+        let mut r = close_request("close-pane", "z");
+        r.tab = Some("u".into());
+        assert_eq!(
+            close_apply(&mut d, &r).unwrap(),
+            Closed {
+                terminals: vec!["t7".into()],
+                tab: true,
+                space: false
+            }
+        );
+        assert_eq!(d["spaces"][0]["tabs"].as_array().unwrap().len(), 1);
+        close_apply(&mut d, &close_request("close-pane", "q")).unwrap();
+        // `p` is now the only pane: closing it removes the tab and the space.
+        let closed = close_apply(&mut d, &close_request("close-pane", "p")).unwrap();
+        assert_eq!(
+            closed,
+            Closed {
+                terminals: vec!["t1".into()],
+                tab: true,
+                space: true
+            }
+        );
+        assert_eq!(d["spaces"], json!([]));
+        assert_eq!(d["extension"], doc()["extension"]);
+        validate_document(&d).unwrap();
+    }
+    #[test]
+    fn close_tab_and_space_collect_every_terminal_and_reject_bad_targets() {
+        let mut d = doc();
+        let closed = close_apply(&mut d, &close_request("close-tab", "p")).unwrap();
+        assert_eq!(
+            closed,
+            Closed {
+                terminals: vec!["t1".into()],
+                tab: true,
+                space: true
+            }
+        );
+        let mut d = doc();
+        let mut r = close_request("close-space", "p");
+        r.tab = None;
+        r.pane = None;
+        r.validate().unwrap();
+        assert_eq!(close_apply(&mut d, &r).unwrap().terminals, ["t1"]);
+        assert_eq!(d["spaces"], json!([]));
+        let mut d = doc();
+        let before = d.clone();
+        close_apply(&mut d, &close_request("close-pane", "missing")).unwrap_err();
+        close_apply(&mut d, &close_request("close-pane", "t")).unwrap_err();
+        d["spaces"][0]["tabs"][0]["root"]["children"][0]["closable"] = false.into();
+        let before_locked = d.clone();
+        assert_eq!(
+            close_apply(&mut d, &close_request("close-pane", "p"))
+                .unwrap_err()
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(d, before_locked);
+        assert_ne!(d, before);
+        let mut named = close_request("close-tab", "p");
+        named.name = Some("x".into());
+        named.validate().unwrap_err();
+        let mut no_pane = close_request("close-pane", "p");
+        no_pane.pane = None;
+        no_pane.validate().unwrap_err();
+    }
+    #[test]
+    fn doomed_includes_unkept_sub_agents_all_the_way_down() {
+        let live = json!([
+            {"address":"t1"},
+            {"address":"t2","parent":"t1"},
+            {"address":"t3","parent":"t2","labels":{"herdr.space":""}},
+            {"address":"t4","parent":"t1","labels":{"herdr.space":"s"}},
+            {"address":"t5","parent":"t4"},
+            {"address":"t6","parent":"t9"}
+        ]);
+        assert_eq!(doomed(&live, vec!["t1".into()]), ["t1", "t2", "t3"]);
+    }
     #[test]
     fn new_pane_appends_to_requested_tab_without_changing_existing_nodes() {
         for axis in ["row", "column"] {
@@ -959,6 +1402,85 @@ mod tests {
             rpc_error(anyhow::anyhow!("{}", json!({"data":{"kind":"conflict"}}))).0,
             StatusCode::CONFLICT
         );
+    }
+    #[tokio::test]
+    async fn close_ends_the_program_first_and_accepts_a_concurrent_removal() {
+        use tokio::{
+            io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+            net::UnixListener,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("core.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let mut removed = doc();
+            close_apply(&mut removed, &close_request("close-pane", "p")).unwrap();
+            // Core drops the connection on RPC errors: the re-read reconnects.
+            for methods in [
+                &["hello", "doc.get", "terminal.kill", "doc.set"][..],
+                &["hello", "doc.get"][..],
+            ] {
+                let (io, _) = listener.accept().await.unwrap();
+                let mut io = BufReader::new(io);
+                for method in methods {
+                    let mut line = String::new();
+                    io.read_line(&mut line).await.unwrap();
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    assert_eq!(req["method"], *method);
+                    let response = match *method {
+                        "hello" => json!({"id":req["id"],"result":{"generation":1}}),
+                        "doc.get" if methods.len() == 4 => {
+                            json!({"id":req["id"],"result":{"version":4,"value":doc()}})
+                        }
+                        "doc.get" => {
+                            json!({"id":req["id"],"result":{"version":5,"value":removed}})
+                        }
+                        "terminal.kill" => {
+                            assert_eq!(req["params"]["terminal"], "t1");
+                            json!({"id":req["id"],"result":{"address":"t1","reason":"killed"}})
+                        }
+                        _ => {
+                            assert_eq!(req["params"]["version"], 4);
+                            assert_eq!(req["params"]["value"], removed);
+                            json!({"id":req["id"],"error":{"data":{"kind":"conflict"},"message":"changed"}})
+                        }
+                    };
+                    io.get_mut()
+                        .write_all(format!("{response}\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+                if methods.len() == 2 {
+                    let mut line = String::new();
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(100),
+                        io.read_line(&mut line),
+                    )
+                    .await
+                    {
+                        Err(_) | Ok(Ok(0)) => {}
+                        other => panic!("nothing left to write or end: {other:?} {line}"),
+                    }
+                }
+            }
+        });
+        let app = std::sync::Arc::new(crate::App {
+            updates: crate::update::Updater::development(),
+            core: crate::core::Core::new(path),
+            auth: crate::auth::Auth::new("a".repeat(64), None),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", "a".repeat(64)).parse().unwrap(),
+        );
+        let Json(reply) = handle(State(app), headers, Json(close_request("close-pane", "p")))
+            .await
+            .unwrap();
+        assert_eq!(reply["version"], 5);
+        assert_eq!(reply["ended"], json!(["t1"]));
+        assert_eq!(reply["closed"], json!({"tab":false,"space":false}));
+        server.await.unwrap();
     }
     #[tokio::test]
     async fn cas_conflict_leaves_terminal_unlabeled_and_alive() {

@@ -38,3 +38,14 @@ aside{grid-column:1;grid-row:2;min-height:0;background:var(--panel);border-right
 .terminal-attachments .agent-commands-button{display:flex;align-items:center;justify-content:center;width:44px;height:44px;min-height:44px;flex:0 0 44px;padding:4px;font:600 calc(20rem / 13) ui-monospace,monospace}
 .terminal-font-options{min-width:0;margin:18px 0 0;padding:10px 12px;border:1px solid var(--line);border-radius:8px}.terminal-font-options legend{font-size:1rem;padding:0 5px}.terminal-font-controls{display:flex;align-items:center;gap:8px;min-width:0}.terminal-font-controls button{width:max(44px,1.3em);flex-shrink:0;min-width:44px;min-height:44px;padding:0;font-size:calc(20rem / 13)}.terminal-font-controls input[type=range]{flex:1;min-width:0;width:0;min-height:44px;padding:0;accent-color:var(--teal)}.terminal-font-controls output{min-width:42px;white-space:nowrap;font:calc(12rem / 13) ui-monospace,SFMono-Regular,monospace}.terminal-font-options .font-size-reset{min-height:44px;margin-top:4px;font-size:calc(12rem / 13)}
 .terminal-attachments .ctrl-j-key{flex:0 0 auto;min-width:56px;min-height:44px;padding:4px 7px;font-size:calc(12rem / 13)}
+
+/* Terminal stage: the host plus overlays that must not change its geometry. */
+.terminal-stage{position:relative;display:flex;flex:1;min-width:0;min-height:0}.terminal-stage>.terminal-host{flex:1}
+.jump-bottom{position:absolute;right:12px;bottom:10px;z-index:5;display:grid;place-items:center;width:44px;height:44px;min-height:44px;padding:0;border:1px solid var(--line);border-radius:50%;background:var(--panel);color:var(--bright);box-shadow:0 2px 10px #0003;opacity:.92}
+.jump-bottom:hover{background:var(--raised)}
+/* Eleven keys: narrower slots keep the arrows on screen at phone width. */
+.terminal-accessories .terminal-keys button{flex:1 0 38px;padding:4px 2px}
+.terminal-keys .modifier-key[aria-pressed=true]{background:var(--teal);border-color:var(--teal);color:var(--base);font-weight:650}
+.terminal-attachments .text-key{flex:0 0 auto;min-width:48px;min-height:44px;padding:4px 7px;font-size:calc(12rem / 13)}
+/* One row action (+) since rename and close moved to the long-press menu. */
+.tree-node>details>summary{padding-right:max(40px,2.3rem)}
