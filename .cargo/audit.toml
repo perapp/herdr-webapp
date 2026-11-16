@@ -1,0 +1,17 @@
+# Advisories accepted on 2026-11-16. Re-check each when its dependency moves;
+# `make audit` fails on anything not listed here.
+[advisories]
+ignore = [
+    # h2 0.3: only a Cargo.lock entry for an inactive optional dependency of
+    # web-push. `cargo tree --target all -e all -i h2@0.3.27` finds no user, so
+    # it is not compiled in.
+    "RUSTSEC-2026-0258",
+    # rsa (Marvin timing attack): linked through web-push -> jwt-simple, but
+    # VAPID signs with ES256 only; no RSA key is ever created or used. No fixed
+    # release on the line web-push 0.11 depends on.
+    "RUSTSEC-2023-0071",
+    # crypto-bigint 0.5 timing variability: reached through p256 0.13 /
+    # elliptic-curve 0.13 (also pinned by webrtc and jwt-simple). The fix needs
+    # the p256 0.14 line. OPEN: move to p256 0.14 once webrtc supports it.
+    "RUSTSEC-2026-0387",
+]

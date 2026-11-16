@@ -407,7 +407,11 @@ async fn main() -> anyhow::Result<()> {
     updates.clone().automatic();
     tokio::spawn(core.monitor());
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let serve = axum::serve(listener, router(app)).with_graceful_shutdown(async {
+    let serve = axum::serve(
+        listener,
+        router(app).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
         let _ = stopped.await;
     });
     let mut serve = Box::pin(std::future::IntoFuture::into_future(serve));
@@ -465,10 +469,12 @@ struct Login {
 async fn login(
     State(app): State<Shared>,
     headers: HeaderMap,
+    client: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
     Json(body): Json<Login>,
 ) -> Result<Response, ApiError> {
     app.auth.same_origin(&headers, false)?;
-    match app.auth.login(&body.token) {
+    let from = client.map(|c| c.0.0.ip());
+    match app.auth.login_from(from, &body.token) {
         Ok(cookie) => Ok((
             [(header::SET_COOKIE, cookie)],
             Json(json!({"authenticated":true})),
@@ -578,7 +584,7 @@ async fn asset(uri: Uri) -> Response {
         path
     };
     if let Some(file) = Assets::get(path) {
-        (
+        let mut response = (
             [(
                 header::CONTENT_TYPE,
                 mime_guess::from_path(path)
@@ -587,7 +593,16 @@ async fn asset(uri: Uri) -> Response {
             )],
             file.data,
         )
-            .into_response()
+            .into_response();
+        // Vite content-hashed files never change under the same name. Everything
+        // else, including index.html and the service worker, stays no-store.
+        if path.starts_with("assets/") && path.rsplit('/').next().is_some_and(|n| n.contains('-')) {
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("public, max-age=31536000, immutable"),
+            );
+        }
+        response
     } else {
         StatusCode::NOT_FOUND.into_response()
     }
@@ -634,6 +649,28 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), 200);
         assert!(response.headers().contains_key("content-security-policy"));
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        for path in Assets::iter() {
+            let response = a
+                .clone()
+                .oneshot(
+                    Request::get(format!("/{path}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let hashed = path.starts_with("assets/") && path.contains('-');
+            assert_eq!(
+                response.headers()["cache-control"],
+                if hashed {
+                    "public, max-age=31536000, immutable"
+                } else {
+                    "no-store"
+                },
+                "{path}"
+            );
+        }
         let response = a
             .clone()
             .oneshot(Request::get("/api/nope").body(Body::empty()).unwrap())

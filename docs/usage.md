@@ -277,7 +277,8 @@ Open that LAN URL from a phone, tablet, or another computer on the network.
 hostname/IP and port; it does **not** require the browser to run on the server.
 No CORS exception is needed for a phone: requests use the address it opened.
 Sign-in errors distinguish invalid tokens (401), origin rejection (403), and
-rate limiting (429). Do not share the private QR or token when reporting an error.
+rate limiting (429: 30 failed attempts from one address within a minute; other
+addresses are unaffected). Do not share the private QR or token when reporting an error.
 
 **In a terminal, the connection QR and LAN URL stay fixed at the top, with a
 bounded live log below.** Enlarge a small pane to see the full QR. Ctrl+C stops the

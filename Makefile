@@ -1,4 +1,4 @@
-.PHONY: all build frontend frontend-deps setup check check-fast ui-test ui-watch test release run dev dev-build dev-embedded clean smoke ui-e2e help
+.PHONY: all build frontend frontend-deps setup check check-fast ui-test ui-watch test release run dev dev-build dev-embedded clean smoke ui-e2e audit help
 all: release
 
 help:
@@ -81,3 +81,10 @@ ui-e2e: frontend-deps
 clean:
 	cargo clean
 	rm -rf frontend/dist
+
+# Needs network: fetches the RustSec advisory database and the npm registry.
+# Accepted advisories, with reasons, live in .cargo/audit.toml.
+audit: frontend-deps
+	@command -v cargo-audit >/dev/null || cargo install --locked cargo-audit
+	cargo audit
+	cd frontend && npm audit --omit=dev

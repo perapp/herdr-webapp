@@ -375,7 +375,8 @@ pub struct Auth {
     changes: tokio::sync::watch::Sender<AuthState>,
     authorization_gate: tokio::sync::RwLock<()>,
     _store_lock: Option<File>,
-    attempts: Mutex<Vec<Instant>>,
+    /// Failed sign-ins in the last minute, keyed by client address bucket.
+    attempts: Mutex<Vec<(Option<std::net::IpAddr>, Instant)>>,
     pub origin: Option<String>,
 }
 
@@ -714,16 +715,29 @@ impl Auth {
             ))
         }
     }
+    #[cfg(test)]
     pub fn login(&self, token: &str) -> Result<String, ApiError> {
+        self.login_from(None, token)
+    }
+    /// Only failed attempts count, per client address, so one LAN client
+    /// guessing tokens cannot lock out everyone else. The global ceiling bounds
+    /// memory and total guesses when many addresses take part.
+    pub fn login_from(
+        &self,
+        from: Option<std::net::IpAddr>,
+        token: &str,
+    ) -> Result<String, ApiError> {
+        let from = from.map(address_bucket);
         let mut attempts = self.attempts.lock().unwrap();
-        attempts.retain(|t| t.elapsed() < Duration::from_secs(60));
-        if attempts.len() >= 30 {
+        attempts.retain(|(_, t)| t.elapsed() < Duration::from_secs(60));
+        if attempts.len() >= MAX_FAILED_LOGINS
+            || attempts.iter().filter(|(a, _)| *a == from).count() >= MAX_FAILED_LOGINS_PER_ADDRESS
+        {
             return Err(error(
                 StatusCode::TOO_MANY_REQUESTS,
-                "Too many sign-in attempts; try again in one minute",
+                "Too many failed sign-in attempts; try again in one minute",
             ));
         }
-        attempts.push(Instant::now());
         let mut sessions = self.sessions.lock().unwrap();
         if sessions.failed {
             return Err(Self::storage_error());
@@ -731,6 +745,7 @@ impl Auth {
         // Check inside the same lock as persistence; a queued stale login must
         // never create a new session after rotation commits.
         if !equal(&sessions.token, token) {
+            attempts.push((from, Instant::now()));
             return Err(error(StatusCode::UNAUTHORIZED, "Invalid access token"));
         }
         let session = random_secret();
@@ -849,6 +864,21 @@ impl Auth {
     }
 }
 
+const MAX_FAILED_LOGINS_PER_ADDRESS: usize = 30;
+const MAX_FAILED_LOGINS: usize = 600;
+
+/// One IPv6 host normally controls a whole /64, so count that as one client.
+fn address_bucket(address: std::net::IpAddr) -> std::net::IpAddr {
+    match address.to_canonical() {
+        std::net::IpAddr::V6(v6) => {
+            let mut s = v6.segments();
+            s[4..].fill(0);
+            std::net::IpAddr::V6(s.into())
+        }
+        v4 => v4,
+    }
+}
+
 pub async fn security_headers(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -862,7 +892,6 @@ pub async fn security_headers(
         ),
         ("x-content-type-options", "nosniff"),
         ("referrer-policy", "no-referrer"),
-        ("cache-control", "no-store"),
         (
             "permissions-policy",
             "camera=(), microphone=(), geolocation=()",
@@ -873,12 +902,53 @@ pub async fn security_headers(
             axum::http::HeaderValue::from_static(value),
         );
     }
+    // Only the asset handler sets its own policy (content-hashed files).
+    h.entry(header::CACHE_CONTROL)
+        .or_insert(axum::http::HeaderValue::from_static("no-store"));
     response.into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_logins_are_limited_per_address_and_never_block_others() {
+        let auth = Auth::new("secret".into(), None);
+        let noisy = Some("192.168.1.50".parse().unwrap());
+        let quiet = Some("192.168.1.51".parse().unwrap());
+        for _ in 0..MAX_FAILED_LOGINS_PER_ADDRESS {
+            assert_eq!(
+                auth.login_from(noisy, "wrong").unwrap_err().0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        // Even the right token is refused from the limited address.
+        assert_eq!(
+            auth.login_from(noisy, "secret").unwrap_err().0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        auth.login_from(quiet, "secret").unwrap();
+        // Successful sign-ins never count against an address.
+        for _ in 0..3 {
+            auth.login_from(quiet, "secret").unwrap();
+        }
+        assert_eq!(
+            auth.attempts.lock().unwrap().len(),
+            MAX_FAILED_LOGINS_PER_ADDRESS
+        );
+        // One IPv6 /64 is one client.
+        let a: std::net::IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let b: std::net::IpAddr = "2001:db8:1:2:ffff::9".parse().unwrap();
+        assert_eq!(address_bucket(a), address_bucket(b));
+        assert_ne!(
+            address_bucket(a),
+            address_bucket("2001:db8:1:3::1".parse().unwrap())
+        );
+        assert_eq!(
+            address_bucket("::ffff:10.0.0.1".parse().unwrap()),
+            "10.0.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
     fn headers_for(cookie: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
         h.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
