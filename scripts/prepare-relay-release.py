@@ -14,11 +14,14 @@ import platform
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import tarfile
 import tempfile
 
-TARGETS = ('x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu', 'aarch64-apple-darwin')
+LEGACY_TARGETS = ('x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu', 'aarch64-apple-darwin')
+TARGETS = tuple(item['target'] for item in json.loads(
+    (Path(__file__).resolve().parents[1] / 'distribution/release-targets.json').read_text()))
 FILES = {'herdr-webapp', 'pi-extension/commands.ts', 'scripts/install-pi-extension.sh'}
 MAX_FILE = 128 * 1024 * 1024
 MAX_TOTAL = 256 * 1024 * 1024
@@ -64,18 +67,49 @@ def check_path(path):
 
 def native_target():
     machine = platform.machine().lower()
-    if platform.system() == 'Linux':
-        # GNU builds must not be executed on a musl host.
-        if platform.libc_ver()[0] != 'glibc':
+    bits = struct.calcsize('P') * 8
+    arch = {'amd64': 'x86_64', 'x86_64': 'x86_64', 'arm64': 'aarch64',
+            'aarch64': 'aarch64', 'i386': 'i686', 'i486': 'i686',
+            'i586': 'i686', 'i686': 'i686', 'armv7l': 'armv7', 'armv8l': 'armv7'}.get(machine)
+    if bits == 32:
+        arch = {'x86_64': 'i686', 'aarch64': 'armv7'}.get(arch, arch)
+    if platform.system() == 'Darwin':
+        return arch + '-apple-darwin' if bits == 64 and arch in ('x86_64', 'aarch64') else None
+    if platform.system() == 'Linux' and arch:
+        libc = platform.libc_ver()[0]
+        musl = libc == 'musl' or (not libc and any(Path('/lib').glob('ld-musl-*.so.1')))
+        if libc != 'glibc' and not musl:
             return None
-        return {'x86_64': TARGETS[0], 'aarch64': TARGETS[1], 'arm64': TARGETS[1]}.get(machine)
-    if platform.system() == 'Darwin' and machine in ('arm64', 'aarch64'):
-        return TARGETS[2]
+        suffix = 'musl' if musl else ('gnueabihf' if arch == 'armv7' else 'gnu')
+        candidate = arch + '-unknown-linux-' + suffix
+        return candidate if candidate in TARGETS else None
     return None
 
 
 def download(version, directory):
-    names = {f'herdr-webapp-v{version}-{t}.tar.gz' for t in TARGETS} | {'install.sh'}
+    # Select a complete advertised cohort before downloading. Missing new assets
+    # cannot silently downgrade a partially published eight-target release.
+    with tempfile.TemporaryFile() as advertised:
+        result = subprocess.run(['gh', 'release', 'view', 'v' + version, '--repo',
+                                 'perapp/herdr-webapp', '--json', 'assets'],
+                                stdout=advertised, stderr=subprocess.DEVNULL, timeout=30)
+        require(result.returncode == 0 and advertised.tell() <= 128 * 1024,
+                'authenticated release discovery failed')
+        advertised.seek(0)
+        release = json.load(advertised)
+    entries = release.get('assets') if isinstance(release, dict) else None
+    require(isinstance(entries, list) and all(isinstance(a, dict) and isinstance(a.get('name'), str) for a in entries),
+            'invalid release assets')
+    remote_names = [a['name'] for a in entries]
+    require(len(remote_names) == len(set(remote_names)), 'duplicate release assets')
+    targets = None
+    for cohort in (TARGETS, LEGACY_TARGETS):
+        expected = {f'herdr-webapp-v{version}-{t}.tar.gz' for t in cohort} | {'install.sh', 'SHA256SUMS'}
+        if set(remote_names) == expected:
+            targets = cohort
+            break
+    require(targets is not None, 'release must advertise exactly the legacy three or full eight targets')
+    names = set(remote_names) - {'SHA256SUMS'}
     args = ['gh', 'release', 'download', 'v' + version, '--repo', 'perapp/herdr-webapp', '--dir', str(directory)]
     for name in sorted(names | {'SHA256SUMS'}):
         args.extend(['--pattern', name])
@@ -98,6 +132,7 @@ def download(version, directory):
         total += len(data)
         require(total <= MAX_TOTAL, 'download exceeds total size limit')
         require(hashlib.sha256(data).hexdigest() == digests[name], 'release checksum mismatch')
+    return targets
 
 
 def unpack(archive, output):
@@ -200,11 +235,11 @@ def _prepare(version, output):
         stage = Path(temporary)
         downloads = stage / 'downloads'
         downloads.mkdir(mode=0o700)
-        download(version, downloads)
+        targets = download(version, downloads)
         assets, total = [], 0
         host = native_target()
-        require(host is not None, 'preparation requires a supported native GNU/Linux or Apple Silicon host')
-        for target in TARGETS:
+        require(host in targets, 'release has no binary for this native preparation host')
+        for target in targets:
             target_dir = stage / version / target
             target_dir.mkdir(parents=True, mode=0o700)
             binary = target_dir / 'herdr-webapp'
@@ -212,7 +247,7 @@ def _prepare(version, output):
             total += size
             require(total <= MAX_TOTAL, 'catalog exceeds total size limit')
             assets.append({'target': target, 'url': f'/client/{version}/{target}/herdr-webapp', 'size': size, 'sha256': digest})
-        # All three archives and their digests are verified before any binary executes.
+        # The complete cohort and its digests are verified before any binary executes.
         probe = stage / version / host / 'herdr-webapp'
         with tempfile.TemporaryFile() as log:
             result = subprocess.run([str(probe), '--version'], stdout=log, stderr=subprocess.DEVNULL, timeout=15)

@@ -34,16 +34,50 @@ a, b = map(pathlib.Path, sys.argv[1:])
 if a == b or a in b.parents or b in a.parents:
     raise SystemExit('herdr-webapp: install and bin directories must be separate')
 PY
-case "$(uname -s)/$(uname -m)" in
-  Linux/x86_64) target=x86_64-unknown-linux-gnu ;;
-  Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-gnu ;;
-  Darwin/arm64|Darwin/aarch64) target=aarch64-apple-darwin ;;
-  Darwin/*) fail 'only Apple Silicon macOS is supported; Intel Macs are not supported' ;;
-  *) fail 'supported platforms: Linux GNU x86_64/aarch64 and Apple Silicon macOS (no Windows)' ;;
+system=$(uname -s)
+machine=$(uname -m)
+# uname describes the kernel, not necessarily the userland. In particular a
+# 32-bit Python/userland may run under an x86_64 or aarch64 Linux kernel.
+bits=$(python3 -c 'import struct; print(struct.calcsize("P") * 8)')
+case "$system/$machine/$bits" in
+  Linux/x86_64/64) arch=x86_64 ;;
+  Linux/x86_64/32|Linux/i386/32|Linux/i486/32|Linux/i586/32|Linux/i686/32) arch=i686 ;;
+  Linux/aarch64/64|Linux/arm64/64) arch=aarch64 ;;
+  Linux/aarch64/32|Linux/arm64/32|Linux/armv7l/32|Linux/armv8l/32) arch=armv7 ;;
+  Darwin/arm64/64|Darwin/aarch64/64) target=aarch64-apple-darwin ;;
+  Darwin/x86_64/64) target=x86_64-apple-darwin ;;
+  *) fail "unsupported platform/architecture/userland: $system/$machine/$bits (no Windows builds)" ;;
 esac
-if [ "$(uname -s)" = Linux ]; then
-  # GNU builds require glibc; do not pretend musl/Alpine is supported.
-  getconf GNU_LIBC_VERSION >/dev/null 2>&1 || fail 'Linux builds require glibc (Ubuntu 22.04 baseline); musl is not supported'
+if [ "$system" = Linux ]; then
+  # A failed getconf is not proof of musl. Require positive libc identification;
+  # musl ldd commonly returns nonzero even when it prints its version.
+  libc_version=$(getconf GNU_LIBC_VERSION 2>/dev/null || :)
+  case "$libc_version" in
+    'glibc '*)
+      python3 - "$libc_version" <<'PYLIBC'
+import re, sys
+match = re.fullmatch(r'glibc ([0-9]+)\.([0-9]+)(?:\.[0-9]+)?', sys.argv[1])
+if not match or tuple(map(int, match.groups())) < (2, 35):
+    raise SystemExit('herdr-webapp: GNU Linux builds require glibc 2.35 or newer (Ubuntu 22.04 baseline)')
+PYLIBC
+      case "$arch" in
+        armv7) target=armv7-unknown-linux-gnueabihf ;;
+        *) target=$arch-unknown-linux-gnu ;;
+      esac
+      ;;
+    *)
+      libc_description=$(ldd --version 2>&1 || :)
+      case "$libc_description" in
+        *musl*)
+          case "$arch" in
+            x86_64|aarch64) target=$arch-unknown-linux-musl ;;
+            *) fail "no published musl build for $arch; only x86_64/aarch64 musl userlands are supported" ;;
+          esac
+          ;;
+        *) fail 'cannot identify Linux libc: supported builds require glibc 2.35+ or musl (x86_64/aarch64)' ;;
+      esac
+      ;;
+  esac
 fi
 requested=${HERDR_WEB_VERSION:-}
 if [ -n "$requested" ]; then
@@ -206,7 +240,7 @@ except (OSError, ValueError, tarfile.TarError) as e:
 PY
 # Run only verified bytes; this also rejects an incompatible CPU/glibc baseline.
 if ! actual=$("$stage/payload/herdr-webapp" --version 2>/dev/null); then
-  fail 'downloaded binary cannot run on this platform (Linux requires glibc 2.35 or newer)'
+  fail 'downloaded binary cannot run on this platform (GNU Linux requires glibc 2.35+; musl builds are static)'
 fi
 [ "$actual" = "herdr-webapp $version" ] || fail 'downloaded binary version does not match release'
 # Dependency setup is explicit installer behavior, never executable startup behavior.
@@ -217,6 +251,7 @@ from pathlib import Path
 import shutil
 import socket
 import signal
+import struct
 import time
 
 
@@ -345,6 +380,13 @@ def ensure_core(no_install=False, start=True):
         if candidate.name == 'herdr-core':
             raise CoreBootstrapError('existing herdr-core is unusable; repair it with ' + core_update_hint(candidate))
     if found is None:
+        # Official Core assets cover only 64-bit Linux and both 64-bit Macs.
+        # Never let its uname-based installer pick a 64-bit asset for a 32-bit
+        # userland, even when the kernel advertises a 64-bit architecture.
+        system, _, _, _, machine = os.uname()
+        if (struct.calcsize('P') != 8 or system not in ('Linux', 'Darwin')
+                or machine not in ('x86_64', 'aarch64', 'arm64')):
+            raise CoreBootstrapError('no official Core asset for this architecture/userland; install a compatible Core yourself (for 32-bit Linux, build Core from source), or use --no-install-core; no Core was downloaded or changed')
         if not shutil.which('curl') or not shutil.which('tar'):
             raise CoreBootstrapError('missing Core: install curl and tar, then rerun; or install Core yourself and use --no-install-core')
         install_dir = Path(os.environ.get('HC_INSTALL_DIR', str(Path.home() / '.local/bin'))).expanduser()

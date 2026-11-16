@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -34,8 +35,10 @@ class InstallerTests(unittest.TestCase):
                         PATH=f'{self.tools}:' + os.environ['PATH'])
         self.env.pop('HERDR_WEB_VERSION', None)
         self.env.pop('XDG_DATA_HOME', None)
-        self.tool('uname', '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n')
-        self.tool('getconf', '#!/bin/sh\necho "glibc 2.35"\n')
+        self.platform()
+        # Mock only the pointer-width probe; archive validation, path checks,
+        # Core setup, and receipt handling all run through the real Python.
+        self.tool('python3', '#!/bin/sh\nif [ "${1:-}" = -c ] && [ "${2:-}" = \'import struct; print(struct.calcsize("P") * 8)\' ]; then printf "%s\\n" "$FIXTURE_BITS"; else exec ' + sys.executable + ' "$@"; fi\n')
         self.tool('gh', '''#!/usr/bin/env python3
 import os, pathlib, shutil, sys
 args = sys.argv[1:]
@@ -63,8 +66,14 @@ sys.exit('unexpected gh call')
         path.write_text(contents)
         path.chmod(0o755)
 
-    def make_release(self, version='0.0.1', binary_version=None, extra=None):
-        name = f'herdr-webapp-v{version}-{TARGET}.tar.gz'
+    def platform(self, system='Linux', machine='x86_64', bits=64, libc='glibc 2.35'):
+        self.env['FIXTURE_BITS'] = str(bits)
+        self.tool('uname', f'#!/bin/sh\ncase "$1" in -s) echo {system};; -m) echo {machine};; esac\n')
+        self.tool('getconf', '#!/bin/sh\n' + (f'echo "{libc}"\n' if libc.startswith('glibc ') else 'exit 1\n'))
+        self.tool('ldd', '#!/bin/sh\necho "' + ('musl libc' if libc == 'musl' else 'unknown libc') + '" >&2\nexit 1\n')
+
+    def make_release(self, version='0.0.1', binary_version=None, extra=None, target=TARGET):
+        name = f'herdr-webapp-v{version}-{target}.tar.gz'
         path = self.assets / name
         with tarfile.open(path, 'w:gz') as tar:
             files = {'herdr-webapp': f'#!/bin/sh\nprintf "herdr-webapp {binary_version or version}\\n"\n'.encode(),
@@ -110,6 +119,68 @@ sys.exit('unexpected gh call')
         self.assertEqual(json.loads((self.install / 'install.json').read_text())['version'], '0.0.2')
         self.assertEqual(state.read_text(), 'private-state-fixture')
         self.assertFalse((self.root / '.pi').exists())
+
+    def test_all_published_target_mappings(self):
+        cases = [
+            ('Linux', 'x86_64', 64, 'glibc 2.35', 'x86_64-unknown-linux-gnu'),
+            ('Linux', 'aarch64', 64, 'glibc 2.35', 'aarch64-unknown-linux-gnu'),
+            ('Linux', 'armv7l', 32, 'glibc 2.35', 'armv7-unknown-linux-gnueabihf'),
+            ('Linux', 'i686', 32, 'glibc 2.35', 'i686-unknown-linux-gnu'),
+            ('Linux', 'x86_64', 64, 'musl', 'x86_64-unknown-linux-musl'),
+            ('Linux', 'aarch64', 64, 'musl', 'aarch64-unknown-linux-musl'),
+            ('Darwin', 'arm64', 64, 'unknown', 'aarch64-apple-darwin'),
+            ('Darwin', 'x86_64', 64, 'unknown', 'x86_64-apple-darwin'),
+        ]
+        for system, machine, bits, libc, target in cases:
+            with self.subTest(target=target):
+                self.platform(system, machine, bits, libc)
+                self.make_release(target=target)
+                self.install = self.root / target / 'app'
+                self.bin = self.root / (target + '-bin')
+                self.env.update(HERDR_WEB_INSTALL_DIR=str(self.install), HERDR_WEB_BIN_DIR=str(self.bin))
+                result = self.run_installer()
+                self.assertIn(target, result.stdout)
+                self.assertEqual(json.loads((self.install / 'install.json').read_text())['target'], target)
+
+    def test_32_bit_userland_on_64_bit_kernel(self):
+        for machine, target in [('x86_64', 'i686-unknown-linux-gnu'),
+                                ('aarch64', 'armv7-unknown-linux-gnueabihf')]:
+            with self.subTest(machine=machine):
+                self.platform(machine=machine, bits=32)
+                self.make_release(target=target)
+                self.install = self.root / machine / 'app'
+                self.bin = self.root / (machine + '-bin')
+                self.env.update(HERDR_WEB_INSTALL_DIR=str(self.install), HERDR_WEB_BIN_DIR=str(self.bin))
+                self.run_installer()
+                self.assertEqual(json.loads((self.install / 'install.json').read_text())['target'], target)
+
+    def test_unsupported_architectures_and_libcs_fail_before_download(self):
+        cases = [('Linux', 'riscv64', 64, 'glibc 2.35', 'unsupported platform'),
+                 ('Linux', 'armv6l', 32, 'glibc 2.35', 'unsupported platform'),
+                 ('Linux', 'x86_64', 32, 'musl', 'no published musl build'),
+                 ('Linux', 'armv7l', 32, 'musl', 'no published musl build'),
+                 ('Linux', 'x86_64', 64, 'unknown', 'cannot identify Linux libc'),
+                 ('Linux', 'x86_64', 64, 'glibc 2.34', 'glibc 2.35 or newer'),
+                 ('Darwin', 'x86_64', 32, 'unknown', 'unsupported platform'),
+                 ('FreeBSD', 'x86_64', 64, 'unknown', 'unsupported platform')]
+        self.tool('gh', '#!/bin/sh\nprintf "unexpected download" >&2\nexit 1\n')
+        for system, machine, bits, libc, message in cases:
+            with self.subTest(system=system, machine=machine, bits=bits, libc=libc):
+                self.platform(system, machine, bits, libc)
+                result = self.run_installer(False)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn('unexpected download', result.stderr)
+                self.assertFalse(self.install.exists())
+
+    def test_receipt_target_mismatch_is_not_overwritten(self):
+        self.run_installer()
+        receipt = self.install / 'install.json'
+        original = receipt.read_bytes()
+        self.platform(machine='x86_64', bits=64, libc='musl')
+        self.make_release(target='x86_64-unknown-linux-musl')
+        result = self.run_installer(False)
+        self.assertIn('refusing unmanaged installation', result.stderr)
+        self.assertEqual(receipt.read_bytes(), original)
 
     def test_unmanaged_directory(self):
         self.install.mkdir(parents=True)
@@ -205,6 +276,24 @@ sys.exit('unexpected gh call')
 
 
 class PackageTests(unittest.TestCase):
+    def test_every_release_target_can_be_packaged_and_windows_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix='herdr-package-targets-') as tmp:
+            root = Path(tmp)
+            version = re.search(r'^version = "([^"]+)"', (ROOT / 'Cargo.toml').read_text(), re.M)[1]
+            binary = root / 'binary'
+            binary.write_text(f'#!/bin/sh\necho "herdr-webapp {version}"\n')
+            binary.chmod(0o755)
+            env = dict(os.environ, RELEASE_TAG='v' + version)
+            for key in ['GITHUB_REF_TYPE', 'GITHUB_REF_NAME', 'HERDR_WEB_VERSION', 'RELEASE_VERSION']:
+                env.pop(key, None)
+            targets = json.loads((ROOT / 'distribution/release-targets.json').read_text())
+            for entry in targets:
+                with self.subTest(target=entry['target']):
+                    subprocess.run(['sh', str(ROOT / 'scripts/package-release.sh'), entry['target'], str(binary), str(root / 'out')], env=env, check=True, stdout=subprocess.PIPE)
+                    self.assertTrue((root / 'out' / f'herdr-webapp-v{version}-{entry["target"]}.tar.gz').is_file())
+            result = subprocess.run(['sh', str(ROOT / 'scripts/package-release.sh'), 'x86_64-pc-windows-msvc', str(binary), str(root / 'out')], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertNotEqual(result.returncode, 0)
+
     def test_deterministic_safe_archive_and_version_checks(self):
         with tempfile.TemporaryDirectory(prefix='herdr-package-test-') as tmp:
             root = Path(tmp)

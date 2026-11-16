@@ -7,6 +7,7 @@ cd "$root"
 python3 - "$@" <<'PY'
 import gzip
 import io
+import json
 import os
 import pathlib
 import re
@@ -15,9 +16,9 @@ import sys
 import tarfile
 import tempfile
 
-supported = {'x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu', 'aarch64-apple-darwin'}
+supported = {row['target'] for row in json.loads(pathlib.Path('distribution/release-targets.json').read_text())}
 if not 2 <= len(sys.argv) <= 4 or sys.argv[1] not in supported:
-    raise SystemExit('usage: package-release.sh TARGET [BINARY [OUTPUT_DIRECTORY]] (Linux GNU x86_64/aarch64 or macOS arm64 only)')
+    raise SystemExit('usage: package-release.sh TARGET [BINARY [OUTPUT_DIRECTORY]] (see distribution/release-targets.json; no Windows)')
 target = sys.argv[1]
 manifest = pathlib.Path('Cargo.toml').read_text()
 package = re.search(r'(?ms)^\[package\]\s*\n(.*?)(?=^\[|\Z)', manifest)
@@ -48,7 +49,7 @@ if target == host_target:
     if got != f'herdr-webapp {version}':
         raise SystemExit('binary --version does not match Cargo.toml')
 else:
-    print(f'package: cross target {target}; binary execution checked at install time')
+    print(f'package: cross target {target}; execution is checked separately by release CI and again at install time')
 files = [('herdr-webapp', binary, 0o755),
          ('pi-extension/commands.ts', pathlib.Path('pi-extension/commands.ts'), 0o644),
          ('scripts/install-pi-extension.sh', pathlib.Path('scripts/install-pi-extension.sh'), 0o755)]

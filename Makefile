@@ -38,6 +38,7 @@ check: setup
 	cargo test --locked -p webrtc-ice --lib turn_stream
 	python3 -B distribution/test_core_bootstrap.py
 	python3 -B distribution/test_release.py
+	python3 -B scripts/test_release_ci.py
 	python3 -B distribution/test_relay_launcher.py
 	python3 -B distribution/test_main_channel.py
 	python3 -B scripts/test_main_ci.py

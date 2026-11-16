@@ -30,8 +30,11 @@ class CatalogTests(unittest.TestCase):
         self.tools.mkdir()
         gh = self.tools / 'gh'
         gh.write_text('''#!/usr/bin/env python3
-import os, pathlib, shutil, sys
+import json, os, pathlib, shutil, sys
 args = sys.argv[1:]
+if args[:3] == ['release', 'view', 'v1.2.3']:
+    print(json.dumps({'assets': [{'name': p.name} for p in pathlib.Path(os.environ['FIXTURE_ASSETS']).iterdir()]}))
+    sys.exit(0)
 assert args[:3] == ['release', 'download', 'v1.2.3']
 assert args[args.index('--repo') + 1] == 'perapp/herdr-webapp'
 out = pathlib.Path(args[args.index('--dir') + 1])
@@ -79,15 +82,56 @@ for i, arg in enumerate(args):
         self.assertEqual(manifest['version'], '1.2.3')
         self.assertEqual(manifest['schemaVersion'], 1)
         self.assertEqual(manifest['protocolVersion'], 1)
-        self.assertEqual(len(manifest['assets']), 3)
+        self.assertEqual({a['target'] for a in manifest['assets']}, set(prepare.TARGETS))
         for asset in manifest['assets']:
             self.assertEqual(asset['url'], f"/client/1.2.3/{asset['target']}/herdr-webapp")
             path = self.output / '1.2.3' / asset['target'] / 'herdr-webapp'
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), asset['sha256'])
             self.assertEqual(path.stat().st_size, asset['size'])
-        self.assertEqual(len(list(self.output.rglob('herdr-webapp'))), 3)
+        self.assertEqual(len(list(self.output.rglob('herdr-webapp'))), 8)
         self.assertFalse(list(self.output.rglob('install.sh')))
         self.assertEqual(self.output.stat().st_mode & 0o077, 0)
+
+    def test_legacy_exact_cohort_still_prepares(self):
+        for target in set(prepare.TARGETS) - set(prepare.LEGACY_TARGETS):
+            (self.assets / f'herdr-webapp-v1.2.3-{target}.tar.gz').unlink()
+        self.checksums()
+        self.run_prepare()
+        manifest = json.loads((self.output / 'manifest.json').read_text())
+        self.assertEqual({a['target'] for a in manifest['assets']}, set(prepare.LEGACY_TARGETS))
+
+    def test_partial_or_extra_advertised_assets_fail_before_execution(self):
+        archive = self.assets / 'herdr-webapp-v1.2.3-i686-unknown-linux-gnu.tar.gz'
+        saved = archive.read_bytes()
+        archive.unlink()
+        self.checksums()
+        self.run_prepare(False)
+        self.assertFalse(self.output.exists())
+        archive.write_bytes(saved)
+        for name in ('other', 'herdr-webapp-v1.2.3-x86_64-pc-windows-msvc.zip'):
+            extra = self.assets / name
+            extra.write_bytes(b'not approved')
+            self.checksums()
+            self.run_prepare(False)
+            self.assertFalse(self.output.exists())
+            extra.unlink()
+
+    def test_new_host_cannot_probe_legacy_release(self):
+        for target in set(prepare.TARGETS) - set(prepare.LEGACY_TARGETS):
+            (self.assets / f'herdr-webapp-v1.2.3-{target}.tar.gz').unlink()
+        self.checksums()
+        with patch.object(prepare, 'native_target', return_value='x86_64-apple-darwin'):
+            with self.assertRaisesRegex(prepare.InvalidRelease, 'no binary'):
+                prepare.prepare('1.2.3', self.output)
+        self.assertFalse(self.output.exists())
+
+    def test_partial_release_preserves_previous_catalog(self):
+        self.run_prepare()
+        before = (self.output / 'manifest.json').read_bytes()
+        (self.assets / 'herdr-webapp-v1.2.3-i686-unknown-linux-gnu.tar.gz').unlink()
+        self.checksums()
+        self.run_prepare(False)
+        self.assertEqual((self.output / 'manifest.json').read_bytes(), before)
 
     def test_bad_checksum_never_activates(self):
         (self.assets / 'install.sh').write_text('tampered')

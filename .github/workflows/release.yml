@@ -22,6 +22,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
       commit: ${{ steps.version.outputs.commit }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,27 +51,36 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write(f'tag={tag}\nversion={version}\ncommit={git("rev-parse", "HEAD")}\n')
           PY
+      - name: Read complete non-Windows release matrix
+        id: matrix
+        run: echo "matrix=$(python3 -B scripts/release-ci.py matrix)" >> "$GITHUB_OUTPUT"
   build:
     needs: verify
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-22.04
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-22.04
-          - target: aarch64-apple-darwin
-            runner: macos-15
+      matrix: ${{ fromJSON(needs.verify.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+      HERDR_BUILD_REVISION: ${{ needs.verify.outputs.commit }}
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      OPENSSL_STATIC: '1'
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+      CC_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-gcc
+      AR_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-ar
+      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+      AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+      CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_LINKER: gcc
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.verify.outputs.commit }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -82,11 +92,38 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
           rustup target add '${{ matrix.target }}'
-      - name: Linux ARM cross compiler (glibc Ubuntu 22.04 baseline)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Target C compiler and execution prerequisites
+        env:
+          BUILD_TOOLCHAIN: ${{ matrix.toolchain }}
+          RELEASE_TARGET: ${{ matrix.target }}
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          case "$BUILD_TOOLCHAIN" in
+            aarch64-gnu)
+              sudo apt-get update
+              sudo apt-get install --no-install-recommends -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+              ;;
+            armv7-gnu)
+              sudo apt-get update
+              sudo apt-get install --no-install-recommends -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user
+              ;;
+            i686-gnu)
+              sudo apt-get update
+              sudo apt-get install --no-install-recommends -y gcc-multilib libc6-dev-i386
+              ;;
+            musl)
+              sudo apt-get update
+              sudo apt-get install --no-install-recommends -y musl-tools perl
+              cc_key=$(printf '%s' "$RELEASE_TARGET" | tr '-' '_')
+              linker_key=$(printf '%s' "$RELEASE_TARGET" | tr 'a-z-' 'A-Z_')
+              printf 'CC_%s=musl-gcc\nCARGO_TARGET_%s_LINKER=musl-gcc\n' "$cc_key" "$linker_key" >> "$GITHUB_ENV"
+              ;;
+            darwin-x86)
+              # Build with the Apple SDK and execute Intel code under Rosetta.
+              arch -x86_64 /usr/bin/true || sudo softwareupdate --install-rosetta --agree-to-license
+              ;;
+            native) ;;
+            *) echo 'Unknown release toolchain' >&2; exit 1 ;;
+          esac
       - name: Frontend checks and embedded build
         working-directory: frontend
         run: |
@@ -95,7 +132,7 @@ jobs:
           npm run lint
           npm test
           npm run build
-      - name: Rust host checks (cross Linux ARM is built below)
+      - name: Rust host checks (each target binary is executed below)
         run: |
           # macOS /var/folders aliases /private/var; security fixtures require canonical paths.
           export TMPDIR="$(cd "$RUNNER_TEMP" && pwd -P)"
@@ -107,12 +144,18 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           python3 -B distribution/test_release.py
+          python3 -B scripts/test_release_ci.py
           python3 -B distribution/test_relay_launcher.py
           python3 -B distribution/test_relay_catalog.py
           python3 -B scripts/relay-e2e/test_static.py
       - name: Build locked release and package
         run: |
           cargo build --release --locked --target '${{ matrix.target }}'
+          python3 -B scripts/release-ci.py verify-binary \
+            --target '${{ matrix.target }}' \
+            --binary 'target/${{ matrix.target }}/release/herdr-webapp' \
+            --version '${{ needs.verify.outputs.version }}' \
+            --revision "$HERDR_BUILD_REVISION"
           sh scripts/package-release.sh '${{ matrix.target }}'
       - uses: actions/upload-artifact@v4
         with:
@@ -142,26 +185,14 @@ jobs:
           merge-multiple: true
       - name: Assemble complete release manifest
         run: |
-          python3 - <<'PY'
-          import hashlib, os, pathlib, shutil
-          root = pathlib.Path('dist')
-          version = os.environ['RELEASE_VERSION']
-          targets = ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu', 'aarch64-apple-darwin']
-          expected = {f'herdr-webapp-v{version}-{t}.tar.gz' for t in targets}
-          if {p.name for p in root.iterdir()} != expected:
-              raise SystemExit('incomplete or unexpected platform manifest')
-          shutil.copyfile('distribution/install.sh', root / 'install.sh')
-          assets = sorted(expected | {'install.sh'})
-          (root / 'SHA256SUMS').write_text(''.join(
-              f'{hashlib.sha256((root / name).read_bytes()).hexdigest()}  {name}\n' for name in assets))
-          PY
+          python3 -B scripts/release-ci.py assemble --directory dist --version "$RELEASE_VERSION"
       - name: Create draft, upload, verify remote completeness, then publish
         run: |
           # Published releases are immutable here; re-runs may only resume a draft.
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft > dist/existing.json 2>/dev/null; then
             python3 -c 'import json; assert json.load(open("dist/existing.json"))["isDraft"], "refusing to modify a published release"'
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "Herdr Web $RELEASE_TAG" --notes 'Linux GNU x86_64 and aarch64 (glibc 2.35+), Apple Silicon macOS. No Windows or Intel Mac build. Private repository: authenticate gh before downloading. Includes optional Pi metadata installer; does not install or restart Herdr Core.' >/dev/null 2>&1 || { echo 'Draft creation failed'; exit 1; }
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "Herdr Web $RELEASE_TAG" --notes 'Linux GNU x86_64, aarch64, ARMv7 and i686 (glibc 2.35+); static musl x86_64/aarch64; Intel and Apple Silicon macOS 11+. Windows excluded. 32-bit Linux requires a separately installed compatible Herdr Core. Authenticate gh for the installer. Includes the optional Pi metadata installer. The release installer can prepare missing compatible Core; existing Core and terminals are not restarted.' >/dev/null 2>&1 || { echo 'Draft creation failed'; exit 1; }
           fi
           rm -f dist/existing.json
           gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*.tar.gz dist/SHA256SUMS dist/install.sh >/dev/null 2>&1 || { echo 'Asset upload failed; release remains draft'; exit 1; }

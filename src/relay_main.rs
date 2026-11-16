@@ -283,6 +283,16 @@ pub fn router(service: Option<Arc<MainService>>) -> Router {
         .route("/main/{*path}", any(proxy))
         .with_state(ProxyState(service))
 }
+// Main-channel builds intentionally publish only these three native targets.
+// Stable release support is broader; never imply its extra artifacts exist here.
+fn main_client_target(target: &str) -> bool {
+    [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+    ]
+    .contains(&target)
+}
 async fn retained_binary(
     State(state): State<ProxyState>,
     axum::extract::Path((revision, target)): axum::extract::Path<(String, String)>,
@@ -290,14 +300,7 @@ async fn retained_binary(
     let Some(service) = state.0 else {
         return unavailable(false);
     };
-    if !valid_revision(&revision)
-        || ![
-            "x86_64-unknown-linux-gnu",
-            "aarch64-unknown-linux-gnu",
-            "aarch64-apple-darwin",
-        ]
-        .contains(&target.as_str())
-    {
+    if !valid_revision(&revision) || !main_client_target(&target) {
         return StatusCode::NOT_FOUND.into_response();
     }
     let sha = revision.clone();
@@ -465,6 +468,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.headers()[header::LOCATION], "/main/");
+    }
+    #[test]
+    fn stable_release_expansion_does_not_invent_main_channel_artifacts() {
+        let manifest: Vec<Value> =
+            serde_json::from_str(include_str!("../distribution/release-targets.json")).unwrap();
+        let main_targets: Vec<_> = manifest
+            .iter()
+            .filter_map(|entry| entry["target"].as_str())
+            .filter(|target| main_client_target(target))
+            .collect();
+        assert_eq!(
+            main_targets,
+            [
+                "x86_64-unknown-linux-gnu",
+                "aarch64-unknown-linux-gnu",
+                "aarch64-apple-darwin",
+            ]
+        );
+        for unpublished in ["arm-unknown-linux-gnueabihf", "unsupported", "../client"] {
+            assert!(!main_client_target(unpublished));
+        }
     }
     #[test]
     fn revisions_and_forwarded_headers_are_strict() {

@@ -22,9 +22,19 @@ use std::{
     sync::Arc,
 };
 
-const TARGETS: [&str; 3] = [
+const LEGACY_TARGETS: [&str; 3] = [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+];
+const TARGETS: [&str; 8] = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "armv7-unknown-linux-gnueabihf",
+    "i686-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
     "aarch64-apple-darwin",
 ];
 const MAX_TOTAL: u64 = 256 * 1024 * 1024;
@@ -141,16 +151,17 @@ impl ReleaseCatalog {
             manifest.version == expected_version && stable(&manifest.version),
             "catalog version mismatch"
         );
-        ensure!(
-            manifest.assets.len() == TARGETS.len(),
-            "incomplete catalog targets"
-        );
+        let targets: &[&str] = match manifest.assets.len() {
+            3 => &LEGACY_TARGETS,
+            8 => &TARGETS,
+            _ => bail!("incomplete catalog targets"),
+        };
         let version_dir = open_at(&root, &manifest.version, true)?;
         let mut binaries = HashMap::new();
         let mut total = 0u64;
         for asset in &manifest.assets {
             ensure!(
-                TARGETS.contains(&asset.target.as_str()) && !binaries.contains_key(&asset.target),
+                targets.contains(&asset.target.as_str()) && !binaries.contains_key(&asset.target),
                 "invalid or duplicate catalog target"
             );
             ensure!(
@@ -307,6 +318,37 @@ mod tests {
         std::fs::write(file, serde_json::to_vec(&value).unwrap()).unwrap();
     }
     #[test]
+    fn accepts_only_exact_legacy_or_full_cohorts() {
+        let declared: serde_json::Value =
+            serde_json::from_str(include_str!("../distribution/release-targets.json")).unwrap();
+        let declared: Vec<&str> = declared
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["target"].as_str().unwrap())
+            .collect();
+        assert_eq!(declared, TARGETS);
+        for count in 0..=8 {
+            let temp = fixture();
+            edit_manifest(temp.path(), |m| {
+                m["assets"].as_array_mut().unwrap().truncate(count);
+            });
+            // The first three of the new ordering are not the legacy three.
+            assert_eq!(
+                ReleaseCatalog::load(temp.path(), "1.2.3").is_ok(),
+                count == 8
+            );
+        }
+        let temp = fixture();
+        edit_manifest(temp.path(), |m| {
+            m["assets"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|a| LEGACY_TARGETS.contains(&a["target"].as_str().unwrap()));
+        });
+        assert!(ReleaseCatalog::load(temp.path(), "1.2.3").is_ok());
+    }
+    #[test]
     fn rejects_integrity_version_and_schema_errors() {
         for bad in [
             "version",
@@ -369,6 +411,23 @@ mod tests {
         let catalog = Arc::new(ReleaseCatalog::load(temp.path(), "1.2.3").unwrap());
         std::fs::remove_dir_all(temp.path().join("1.2.3")).unwrap();
         let app = router(catalog);
+        for target in TARGETS {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/client/1.2.3/{target}/herdr-webapp"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{target}");
+            let bytes = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(&bytes[..], b"verified binary");
+        }
         let uri = format!("/client/1.2.3/{}/herdr-webapp", TARGETS[0]);
         let response = app
             .clone()

@@ -13,6 +13,11 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    // Cargo's actual compilation target, never an application-level override.
+    println!(
+        "cargo:rustc-env=HERDR_BUILD_TARGET={}",
+        std::env::var("TARGET").expect("Cargo TARGET")
+    );
     for name in [
         "HERDR_BUILD_REVISION",
         "HERDR_BUILD_COMMIT_DATE",

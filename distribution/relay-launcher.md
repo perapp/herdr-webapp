@@ -1,7 +1,13 @@
 # Per-relay launcher and Core bootstrap
 
 Public entry point: `curl -fsSL https://<relay>/run | sh`.
-Requires Python **3.9+**, curl, and GNU Linux x86-64/arm64 or Apple Silicon macOS.
+Requires Python **3.9+**, curl, and a stable target: GNU Linux
+x86-64/arm64/armv7/i686, musl Linux x86-64/arm64, or Intel/Apple Silicon macOS.
+Detection uses Python pointer width to select 32-bit userspace on a 64-bit kernel;
+unknown libc is rejected unless a musl loader is detected. Windows is unsupported.
+Older stable releases still provide only GNU Linux x86-64/arm64 and Apple Silicon
+macOS. MAIN remains limited to those original three; broader stable detection
+does not imply MAIN availability.
 The connector remains a per-relay cached executable. When local Core is missing,
 the hosted launcher and release installer now install **stable, generation-1 Core**
 through its official installer; selecting `/main/run` does not select a development
@@ -93,8 +99,10 @@ installer are checked by `test_core_bootstrap.py`. Keep all three copies in sync
   ]}
   ```
 
-  Other supported targets: `aarch64-unknown-linux-gnu`,
-  `aarch64-apple-darwin`. Artifacts are **raw executables**, not archives.
+  Stable catalogs publish exactly the historical three targets or all eight
+  non-Windows targets in `distribution/release-targets.json`; incomplete cohorts
+  are rejected by preparation and relay loading. MAIN has its separate original
+  three-target catalog. Artifacts are **raw executables**, not archives.
   Exactly one matching target, stable `x.y.z` versions, protocol/schema exactly
   integer `1`, size 1..256 MiB. Paths must start `/client/`, contain only ASCII
   alphanumerics and `._/-`, with no `..` components. No redirects or cross-origin

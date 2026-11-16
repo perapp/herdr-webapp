@@ -222,11 +222,15 @@ rm -rf "$installer_dir"
 herdr-webapp --port 8001
 ```
 
-The installer selects Linux x86-64/ARM64 or macOS ARM64, verifies the release's
+Tagged releases cover Linux GNU x86-64/ARM64/ARMv7/i686, static musl
+x86-64/ARM64 (including Alpine), and Intel/Apple Silicon macOS 11+. The
+installer selects the matching architecture and libc, verifies the release's
 SHA-256 checksum and executable version, and installs per user under
 `${XDG_DATA_HOME:-~/.local/share}/herdr-webapp`, with a CLI symlink in
 `~/.local/bin`. Ensure that directory is on `PATH`. Linux GNU builds target the
-Ubuntu 22.04 / glibc 2.35 baseline. Windows and Intel macOS are not supported.
+Ubuntu 22.04 / glibc 2.35 baseline. Windows and 32-bit musl are not built.
+32-bit GNU Linux needs a separately installed compatible Herdr Core (for example
+a source build); there are no official 32-bit Core assets to auto-install.
 The release installer also prepares a missing compatible stable Core and starts
 it if needed. Existing compatible Cores are reused; incompatible/managed ones are
 not overwritten. Pass `--no-install-core` to handle dependencies yourself.

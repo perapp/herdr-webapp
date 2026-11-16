@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name('relay-launcher.py')
 spec = importlib.util.spec_from_file_location('launcher', SCRIPT)
@@ -28,6 +29,59 @@ def eventually(predicate, timeout=5):
             return
         time.sleep(0.025)
     raise AssertionError('condition did not become true')
+
+
+class TargetDetectionTests(unittest.TestCase):
+    def test_native_targets_and_userspace_bitness(self):
+        # Check the preparer too: it must probe exactly the same native ABI.
+        prepare_spec = importlib.util.spec_from_file_location(
+            'prepare_catalog_detection', SCRIPT.parents[1] / 'scripts/prepare-relay-release.py')
+        prepare = importlib.util.module_from_spec(prepare_spec)
+        prepare_spec.loader.exec_module(prepare)
+        cases = [
+            ('Linux', 'x86_64', 'glibc', 8, 'x86_64-unknown-linux-gnu'),
+            ('Linux', 'aarch64', 'glibc', 8, 'aarch64-unknown-linux-gnu'),
+            ('Linux', 'armv7l', 'glibc', 4, 'armv7-unknown-linux-gnueabihf'),
+            ('Linux', 'armv8l', 'glibc', 4, 'armv7-unknown-linux-gnueabihf'),
+            ('Linux', 'i686', 'glibc', 4, 'i686-unknown-linux-gnu'),
+            ('Linux', 'x86_64', 'glibc', 4, 'i686-unknown-linux-gnu'),
+            ('Linux', 'aarch64', 'glibc', 4, 'armv7-unknown-linux-gnueabihf'),
+            ('Linux', 'x86_64', 'musl', 8, 'x86_64-unknown-linux-musl'),
+            ('Linux', 'aarch64', 'musl', 8, 'aarch64-unknown-linux-musl'),
+            ('Darwin', 'x86_64', '', 8, 'x86_64-apple-darwin'),
+            ('Darwin', 'arm64', '', 8, 'aarch64-apple-darwin'),
+        ]
+        for system, machine, libc, pointer, expected in cases:
+            with self.subTest(system=system, machine=machine, libc=libc, pointer=pointer), \
+                    patch.object(launcher.platform, 'system', return_value=system), \
+                    patch.object(launcher.platform, 'machine', return_value=machine), \
+                    patch.object(launcher.platform, 'libc_ver', return_value=(libc, '')), \
+                    patch.object(launcher.struct, 'calcsize', return_value=pointer):
+                self.assertEqual(launcher.target(), expected)
+                self.assertEqual(prepare.native_target(), expected)
+        self.assertEqual(set(prepare.TARGETS), set(launcher.STABLE_TARGETS))
+        self.assertEqual(len(launcher.TARGETS), 3)  # MAIN must not expand.
+
+    def test_unknown_libc_musl_loader_and_unsupported_platforms(self):
+        for libc, loaders, expected in [('', [], None), ('', [Path('/lib/ld-musl-x86_64.so.1')], 'x86_64-unknown-linux-musl'), ('uClibc', [], None)]:
+            with self.subTest(libc=libc, loaders=loaders), \
+                    patch.object(launcher.platform, 'system', return_value='Linux'), \
+                    patch.object(launcher.platform, 'machine', return_value='x86_64'), \
+                    patch.object(launcher.platform, 'libc_ver', return_value=(libc, '')), \
+                    patch.object(launcher.struct, 'calcsize', return_value=8), \
+                    patch.object(launcher.Path, 'glob', return_value=iter(loaders)):
+                if expected:
+                    self.assertEqual(launcher.target(), expected)
+                else:
+                    with self.assertRaises(launcher.Error):
+                        launcher.target()
+        for system, machine, libc in [('Windows', 'amd64', ''), ('Linux', 'riscv64', 'glibc'), ('Linux', 'armv7l', 'musl')]:
+            with self.subTest(system=system, machine=machine), \
+                    patch.object(launcher.platform, 'system', return_value=system), \
+                    patch.object(launcher.platform, 'machine', return_value=machine), \
+                    patch.object(launcher.platform, 'libc_ver', return_value=(libc, '')):
+                with self.assertRaises(launcher.Error):
+                    launcher.target()
 
 
 class LauncherTests(unittest.TestCase):
@@ -80,6 +134,20 @@ class LauncherTests(unittest.TestCase):
         self.children = []
         self.addCleanup(self.cleanup_children)
         self.publish('1.0.0')
+
+    def test_stable_cohorts_select_each_platform_without_expanding_main(self):
+        source = self.manifest['assets'][0]
+        for cohort in (launcher.TARGETS, launcher.STABLE_TARGETS):
+            self.manifest['assets'] = [dict(source, target=t,
+                url='/client/1.0.0/' + t + '/herdr-webapp') for t in cohort]
+            for wanted in cohort:
+                with self.subTest(cohort=len(cohort), target=wanted):
+                    self.assertEqual(launcher.Client(self.url, 1).manifest(wanted)['target'], wanted)
+        self.publish('1.0.0', revision='a' * 40)
+        for wanted in set(launcher.STABLE_TARGETS) - set(launcher.TARGETS):
+            with self.subTest(main_unsupported=wanted):
+                with self.assertRaisesRegex(launcher.Incompatible, 'does not support this platform'):
+                    launcher.Client(self.url + '/main', 1).manifest(wanted)
 
     def cleanup_children(self):
         self.hold.set()

@@ -28,12 +28,21 @@ download the installer to a new private temporary directory, run it only after
 Only these targets are shipped:
 
 - `x86_64-unknown-linux-gnu` (Ubuntu 22.04 / glibc 2.35 baseline)
-- `aarch64-unknown-linux-gnu` (cross GCC/sysroot on Ubuntu 22.04)
+- `aarch64-unknown-linux-gnu` (glibc 2.35 baseline)
+- `armv7-unknown-linux-gnueabihf` (32-bit ARMv7 hard-float, glibc 2.35 baseline)
+- `i686-unknown-linux-gnu` (32-bit x86, glibc 2.35 baseline)
+- `x86_64-unknown-linux-musl` (static, including Alpine)
+- `aarch64-unknown-linux-musl` (static, including Alpine)
 - `aarch64-apple-darwin` (Apple Silicon macOS)
+- `x86_64-apple-darwin` (Intel macOS)
 
-No Windows, Intel Mac, or musl/Alpine build is claimed. A Rust cross build is not
-a native runtime test; physical target verification is separate. macOS executable
-assets are not Developer ID signed/notarized by this workflow.
+Windows and 32-bit musl builds are not published. The installer checks Python's
+pointer width as well as the kernel architecture, so 32-bit userlands on 64-bit
+Linux kernels select the 32-bit asset. It positively identifies glibc or musl;
+unknown libc/architectures fail rather than guessing an asset. GNU builds require
+glibc 2.35 or newer (Ubuntu 22.04 baseline). A Rust cross build is not a native
+runtime test; physical target verification is separate. macOS executable assets
+are not Developer ID signed/notarized by this workflow.
 
 Each archive is named exactly
 `herdr-webapp-v<version>-<target>.tar.gz`, containing these regular files at the
@@ -44,7 +53,7 @@ archive root (no top-level container folder):
 - `scripts/install-pi-extension.sh` (optional, **never** run automatically)
 - `LICENSE` if present in the source tree
 
-`SHA256SUMS` is a standalone release asset covering all three archives and
+`SHA256SUMS` is a standalone release asset covering all eight archives and
 standalone `install.sh`. The package script accepts an already-built binary:
 
 ```sh
@@ -85,7 +94,18 @@ Staging/backup stay on the installation parent's filesystem. Failed directory or
 CLI swaps restore the previous managed installation. Unmanaged roots, symlinks,
 and CLI files are not overwritten. If the OS prevents rollback, the backup is
 retained and its recovery path is reported. Config/auth under the separate state
-home are untouched. No core install/restart or terminal operation is performed.
+home are untouched. No existing Core is updated/restarted and no terminal
+operation is performed.
+
+By default the installer reuses a compatible running/local Core, or installs a
+missing compatible stable Core using its official HTTPS installer, then requests
+its idempotent `server start`. Official Core downloads cover only 64-bit Linux
+and both 64-bit Macs. On 32-bit Linux, provide a compatible pre-existing Core
+(for example built from source); the installer never downloads a wrong-ISA Core.
+`sh install.sh --no-install-core` (or `sh -s -- --no-install-core` when piping)
+skips all Core probing/setup, and allows installing the web app before Core is
+available. Explicit `HC_SOCKET`/Core socket configuration is never replaced by
+local dependency setup.
 
 ## Web-server activation
 
@@ -102,9 +122,16 @@ check and does not provide automatic application-health rollback.
 
 `.github/workflows/release.yml` triggers only on pushed `v*` tags or manual
 `workflow_dispatch` with an **existing** stable tag. The tag must match the crate
-version and checked-out commit. Builds use that verified commit, npm's lockfile,
-and `cargo --locked`; frontend and Rust host checks run in the matrix. The Linux
-ARM artifact is cross-built rather than falsely claiming ARM runtime tests.
+version and checked-out commit. `release-targets.json` supplies the complete
+matrix and packaging manifest. Builds use that verified commit, npm's lockfile,
+and `cargo --locked`; frontend and Rust host checks run in the matrix. Every
+finished target binary executes version/provenance checks before packaging:
+Linux ARM GNU targets use QEMU with their target sysroot, Intel macOS is
+cross-built and checked under Rosetta, and the other targets execute directly
+(including i686 with its 32-bit runtime). musl binaries must have neither an ELF
+interpreter nor shared-library dependencies. macOS targets use an 11.0 deployment
+baseline. These emulated checks are not physical target/Core acceptance tests.
+The separate `main` publisher retains its original three native targets.
 
 Only the publish job gets `contents: write`. It assembles the full manifest,
 creates/resumes a **draft**, uploads all assets, checks exact remote names/sizes,

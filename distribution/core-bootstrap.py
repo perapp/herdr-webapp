@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import socket
 import signal
+import struct
 import time
 
 
@@ -134,6 +135,13 @@ def ensure_core(no_install=False, start=True):
         if candidate.name == 'herdr-core':
             raise CoreBootstrapError('existing herdr-core is unusable; repair it with ' + core_update_hint(candidate))
     if found is None:
+        # Official Core assets cover only 64-bit Linux and both 64-bit Macs.
+        # Never let its uname-based installer pick a 64-bit asset for a 32-bit
+        # userland, even when the kernel advertises a 64-bit architecture.
+        system, _, _, _, machine = os.uname()
+        if (struct.calcsize('P') != 8 or system not in ('Linux', 'Darwin')
+                or machine not in ('x86_64', 'aarch64', 'arm64')):
+            raise CoreBootstrapError('no official Core asset for this architecture/userland; install a compatible Core yourself (for 32-bit Linux, build Core from source), or use --no-install-core; no Core was downloaded or changed')
         if not shutil.which('curl') or not shutil.which('tar'):
             raise CoreBootstrapError('missing Core: install curl and tar, then rerun; or install Core yourself and use --no-install-core')
         install_dir = Path(os.environ.get('HC_INSTALL_DIR', str(Path.home() / '.local/bin'))).expanduser()

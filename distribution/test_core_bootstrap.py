@@ -16,6 +16,9 @@ ROOT = Path(__file__).parent
 spec = importlib.util.spec_from_file_location('launcher', ROOT / 'relay-launcher.py')
 launcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launcher)
+bootstrap_spec = importlib.util.spec_from_file_location('core_bootstrap', ROOT / 'core-bootstrap.py')
+bootstrap = importlib.util.module_from_spec(bootstrap_spec)
+bootstrap_spec.loader.exec_module(bootstrap)
 
 
 class BootstrapTests(unittest.TestCase):
@@ -67,6 +70,28 @@ chmod 700 "$HC_INSTALL_DIR/herdr-core"
         self.assertEqual(os.environ['PATH'].split(':')[0], str(self.bin))
         with patch.object(launcher, 'core_download', side_effect=AssertionError('reinstall')):
             launcher.ensure_core(start=False)
+
+    def test_32_bit_missing_core_requires_manual_install_without_download(self):
+        for machine in ('i686', 'armv7l', 'x86_64', 'aarch64'):
+            with self.subTest(machine=machine), patch.object(bootstrap.os, 'uname', return_value=('Linux', '', '', '', machine)), patch.object(bootstrap.struct, 'calcsize', return_value=4), patch.object(bootstrap, 'core_candidates', return_value=iter(())), patch.object(bootstrap, 'core_download', side_effect=AssertionError('download')):
+                with self.assertRaisesRegex(bootstrap.CoreBootstrapError, 'build Core from source'):
+                    bootstrap.ensure_core(start=False)
+                self.assertFalse((self.bin / '.herdr-web-core-install.lock').exists())
+
+    def test_32_bit_existing_core_and_optout_still_work(self):
+        self.fake_core()
+        with patch.object(bootstrap.struct, 'calcsize', return_value=4), patch.object(bootstrap, 'core_download', side_effect=AssertionError('download')):
+            bootstrap.ensure_core(start=False)
+            with patch.object(bootstrap, 'core_hello', side_effect=AssertionError('probe')):
+                bootstrap.ensure_core(no_install=True)
+
+    def test_official_core_platforms_allow_bootstrap(self):
+        for system, machine in [('Linux', 'x86_64'), ('Linux', 'aarch64'),
+                                ('Darwin', 'arm64'), ('Darwin', 'x86_64')]:
+            with self.subTest(system=system, machine=machine), patch.object(bootstrap.os, 'uname', return_value=(system, '', '', '', machine)), patch.object(bootstrap.struct, 'calcsize', return_value=8), patch.object(bootstrap, 'core_candidates', return_value=iter(())), patch.object(bootstrap, 'core_download', side_effect=bootstrap.CoreBootstrapError('official download reached')):
+                with self.assertRaisesRegex(bootstrap.CoreBootstrapError, 'official download reached'):
+                    bootstrap.ensure_core(start=False)
+                self.assertFalse((self.bin / '.herdr-web-core-install.lock').exists())
 
     def test_optout_never_probes_or_installs(self):
         with patch.object(launcher, 'core_hello', side_effect=AssertionError('probe')):

@@ -1,0 +1,10 @@
+[
+  {"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-22.04","toolchain":"native","execute":"native"},
+  {"target":"aarch64-unknown-linux-gnu","runner":"ubuntu-22.04","toolchain":"aarch64-gnu","execute":"qemu-aarch64"},
+  {"target":"armv7-unknown-linux-gnueabihf","runner":"ubuntu-22.04","toolchain":"armv7-gnu","execute":"qemu-arm"},
+  {"target":"i686-unknown-linux-gnu","runner":"ubuntu-22.04","toolchain":"i686-gnu","execute":"native"},
+  {"target":"x86_64-unknown-linux-musl","runner":"ubuntu-22.04","toolchain":"musl","execute":"native"},
+  {"target":"aarch64-unknown-linux-musl","runner":"ubuntu-24.04-arm","toolchain":"musl","execute":"native"},
+  {"target":"x86_64-apple-darwin","runner":"macos-15","toolchain":"darwin-x86","execute":"rosetta"},
+  {"target":"aarch64-apple-darwin","runner":"macos-15","toolchain":"native","execute":"native"}
+]

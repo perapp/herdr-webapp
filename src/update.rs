@@ -35,24 +35,26 @@ const FILES: [&str; 3] = [
     "pi-extension/commands.ts",
     "scripts/install-pi-extension.sh",
 ];
-fn target() -> &'static str {
-    if cfg!(all(
-        target_os = "linux",
-        target_arch = "x86_64",
-        target_env = "gnu"
-    )) {
-        "x86_64-unknown-linux-gnu"
-    } else if cfg!(all(
-        target_os = "linux",
-        target_arch = "aarch64",
-        target_env = "gnu"
-    )) {
-        "aarch64-unknown-linux-gnu"
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        "aarch64-apple-darwin"
-    } else {
-        "unsupported"
+/// Recognize only published release identities, never a compatible-looking host.
+/// In particular `target_arch = "arm"` also includes unpublished ARMv6 builds,
+/// and Linux GNU and musl receipts/artifacts must never be interchangeable.
+fn release_target(build_target: &str) -> &'static str {
+    match build_target {
+        "x86_64-unknown-linux-gnu" => "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu" => "aarch64-unknown-linux-gnu",
+        "armv7-unknown-linux-gnueabihf" => "armv7-unknown-linux-gnueabihf",
+        "i686-unknown-linux-gnu" => "i686-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl" => "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl" => "aarch64-unknown-linux-musl",
+        "aarch64-apple-darwin" => "aarch64-apple-darwin",
+        "x86_64-apple-darwin" => "x86_64-apple-darwin",
+        _ => "unsupported",
     }
+}
+fn target() -> &'static str {
+    // Set by build.rs from Cargo's TARGET, not the machine executing the binary
+    // or an inherited HERDR_BUILD_TARGET override.
+    release_target(env!("HERDR_BUILD_TARGET"))
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct UpdateStatus {
@@ -887,6 +889,53 @@ mod tests {
         tempfile::Builder::new()
             .tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap())
             .unwrap()
+    }
+    #[test]
+    fn release_targets_match_distribution_manifest() {
+        let manifest: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../distribution/release-targets.json")).unwrap();
+        assert_eq!(manifest.len(), 8);
+        let mut seen = HashSet::new();
+        for entry in manifest {
+            let published = entry["target"].as_str().unwrap();
+            assert!(seen.insert(published.to_owned()), "duplicate target");
+            assert_eq!(release_target(published), published);
+        }
+    }
+    #[test]
+    fn release_target_identity_preserves_architecture_and_libc() {
+        for published in [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "armv7-unknown-linux-gnueabihf",
+            "i686-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+        ] {
+            assert_eq!(release_target(published), published);
+        }
+        for unpublished in [
+            "arm-unknown-linux-gnueabi",
+            "arm-unknown-linux-gnueabihf",
+            "armv6-unknown-linux-gnueabihf",
+            "armv7-unknown-linux-gnueabi",
+            "armv7-unknown-linux-musleabihf",
+            "i686-unknown-linux-musl",
+            "x86_64-unknown-linux-uclibc",
+            "x86_64-pc-windows-msvc",
+            "x86_64-unknown-freebsd",
+            "",
+        ] {
+            assert_eq!(release_target(unpublished), "unsupported");
+        }
+        assert_eq!(target(), release_target(env!("HERDR_BUILD_TARGET")));
+        assert_eq!(receipt("1.2.3").target, target());
+        #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+        assert_eq!(target(), "x86_64-unknown-linux-gnu");
+        #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "musl"))]
+        assert_eq!(target(), "x86_64-unknown-linux-musl");
     }
     #[test]
     fn restart_identity_keeps_original_terminal_job() {
