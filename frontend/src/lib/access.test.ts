@@ -36,6 +36,25 @@ describe('persistent access controls', () => {
     expect(controller.state.issue).not.toContain('synthetic-sensitive-value');
     controller.ask(); await controller.rotate(); expect(send).toHaveBeenCalledTimes(2);
   });
+  it('builds the access link on request without keeping it in state', async () => {
+    const fragment = `pair=${'A'.repeat(40)}`;
+    const send = vi.fn().mockResolvedValueOnce(json(status)).mockResolvedValueOnce(json({ fragment }))
+      .mockResolvedValueOnce(json({ fragment: 'pair=bad value' })).mockResolvedValueOnce(new Response('synthetic-sensitive-value', { status: 404 }));
+    const changed = vi.fn(); const controller = new AccessController(send, changed);
+    expect(await controller.link('https://relay.example/main/')).toBeNull(); expect(send).not.toHaveBeenCalled();
+    await controller.load();
+    expect(await controller.link('https://relay.example/main/')).toBe(`https://relay.example/main/#${fragment}`);
+    expect(send.mock.calls[1][0]).toBe('/api/access/link');
+    expect(send.mock.calls[1][1]).toMatchObject({ method: 'POST', body: '{}' });
+    expect(JSON.stringify(changed.mock.calls)).not.toContain('AAAA');
+    controller.copied(true); expect(controller.state.message).toContain('copied');
+    controller.copied(false); expect(controller.state.issue).toContain('once more'); expect(controller.state.message).toBe('');
+    expect(await controller.link('https://relay.example/')).toBeNull();
+    expect(controller.state.issue).toContain('could not be fetched');
+    expect(await controller.link('https://relay.example/')).toBeNull();
+    expect(controller.state.issue).toContain('not supported');
+    expect(controller.state.issue).not.toContain('synthetic-sensitive-value');
+  });
   it('treats unauthorized and unsupported controls explicitly', async () => {
     for (const code of [400, 404, 405, 501]) {
       const send = vi.fn().mockResolvedValueOnce(json({}, code));

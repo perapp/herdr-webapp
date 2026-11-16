@@ -75,7 +75,7 @@ smoke:
 
 # Phone and desktop browser behaviour against a disposable Core: keyboard,
 # scrolling, selection, attach, key row, row menus and Settings. Needs Chrome.
-ui-e2e: frontend-deps
+ui-e2e: release
 	uv run --script scripts/ui-e2e.py --binary "$(CURDIR)/target/release/herdr-webapp"
 
 clean:

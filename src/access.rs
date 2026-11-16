@@ -1,4 +1,5 @@
-//! Local-server access settings. No access token is ever returned over HTTP.
+//! Local-server access settings. The access token is returned only by the
+//! explicit, same-origin `/api/access/link` request of a signed-in browser.
 use crate::{
     Shared,
     auth::{ApiError, error},
@@ -24,6 +25,7 @@ pub fn router(notifications: Option<Arc<Notifications>>) -> Router<Shared> {
     Router::new()
         .route("/api/access", get(status))
         .route("/api/access/rotate", post(rotate))
+        .route("/api/access/link", post(link))
         .layer(Extension(Arc::new(AccessControl { notifications })))
 }
 
@@ -53,6 +55,23 @@ impl TryFrom<Value> for RotateRequest {
     }
 }
 
+/// The fragment of the private link, for "Copy access link" in Settings. A
+/// signed-in browser already has full shell access; this hands it the durable
+/// credential, so it is browser-only (exact Origin, existing cookie) and the
+/// client never renders it. The browser prepends the address it is using.
+async fn link(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Json(_body): Json<RotateRequest>,
+) -> Result<Json<Value>, ApiError> {
+    app.auth.same_origin(&headers, true)?;
+    // A request queued behind a rotation must not see the old or a newer token
+    // without being re-authorized.
+    let _guard = app.auth.authorization_read().await;
+    app.auth.require(&headers)?;
+    let token = app.auth.current_token_snapshot()?.token;
+    Ok(Json(json!({"fragment":format!("token={token}")})))
+}
 async fn rotate(
     State(app): State<Shared>,
     Extension(control): Extension<Arc<AccessControl>>,
@@ -122,6 +141,57 @@ mod tests {
             "tokenLifetime":"untilRotated","sessionLifetime":"untilRevoked"})
         );
         assert!(!String::from_utf8_lossy(&body).contains(&"a".repeat(64)));
+    }
+
+    #[tokio::test]
+    async fn link_is_returned_only_to_a_same_origin_signed_in_browser() {
+        let app = app();
+        let cookie = app.auth.login(&"a".repeat(64)).unwrap();
+        let router = router(None).with_state(app.clone());
+        for (origin, cookie, body, status) in [
+            ("http://evil", cookie.as_str(), "{}", StatusCode::FORBIDDEN),
+            ("", cookie.as_str(), "{}", StatusCode::FORBIDDEN),
+            ("http://server:8001", "", "{}", StatusCode::UNAUTHORIZED),
+            (
+                "http://server:8001",
+                cookie.as_str(),
+                "{\"x\":1}",
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            ("http://server:8001", cookie.as_str(), "{}", StatusCode::OK),
+        ] {
+            let mut request = Request::post("/api/access/link")
+                .header("host", "server:8001")
+                .header("content-type", "application/json");
+            if !origin.is_empty() {
+                request = request.header("origin", origin);
+            }
+            if !cookie.is_empty() {
+                request = request.header("cookie", cookie.split(';').next().unwrap());
+            }
+            let response = router
+                .clone()
+                .oneshot(request.body(Body::from(body)).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{origin} {body}");
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let text = String::from_utf8_lossy(&bytes);
+            assert_eq!(
+                text.contains(&"a".repeat(64)),
+                status == StatusCode::OK,
+                "{origin} {body}"
+            );
+            if status == StatusCode::OK {
+                let value: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(
+                    value,
+                    json!({"fragment":format!("token={}", "a".repeat(64))})
+                );
+            }
+        }
     }
 
     #[tokio::test]

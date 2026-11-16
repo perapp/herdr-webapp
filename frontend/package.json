@@ -16,6 +16,7 @@
     "@xterm/addon-web-links": "0.11.0",
     "@xterm/addon-webgl": "0.18.0",
     "@xterm/xterm": "5.5.0",
+    "qrcode-generator": "2.0.4",
     "svelte": "^5.20.0"
   },
   "engines": {

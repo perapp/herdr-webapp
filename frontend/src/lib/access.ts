@@ -66,5 +66,38 @@ export class AccessController {
       if (!this.dead) { this.state.pending = false; this.publish(); }
     }
   }
+  /**
+   * The private link for another browser, fetched only on an explicit tap. It is
+   * returned to the caller for the clipboard and never kept in state, where it
+   * could be rendered or logged. `root` is the address this browser is using.
+   */
+  async link(root: string): Promise<string | null> {
+    if (this.dead || this.state.pending || !this.state.status?.supported) return null;
+    this.state.pending = true; this.state.issue = ''; this.state.message = ''; this.publish();
+    try {
+      const result = await request('/api/access/link', {}, this.abort.signal, this.send);
+      if (!record(result) || typeof result.fragment !== 'string' || !/^(token|pair)=[A-Za-z0-9_-]{16,4096}$/.test(result.fragment)) {
+        throw new Error('Unreadable link');
+      }
+      return this.dead ? null : `${root}#${result.fragment}`;
+    } catch (error) {
+      if (!this.dead) {
+        const unsupported = error instanceof ApiError && [404, 405, 501].includes(error.status);
+        // Never render the response body: it may contain the credential.
+        this.state.issue = unsupported
+          ? 'Copying the access link is not supported by this server or connector yet. Update it and try again.'
+          : 'The access link could not be fetched. Check the connection and try again.';
+      }
+      return null;
+    } finally { if (!this.dead) { this.state.pending = false; this.publish(); } }
+  }
+  unreadable(): void { if (!this.dead) { this.state.issue = 'The QR code could not be drawn. Use “Copy access link” instead.'; this.publish(); } }
+  /** Outcome of a copy the component performed with a link from `link()`. */
+  copied(ok: boolean): void {
+    if (this.dead) return;
+    this.state.issue = ok ? '' : 'This browser blocked the clipboard. Tap “Copy access link” once more.';
+    this.state.message = ok ? 'Access link copied. Paste it in the other browser, and keep it private.' : '';
+    this.publish();
+  }
   stop(): void { this.dead = true; this.abort.abort(); }
 }

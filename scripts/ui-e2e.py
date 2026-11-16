@@ -278,6 +278,25 @@ def selection_attach_and_settings(playwright, browser, url, image):
     check('every Settings control is at least 44 px tall', sheet['small'] == 0, sheet['small'])
     check('text size reports columns and rows', re.search(r'\d+ px · \d+ columns × \d+ rows', sheet['readout']) is not None, sheet['readout'])
     check('Settings names the loaded build', sheet['version'].startswith('Development server · '), sheet['version'])
+    # Copy access link: fetched on the tap, confirmed, and never rendered.
+    copy = page.locator('[data-testid=copy-access-link]')
+    copy.scroll_into_view_if_needed()
+    for _ in range(2):  # a browser may refuse the clipboard on the first tap
+        copy.click()
+        page.wait_for_selector('[data-testid=access-settings] .success, [data-testid=access-settings] [role=alert]', timeout=5000)
+        if page.locator('[data-testid=access-settings] .success').count():
+            break
+    access = phone.js("document.querySelector('[data-testid=access-settings]').innerText")
+    check('Copy access link confirms the copy', 'Access link copied' in access, access[-160:] if 'token=' not in access else 'link was rendered')
+    check('the access link is never rendered', 'token=' not in phone.js('document.documentElement.outerHTML'))
+    page.click('[data-testid=show-access-qr]')
+    page.wait_for_selector('.access-qr svg path', timeout=5000)
+    code = phone.js("""(() => { const s = document.querySelector('.access-qr svg'), r = s.getBoundingClientRect();
+      return { square: Math.abs(r.width - r.height) < 1, w: r.width, modules: s.querySelector('path').getAttribute('d').split('M').length - 1,
+        fits: r.right <= innerWidth + 1, text: document.documentElement.outerHTML.includes('token=') } })()""")
+    check('Show QR code draws a square code that fits the sheet', code['square'] and code['fits'] and code['w'] >= 200 and code['modules'] > 200, code)
+    page.click('[data-testid=show-access-qr]')
+    check('Hide QR code removes it', page.locator('.access-qr').count() == 0)
     columns = lambda: int(re.search(r'(\d+) columns', page.locator('.preferences output').inner_text()).group(1))
     wide = columns()
     page.click('[aria-label="Increase font size"]')

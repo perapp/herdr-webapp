@@ -205,7 +205,10 @@ impl PeerService {
                 "browser revoked"
             );
         }
-        if path == "/api/access" || path == "/api/access/rotate" {
+        if matches!(
+            path,
+            "/api/access" | "/api/access/rotate" | "/api/access/link"
+        ) {
             let Some(pairings) = access.as_mut() else {
                 bail!("access operation unavailable");
             };
@@ -226,6 +229,21 @@ impl PeerService {
                         notifications.keep_owner(&self.owner.0).await?;
                     }
                     json!({"rotated":true})
+                }
+                // The pairing capability, never the private router bearer. It
+                // travels only inside this end-to-end encrypted channel, to a
+                // browser whose key is already trusted.
+                ("POST", "/api/access/link") => {
+                    ensure!(
+                        serde_json::from_slice::<Value>(&body)? == json!({}),
+                        "expected empty object"
+                    );
+                    ensure!(pairings.available(), "pairing limit reached");
+                    let capability = serde_json::to_vec(&pairings.capability)?;
+                    json!({"fragment":format!(
+                        "pair={}",
+                        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(capability)
+                    )})
                 }
                 _ => bail!("invalid access operation"),
             };
@@ -523,6 +541,7 @@ fn allowed(method: &str, path: &str) -> bool {
             "POST",
             "/api/rpc"
             | "/api/access/rotate"
+            | "/api/access/link"
             | "/api/component-updates/check"
             | "/api/component-updates/install"
             | "/api/topology"
@@ -643,6 +662,29 @@ mod tests {
         assert_eq!(
             body,
             json!({"supported":true,"canRotate":true,"scope":"computer","tokenLifetime":"untilRotated","sessionLifetime":"untilRevoked"})
+        );
+        // The link is the pairing capability, never the internal router bearer.
+        let response = current
+            .dispatch("POST", "/api/access/link", b"{}".to_vec(), None)
+            .await
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        let fragment = body["fragment"].as_str().unwrap();
+        let capability: Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(fragment.strip_prefix("pair=").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let secret = shared.lock().await.capability.secret.clone();
+        assert_eq!(capability["secret"], json!(secret));
+        assert!(!fragment.contains("Bearer"));
+        assert!(
+            current
+                .dispatch("POST", "/api/access/link", b"{\"x\":1}".to_vec(), None)
+                .await
+                .is_err()
         );
         assert!(
             current

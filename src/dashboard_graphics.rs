@@ -11,6 +11,9 @@ use qrcode::{Color, QrCode};
 const PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const RETRY_WINDOW: Duration = Duration::from_secs(30);
+// A desktop viewer may attach long after startup (a server started in a
+// background tab, at boot, or first opened from a phone). Keep asking, slowly.
+const LATE_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_REPLY: usize = 4096;
 const PIXELS_PER_MODULE: usize = 4;
 const QUIET_ZONE: usize = 4;
@@ -94,7 +97,7 @@ impl GraphicsProbe {
         .into_bytes()
     }
 
-    /// Queries are sparse and stop after 30 seconds or the first positive reply.
+    /// Queries are sparse, slow down after 30 seconds, and stop at the first positive reply.
     /// A viewer can attach after the dashboard starts, so one query is insufficient.
     pub fn query_due(&self) -> bool {
         !self.supported
@@ -245,8 +248,12 @@ impl ProbeTiming {
     fn query_due(&self, now: Instant) -> bool {
         match (self.first_sent, self.last_sent) {
             (Some(first), Some(last)) => {
-                now.saturating_duration_since(first) < RETRY_WINDOW
-                    && now.saturating_duration_since(last) >= RETRY_INTERVAL
+                now.saturating_duration_since(last)
+                    >= if now.saturating_duration_since(first) < RETRY_WINDOW {
+                        RETRY_INTERVAL
+                    } else {
+                        LATE_RETRY_INTERVAL
+                    }
             }
             _ => true,
         }
@@ -478,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_clock_starts_after_flush_and_retries_are_sparse_and_bounded() {
+    fn fallback_clock_starts_after_flush_and_retries_are_sparse_then_slow() {
         let start = Instant::now();
         let mut timing = ProbeTiming::default();
         assert!(timing.query_due(start));
@@ -494,8 +501,15 @@ mod tests {
             timing.sent(now);
             assert!(!timing.query_due(now));
         }
+        // After the window a late viewer is still asked, but only slowly.
+        let last = first + Duration::from_secs(28);
         assert!(!timing.query_due(first + RETRY_WINDOW));
-        assert!(!timing.query_due(first + Duration::from_secs(300)));
+        assert!(!timing.query_due(last + Duration::from_secs(14)));
+        let late = last + LATE_RETRY_INTERVAL;
+        assert!(timing.query_due(late));
+        timing.sent(late);
+        assert!(!timing.query_due(late + Duration::from_secs(14)));
+        assert!(timing.query_due(late + Duration::from_secs(300)));
     }
 
     #[test]

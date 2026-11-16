@@ -334,7 +334,15 @@ Herdr.app. This is intentionally not a per-command sandbox or a multi-user syste
   token file. No Core or terminal restart is needed. A private `.sessions.rotation`
   recovery journal may briefly accompany the store; do not edit/delete it manually.
   Logout revokes just that session, including its open streams. API handlers never
-  return or log private tokens or access links.
+  log private tokens or access links, and return one only for the explicit
+  **Copy access link** request described next.
+- **Settings → Access → Copy access link** puts the private link on the clipboard
+  so you can paste it into another browser. It is fetched only on that tap and is
+  never displayed. Only a signed-in browser on the exact origin can request it; over
+  the relay it travels inside the encrypted channel, on a plain-HTTP LAN address it
+  is as exposed as the token is at sign-in. Rotate access if it leaks.
+  **Show QR code** draws the same link as a QR code in the page, for another
+  device's camera, until you hide it or two minutes pass.
 - The interactive launcher hides the private link and QR after the first
   authenticated client connects. Press **L** in that terminal to toggle visibility;
   rotation never reveals a hidden link. This is display privacy, not revocation.
