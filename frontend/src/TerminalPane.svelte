@@ -18,7 +18,7 @@
   import { ctrlJKey, terminalUrl, touchKeys } from './lib/terminal';
   import { terminalTheme } from './lib/theme';
   import { initializeAppearance, watchAppearance } from './lib/appearance';
-  import { touchScroll } from './lib/touchScroll';
+  import { touchScroll, beforeCell, cellAtPoint, selectCells, type Cell, type CellRange } from './lib/touchScroll';
   import { initializeFontSize, watchFontSize } from './lib/fontSize';
   import { imageAccept, imageReference, uploadImage } from './lib/attachments';
   import { errorMessage } from './lib/api';
@@ -63,6 +63,10 @@
   let selectionAt = $state<{ left: number; top: number }>();
   let stage = $state<HTMLDivElement>();
   let clearSelection: () => void = () => {};
+  // Drag handles at both ends of a long-press selection, relative to the stage.
+  type HandlePlace = { left: number; top: number } | undefined;
+  let handles = $state<{ start: HandlePlace; end: HandlePlace }>({ start: undefined, end: undefined });
+  let grabHandle: (which: 'start' | 'end', event: PointerEvent) => void = () => {};
   let repeatTimer: ReturnType<typeof setTimeout> | undefined;
   let repeated = false;
   function stopRepeat() { clearTimeout(repeatTimer); repeatTimer = undefined; }
@@ -111,21 +115,43 @@
   let openCommands: (event: MouseEvent) => void = () => {};
   let insertCommand = $state<(event: MouseEvent, text: string, run: boolean) => boolean>(() => false);
   async function chooseImage(file: File | undefined, event: Event) {
-    if (!file || !event.isTrusted || uploadBusy || !attached) return;
-    const insert = prepareInsertion(event);
+    if (!file || !event.isTrusted || uploadBusy) return;
     const finishUpload = reloadSafety?.busy();
     uploadController = new AbortController();
-    uploadBusy = true; uploadError = ''; uploadStatus = `Uploading ${file.name}…`;
+    const signal = uploadController.signal;
+    uploadBusy = true; uploadError = '';
+    let timedOut = false;
     try {
-      const path = await uploadImage(address, file, uploadController.signal);
-      if (uploadController.signal.aborted) return;
+      // A phone's image picker puts the page in the background, which can drop
+      // the terminal connection. Returning with an image used to do nothing at
+      // all while it reconnected. Wait briefly for this pane, then say so.
+      if (!attached) {
+        uploadStatus = 'Reconnecting… the image attaches when the terminal is back.';
+        const deadline = performance.now() + 10_000;
+        while (!attached && !signal.aborted && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+        if (signal.aborted) return;
+        if (!attached) { uploadStatus = ''; uploadError = 'The terminal was still reconnecting. Attach the image again.'; return; }
+      }
+      // The insertion target is the connection that is live now, after any wait.
+      const insert = prepareInsertion(event);
+      uploadStatus = `Uploading ${file.name}…`;
+      // An upload stalled by a connection lost in the background would
+      // otherwise keep the paperclip busy, and every later attach ignored.
+      const stall = setTimeout(() => { timedOut = true; uploadController?.abort(); }, 30_000);
+      let path: string;
+      try { path = await uploadImage(address, file, signal); } finally { clearTimeout(stall); }
+      if (signal.aborted) return;
       if (!insert(imageReference(path))) {
         uploadStatus = ''; uploadError = 'Image uploaded, but the terminal connection changed. Attach it again when connected.';
         return;
       }
       uploadStatus = 'Image reference inserted. Add your message, then send it in Pi.';
+      // Shown as a line under the pane when the key rows are hidden: do not leave it there.
+      const done = uploadStatus;
+      setTimeout(() => { if (uploadStatus === done) uploadStatus = ''; }, 4000);
     } catch (e) {
-      if (!uploadController.signal.aborted) { uploadError = errorMessage(e); uploadStatus = ''; }
+      if (timedOut) { uploadError = 'The upload did not finish within 30 seconds. Attach the image again.'; uploadStatus = ''; }
+      else if (!signal.aborted) { uploadError = errorMessage(e); uploadStatus = ''; }
     } finally { uploadBusy = false; finishUpload?.(); }
   }
 
@@ -255,13 +281,55 @@
       catch { uploadError = 'The browser blocked copying. Tap the terminal first, then try Copy again.'; }
     };
     term.attachCustomKeyEventHandler(event => { if (event.type === 'keydown') submission.markKey(event); return attached; });
-    const scrolling = touchScroll(host, term, { attached: () => attached, mark: () => {}, selected: at => {
+    let range: CellRange | undefined;
+    const grid = () => host.querySelector('.xterm-screen');
+    const placeHandles = () => {
+      const box = stage?.getBoundingClientRect(), cells = grid()?.getBoundingClientRect();
+      if (!range || !box || !cells) { if (handles.start || handles.end) handles = { start: undefined, end: undefined }; return; }
+      const width = cells.width / term.cols, height = cells.height / term.rows, top = term.buffer.active.viewportY;
+      const at = (cell: Cell, edge: number): HandlePlace => {
+        const row = cell.row - top;
+        return row < 0 || row >= term.rows ? undefined : { left: cells.left - box.left + (cell.col + edge) * width, top: cells.top - box.top + (row + 1) * height };
+      };
+      handles = { start: at(range.from, 0), end: at(range.to, 1) };
+    };
+    const placeActions = (x: number, y: number) => {
       const box = stage?.getBoundingClientRect();
-      if (!box || !term.hasSelection()) return;
-      selectionAt = { left: Math.max(84, Math.min(box.width - 84, at.x - box.left)), top: Math.max(4, at.y - box.top - 64) };
+      if (box) selectionAt = { left: Math.max(84, Math.min(box.width - 84, x - box.left)), top: Math.max(4, y - box.top - 64) };
+    };
+    const scrolling = touchScroll(host, term, { attached: () => attached, mark: () => {}, selected: (at, selected) => {
+      if (!term.hasSelection()) return;
+      range = selected; placeActions(at.x, at.y); placeHandles();
     } });
-    const selectionSub = term.onSelectionChange(() => { if (!term.hasSelection()) selectionAt = undefined; });
-    clearSelection = () => { term.clearSelection(); selectionAt = undefined; };
+    const selectionSub = term.onSelectionChange(() => { if (!term.hasSelection()) { range = undefined; selectionAt = undefined; placeHandles(); } });
+    // Handles follow the text while history scrolls or the grid changes.
+    const handleSub = term.onRender(() => { if (range) placeHandles(); });
+    clearSelection = () => { term.clearSelection(); range = undefined; selectionAt = undefined; placeHandles(); };
+    grabHandle = (which, event) => {
+      const place = handles[which], box = stage?.getBoundingClientRect(), cells = grid()?.getBoundingClientRect();
+      if (!range || !place || !box || !cells || !event.isTrusted) return;
+      event.preventDefault(); event.stopPropagation();
+      const element = event.currentTarget as HTMLElement;
+      element.setPointerCapture(event.pointerId);
+      const width = cells.width / term.cols, height = cells.height / term.rows;
+      const fixed = which === 'start' ? range.to : range.from;
+      // The finger rests on the handle below the text: aim at the middle of
+      // the cell the handle was attached to, and keep that offset while dragging.
+      const dx = event.clientX - (box.left + place.left + (which === 'start' ? width / 2 : -width / 2));
+      const dy = event.clientY - (box.top + place.top - height / 2);
+      const move = (moved: PointerEvent) => {
+        const cell = cellAtPoint(term, grid(), moved.clientX - dx, moved.clientY - dy);
+        if (!cell) return;
+        range = beforeCell(cell, fixed) ? { from: cell, to: fixed } : { from: fixed, to: cell };
+        selectCells(term, range); placeHandles();
+      };
+      const up = (ended: PointerEvent) => {
+        element.removeEventListener('pointermove', move); element.removeEventListener('pointerup', up); element.removeEventListener('pointercancel', up);
+        if (range && term.hasSelection()) placeActions(ended.clientX - dx, ended.clientY - dy - height);
+      };
+      selectionAt = undefined;
+      element.addEventListener('pointermove', move); element.addEventListener('pointerup', up); element.addEventListener('pointercancel', up);
+    };
     // Capture mobile line-break and paste intent before xterm's handlers. A
     // compositionend, focus, redraw or resize is never submission permission.
     const beforeInput = (event: Event) => { if (event instanceof InputEvent) submission.markInput(event); };
@@ -414,7 +482,7 @@
     return () => {
       disposed = true; generation++; uploadController?.abort(); clearTimeout(timer); cancelAnimationFrame(raf);
       observer.disconnect(); socket?.close(); submission.clear(); scrolling.dispose(); inputSub.dispose();
-      unmounted = true; stopRepeat(); scrollSub.dispose(); cursorSub.dispose(); selectionSub.dispose(); cancelAnimationFrame(placing); viewport?.removeEventListener('scroll', updateScrolled);
+      unmounted = true; stopRepeat(); scrollSub.dispose(); cursorSub.dispose(); selectionSub.dispose(); handleSub.dispose(); cancelAnimationFrame(placing); viewport?.removeEventListener('scroll', updateScrolled);
       host.removeEventListener('beforeinput', beforeInput, true); host.removeEventListener('paste', paste, true);
       host.removeEventListener('click', clickTerminal);
       host.removeEventListener('focusin', focused); host.removeEventListener('focusout', blurred);
@@ -436,11 +504,20 @@
       <button onpointerdown={event => event.preventDefault()} onclick={event => { void copyScreen(event).then(() => clearSelection()); }}>Copy</button>
       <button aria-label="Clear selection" onpointerdown={event => event.preventDefault()} onclick={() => clearSelection()}>×</button>
     </div>{/if}
+    {#each ['start', 'end'] as const as which (which)}{@const place = handles[which]}
+      {#if place}<button class="selection-handle" class:end={which === 'end'} aria-label={which === 'start' ? 'Move selection start' : 'Move selection end'} style:left={`${place.left}px`} style:top={`${place.top}px`} onpointerdown={event => grabHandle(which, event)}></button>{/if}
+    {/each}
     <div class="terminal-host" bind:this={host}></div>
     {#if scrolledUp}<button class="jump-bottom" aria-label="Jump to latest output" title="Jump to latest output" onpointerdown={event => event.preventDefault()} onclick={() => jumpBottom()}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v15 M5 13l7 7 7-7"/></svg>
     </button>{/if}
   </div>
+  <!-- Outside the key rows: a phone's image picker closes the keyboard, which
+       hides those rows. A picker inside them was destroyed before it could
+       report the chosen image, so attaching silently did nothing. -->
+  <input class="image-picker" bind:this={imagePicker} type="file" accept={imageAccept} aria-label="Choose image to attach" hidden
+    onchange={event => { void chooseImage(event.currentTarget.files?.[0], event); event.currentTarget.value = ''; }} />
+  {#if !showKeys && (uploadError || uploadStatus)}<div class:error={!!uploadError} class="attachment-status attachment-toast" role={uploadError ? 'alert' : 'status'}>{uploadError || uploadStatus}</div>{/if}
   {#if showKeys}<div class="terminal-accessories"><nav class="terminal-keys" aria-label="Terminal keyboard shortcuts">
     {#each touchKeys.slice(0, 2) as key (key.name)}{@render accessoryKey(key)}{/each}
     <button class="modifier-key" aria-label="Control modifier" aria-pressed={mods.ctrl} title="Ctrl · applies to the next key" disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => toggleModifier(event, 'ctrl')}>Ctrl</button>
@@ -451,8 +528,6 @@
       <button class="ctrl-j-key" aria-label={ctrlJKey.name} title="Ctrl+J · line feed" disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => sendKey(event, ctrlJKey.data)}>{ctrlJKey.label}</button>
       {#if canPaste}<button class="text-key" aria-label="Paste from clipboard" title="Paste clipboard text" disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => void pasteClipboard(event)}>Paste</button>{/if}
       <button class="text-key" aria-label="Copy selection or visible screen" title="Copy the selection, or the visible screen when nothing is selected" onpointerdown={event => event.preventDefault()} onclick={event => void copyScreen(event)}>Copy</button>
-      <input class="image-picker" bind:this={imagePicker} type="file" accept={imageAccept} aria-label="Choose image to attach"
-        onchange={event => { void chooseImage(event.currentTarget.files?.[0], event); event.currentTarget.value = ''; }} />
       <span class:error={!!uploadError} class="attachment-status" role={uploadError ? 'alert' : 'status'}>{uploadError || uploadStatus}</span>
       {#if agent}<button class="agent-commands-button" aria-label="Agent commands" title={`${agent} commands and favorites`} aria-haspopup="dialog" disabled={!attached} onclick={event => openCommands(event)}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m13 2-10 12h9l-1 8 10-12h-9l1-8Z"/></svg>

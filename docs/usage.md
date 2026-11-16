@@ -487,8 +487,8 @@ preferences disable momentum.
   it, keep dragging to extend the selection, then use the **Copy** / **×** bar
   that appears above your finger. Terminal text is drawn on a GPU canvas
   (falling back to page elements without WebGL2), so the browser's own text
-  selection does not apply. There are no drag handles and a selection cannot
-  extend past the visible screen.
+  selection does not apply. After release, drag the handle at either end to
+  adjust the selection. A selection cannot extend past the visible screen.
 - **The keyboard does not resize the terminal.** While the on-screen keyboard
   is up, the grid keeps its full size and the pane shows the part that holds
   the cursor (the newest rows while reading history). Resizing made

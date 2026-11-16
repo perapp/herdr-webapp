@@ -16,6 +16,18 @@ export class ScrollRows {
 /** Fling feel of a web page: velocity decays over this time constant, so a
  * flick travels about `velocity × FLING_MS` pixels.
  */
+/** A buffer cell: column, and row counted from the top of history. */
+export interface Cell { col: number; row: number }
+export interface CellRange { from: Cell; to: Cell }
+export const beforeCell = (a: Cell, b: Cell) => a.row < b.row || (a.row === b.row && a.col < b.col);
+export function cellAtPoint(term: Terminal, screen: Element | null | undefined, clientX: number, clientY: number): Cell | undefined {
+  const box = screen?.getBoundingClientRect();
+  if (!box || !box.width || !box.height) return;
+  const clamp = (value: number, max: number) => Math.max(0, Math.min(max, Math.floor(value)));
+  return { col: clamp((clientX - box.left) / (box.width / term.cols), term.cols - 1), row: clamp((clientY - box.top) / (box.height / term.rows), term.rows - 1) + term.buffer.active.viewportY };
+}
+/** Selects both ends inclusive. */
+export const selectCells = (term: Terminal, { from, to }: CellRange) => term.select(from.col, from.row, (to.row - from.row) * term.cols + to.col - from.col + 1);
 export const FLING_MS = 650;
 const MAX_VELOCITY = 8; // px/ms
 /** Programs that scroll themselves redraw per wheel step over the connection:
@@ -37,7 +49,7 @@ export function touchScroll(host: HTMLElement, term: Terminal, options: {
   attached: () => boolean;
   mark: (event: TouchEvent) => void;
   /** A long-press selection was finished at this client position. */
-  selected?: (at: { x: number; y: number }) => void;
+  selected?: (at: { x: number; y: number }, range: CellRange) => void;
 }): { reset: () => void; dispose: () => void } {
   let startY = 0, lastY = 0, lastTime = 0, sampleTime = 0;
   let x = 0, y = 0, velocity = 0, pending = 0, frame = 0;
@@ -67,18 +79,13 @@ export function touchScroll(host: HTMLElement, term: Terminal, options: {
   });
   // Long press selects the word under the finger; dragging on extends it.
   // Text is drawn on a canvas, so the browser has no selection of its own here.
-  interface Cell { col: number; row: number }
   let press: ReturnType<typeof setTimeout> | undefined;
   let anchor: { from: Cell; to: Cell } | undefined;
   let touchedAt = -Infinity;
-  const cellAt = (clientX: number, clientY: number): Cell | undefined => {
-    const box = screen()?.getBoundingClientRect();
-    if (!box || !box.width || !box.height) return;
-    const clamp = (value: number, max: number) => Math.max(0, Math.min(max, Math.floor(value)));
-    return { col: clamp((clientX - box.left) / (box.width / term.cols), term.cols - 1), row: clamp((clientY - box.top) / (box.height / term.rows), term.rows - 1) + term.buffer.active.viewportY };
-  };
-  const before = (a: Cell, b: Cell) => a.row < b.row || (a.row === b.row && a.col < b.col);
-  const selectRange = (from: Cell, to: Cell) => term.select(from.col, from.row, (to.row - from.row) * term.cols + to.col - from.col + 1);
+  const cellAt = (clientX: number, clientY: number) => cellAtPoint(term, screen(), clientX, clientY);
+  const before = beforeCell;
+  let range: CellRange | undefined;
+  const selectRange = (from: Cell, to: Cell) => { range = { from, to }; selectCells(term, range); };
   const beginSelection = () => {
     press = undefined;
     if (!tracking || dragging || !options.attached()) return;
@@ -217,7 +224,7 @@ export function touchScroll(host: HTMLElement, term: Terminal, options: {
       // No compatibility mouse events: xterm would clear the selection.
       event.preventDefault(); event.stopPropagation();
       anchor = undefined; tracking = false;
-      options.selected?.({ x, y });
+      if (range) options.selected?.({ x, y }, range);
       return;
     }
     if (dragging) { event.preventDefault(); event.stopPropagation(); }
