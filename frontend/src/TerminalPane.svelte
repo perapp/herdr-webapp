@@ -19,7 +19,9 @@
   import { ctrlJKey, terminalUrl, touchKeys } from './lib/terminal';
   import { terminalTheme } from './lib/theme';
   import { initializeAppearance, watchAppearance } from './lib/appearance';
-  import { touchScroll, beforeCell, cellAtPoint, selectCells, type Cell, type CellRange } from './lib/touchScroll';
+  import { touchScroll } from './lib/touchScroll';
+  import { cellAtPoint, dragRange, handlePlaces, selectCells } from './lib/selection';
+  import type { CellRange, HandlePlace } from './lib/selection';
   import { initializeFontSize, watchFontSize } from './lib/fontSize';
   import { imageAccept, imageReference, uploadImage } from './lib/attachments';
   import { errorMessage } from './lib/api';
@@ -67,7 +69,6 @@
   let stage = $state<HTMLDivElement>();
   let clearSelection: () => void = () => {};
   // Drag handles at both ends of a long-press selection, relative to the stage.
-  type HandlePlace = { left: number; top: number } | undefined;
   let handles = $state<{ start: HandlePlace; end: HandlePlace }>({ start: undefined, end: undefined });
   let grabHandle: (which: 'start' | 'end', event: PointerEvent) => void = () => {};
   let repeatTimer: ReturnType<typeof setTimeout> | undefined;
@@ -148,7 +149,7 @@
         uploadStatus = ''; uploadError = 'Image uploaded, but the terminal connection changed. Attach it again when connected.';
         return;
       }
-      uploadStatus = 'Image reference inserted. Add your message, then send it in Pi.';
+      uploadStatus = 'Image reference inserted. Add your message, then send it.';
       // Shown as a line under the pane when the key rows are hidden: do not leave it there.
       const done = uploadStatus;
       setTimeout(() => { if (uploadStatus === done) uploadStatus = ''; }, 4000);
@@ -302,16 +303,15 @@
     const placeHandles = () => {
       const box = stage?.getBoundingClientRect(), cells = grid()?.getBoundingClientRect();
       if (!range || !box || !cells) { if (handles.start || handles.end) handles = { start: undefined, end: undefined }; return; }
-      const width = cells.width / term.cols, height = cells.height / term.rows, top = term.buffer.active.viewportY;
-      const at = (cell: Cell, edge: number): HandlePlace => {
-        const row = cell.row - top;
-        return row < 0 || row >= term.rows ? undefined : { left: cells.left - box.left + (cell.col + edge) * width, top: cells.top - box.top + (row + 1) * height };
-      };
-      handles = { start: at(range.from, 0), end: at(range.to, 1) };
+      handles = handlePlaces(range, { left: cells.left - box.left, top: cells.top - box.top, cellWidth: cells.width / term.cols, cellHeight: cells.height / term.rows, rows: term.rows, viewportY: term.buffer.active.viewportY });
     };
     const placeActions = (x: number, y: number) => {
       const box = stage?.getBoundingClientRect();
-      if (box) selectionAt = { left: Math.max(84, Math.min(box.width - 84, x - box.left)), top: Math.max(4, y - box.top - 64) };
+      if (!box) return;
+      // Above the finger; near the top of the pane there is no room, so below
+      // the handles instead of on top of them.
+      const above = y - box.top - 64;
+      selectionAt = { left: Math.max(84, Math.min(box.width - 84, x - box.left)), top: above >= 4 ? above : Math.min(box.height - 48, y - box.top + 60) };
     };
     const scrolling = touchScroll(host, term, { attached: () => attached, mark: () => {}, selected: (at, selected) => {
       if (!term.hasSelection()) return;
@@ -336,7 +336,7 @@
       const move = (moved: PointerEvent) => {
         const cell = cellAtPoint(term, grid(), moved.clientX - dx, moved.clientY - dy);
         if (!cell) return;
-        range = beforeCell(cell, fixed) ? { from: cell, to: fixed } : { from: fixed, to: cell };
+        range = dragRange(fixed, cell);
         selectCells(term, range); placeHandles();
       };
       const up = (ended: PointerEvent) => {
@@ -510,22 +510,52 @@
 
 <section class:focused={active} class:compact class="terminal-pane" aria-label={title}>
   {#if !compact}<header class="terminal-header">
-    <button class="pane-name" onclick={() => focusTerminal()} title="Focus terminal and open keyboard">{#if program}<ProgramIcon {program} />{/if}{title}</button>
+    <button
+      class="pane-name"
+      onclick={() => focusTerminal()}
+      title="Focus terminal and open keyboard">{#if program}<ProgramIcon {program} />{/if}{title}</button>
     <span class="reported-state"><AgentIndicator status={reported} showIdle={false} /></span>
     <span class="terminal-status" class:connected={attached} role="status">{status}</span>
     {#if !attached}<button class="quiet" onclick={() => reconnect()}>Reconnect</button>{/if}
   </header>{/if}
   <div class="terminal-stage" bind:this={stage}>
-    {#if selectionAt}<div class="selection-actions" role="toolbar" aria-label="Selection" style:left={`${selectionAt.left}px`} style:top={`${selectionAt.top}px`}>
-      <button onpointerdown={event => event.preventDefault()} onclick={event => { void copyScreen(event).then(() => clearSelection()); }}>Copy</button>
+    {#if selectionAt}<div
+      class="selection-actions"
+      role="toolbar"
+      aria-label="Selection"
+      style:left={`${selectionAt.left}px`}
+      style:top={`${selectionAt.top}px`}>
+      <button
+        onpointerdown={event => event.preventDefault()}
+        onclick={event => { void copyScreen(event).then(() => clearSelection()); }}>Copy</button>
       <button aria-label="Clear selection" onpointerdown={event => event.preventDefault()} onclick={() => clearSelection()}>×</button>
     </div>{/if}
     {#each ['start', 'end'] as const as which (which)}{@const place = handles[which]}
-      {#if place}<button class="selection-handle" class:end={which === 'end'} aria-label={which === 'start' ? 'Move selection start' : 'Move selection end'} style:left={`${place.left}px`} style:top={`${place.top}px`} onpointerdown={event => grabHandle(which, event)}></button>{/if}
+      {#if place}<button
+        class="selection-handle"
+        class:end={which === 'end'}
+        aria-label={which === 'start' ? 'Move selection start' : 'Move selection end'}
+        style:left={`${place.left}px`}
+        style:top={`${place.top}px`}
+        onpointerdown={event => grabHandle(which, event)}></button>{/if}
     {/each}
     <div class="terminal-host" bind:this={host}></div>
-    {#if scrolledUp}<button class="jump-bottom" aria-label="Jump to latest output" title="Jump to latest output" onpointerdown={event => event.preventDefault()} onclick={() => jumpBottom()}>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v15 M5 13l7 7 7-7"/></svg>
+    {#if scrolledUp}<button
+      class="jump-bottom"
+      aria-label="Jump to latest output"
+      title="Jump to latest output"
+      onpointerdown={event => event.preventDefault()}
+      onclick={() => jumpBottom()}>
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"><path d="M12 4v15 M5 13l7 7 7-7"/></svg>
     </button>{/if}
   </div>
   <!-- Outside the key rows: a phone's image picker closes the keyboard, which
@@ -533,29 +563,107 @@
        report the chosen image, so attaching silently did nothing. -->
   <input class="image-picker" bind:this={imagePicker} type="file" accept={imageAccept} aria-label="Choose image to attach" hidden
     onchange={event => { void chooseImage(event.currentTarget.files?.[0], event); event.currentTarget.value = ''; }} />
-  {#if !showKeys && (uploadError || uploadStatus)}<div class:error={!!uploadError} class="attachment-status attachment-toast" role={uploadError ? 'alert' : 'status'}>{uploadError || uploadStatus}</div>{/if}
+  {#if !showKeys && (uploadError || uploadStatus)}<div
+    class:error={!!uploadError}
+    class="attachment-status attachment-toast"
+    role={uploadError ? 'alert' : 'status'}>{uploadError || uploadStatus}</div>{/if}
   {#if showKeys}<div class="terminal-accessories"><nav class="terminal-keys" aria-label="Terminal keyboard shortcuts">
     {#each touchKeys.slice(0, 2) as key (key.name)}{@render accessoryKey(key)}{/each}
-    <button class="modifier-key" aria-label="Control modifier" aria-pressed={mods.ctrl} title="Ctrl · applies to the next key" disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => toggleModifier(event, 'ctrl')}>Ctrl</button>
-    <button class="modifier-key" aria-label="Alt modifier" aria-pressed={mods.alt} title="Alt · applies to the next key" disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => toggleModifier(event, 'alt')}>Alt</button>
+    <button
+      class="modifier-key"
+      aria-label="Control modifier"
+      aria-pressed={mods.ctrl}
+      title="Ctrl · applies to the next key"
+      disabled={!attached}
+      onpointerdown={event => event.preventDefault()}
+      onclick={event => toggleModifier(event, 'ctrl')}>Ctrl</button>
+    <button
+      class="modifier-key"
+      aria-label="Alt modifier"
+      aria-pressed={mods.alt}
+      title="Alt · applies to the next key"
+      disabled={!attached}
+      onpointerdown={event => event.preventDefault()}
+      onclick={event => toggleModifier(event, 'alt')}>Alt</button>
     {#each touchKeys.slice(2) as key (key.name)}{@render accessoryKey(key)}{/each}
   </nav>
     <div class="terminal-attachments">
-      <button class="ctrl-j-key" aria-label={ctrlJKey.name} title="Ctrl+J · line feed" disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => sendKey(event, ctrlJKey.data)}>{ctrlJKey.label}</button>
-      {#if canPaste}<button class="text-key" aria-label="Paste from clipboard" title="Paste clipboard text" disabled={!attached} onpointerdown={event => event.preventDefault()} onclick={event => void pasteClipboard(event)}>Paste</button>{/if}
-      <button class="text-key" aria-label="Copy selection or visible screen" title="Copy the selection, or the visible screen when nothing is selected" onpointerdown={event => event.preventDefault()} onclick={event => void copyScreen(event)}>Copy</button>
-      <span class:error={!!uploadError} class="attachment-status" role={uploadError ? 'alert' : 'status'}>{uploadError || uploadStatus}</span>
-      {#if agent}<button class="agent-commands-button" aria-label="Agent commands" title={`${agent} commands and favorites`} aria-haspopup="dialog" disabled={!attached} onclick={event => openCommands(event)}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m13 2-10 12h9l-1 8 10-12h-9l1-8Z"/></svg>
+      <button
+        class="ctrl-j-key"
+        aria-label={ctrlJKey.name}
+        title="Ctrl+J · line feed"
+        disabled={!attached}
+        onpointerdown={event => event.preventDefault()}
+        onclick={event => sendKey(event, ctrlJKey.data)}>{ctrlJKey.label}</button>
+      {#if canPaste}<button
+        class="text-key"
+        aria-label="Paste from clipboard"
+        title="Paste clipboard text"
+        disabled={!attached}
+        onpointerdown={event => event.preventDefault()}
+        onclick={event => void pasteClipboard(event)}>Paste</button>{/if}
+      <button
+        class="text-key"
+        aria-label="Copy selection or visible screen"
+        title="Copy the selection, or the visible screen when nothing is selected"
+        onpointerdown={event => event.preventDefault()}
+        onclick={event => void copyScreen(event)}>Copy</button>
+      <span
+        class:error={!!uploadError}
+        class="attachment-status"
+        role={uploadError ? 'alert' : 'status'}>{uploadError || uploadStatus}</span>
+      {#if agent}<button
+        class="agent-commands-button"
+        aria-label="Agent commands"
+        title={`${agent} commands and favorites`}
+        aria-haspopup="dialog"
+        disabled={!attached}
+        onclick={event => openCommands(event)}>
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"><path d="m13 2-10 12h9l-1 8 10-12h-9l1-8Z"/></svg>
       </button>{/if}
-      <button class="attach-image" aria-label={uploadBusy ? 'Uploading image' : 'Attach image'} aria-busy={uploadBusy} disabled={!attached || uploadBusy} onclick={() => imagePicker?.click()} title="Attach image · PNG, JPEG, GIF or WebP · up to 8 MiB">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m8 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9a7 7 0 0 1 10 10l-9 9"/></svg>
+      <button
+        class="attach-image"
+        aria-label={uploadBusy ? 'Uploading image' : 'Attach image'}
+        aria-busy={uploadBusy}
+        disabled={!attached || uploadBusy}
+        onclick={() => imagePicker?.click()}
+        title="Attach image · PNG, JPEG, GIF or WebP · up to 8 MiB">
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          aria-hidden="true"><path d="m8 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9a7 7 0 0 1 10 10l-9 9"/></svg>
       </button>
     </div>
   </div>{/if}
   {#if !attached}<footer class="terminal-detail" role="status">{detail}{#if compact}<button class="quiet" onclick={() => reconnect()}>Reconnect</button>{/if}</footer>{/if}
 </section>
 {#snippet accessoryKey(key: (typeof touchKeys)[number])}
-  <button aria-label={key.name} disabled={!attached} onpointerdown={event => pressKey(event, key)} onpointerup={stopRepeat} onpointercancel={stopRepeat} onpointerleave={stopRepeat} onclick={event => releaseKey(event, key.data)}>{key.label}</button>
+  <button
+    aria-label={key.name}
+    disabled={!attached}
+    onpointerdown={event => pressKey(event, key)}
+    onpointerup={stopRepeat}
+    onpointercancel={stopRepeat}
+    onpointerleave={stopRepeat}
+    onclick={event => releaseKey(event, key.data)}>{key.label}</button>
 {/snippet}
-{#if paletteAgent}<CommandPalette {address} agent={paletteAgent} connected={attached && agent === paletteAgent && connectionEpoch === paletteEpoch} close={() => paletteAgent = undefined} insert={insertCommand} />{/if}
+{#if paletteAgent}<CommandPalette
+  {address}
+  agent={paletteAgent}
+  connected={attached && agent === paletteAgent && connectionEpoch === paletteEpoch}
+  close={() => paletteAgent = undefined}
+  insert={insertCommand}/>{/if}

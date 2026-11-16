@@ -76,6 +76,7 @@ identities so already-installed launchers and relay managers keep working.
 ## Documentation
 
 - [Usage, installation and development](docs/usage.md)
+- [Using it on a phone: gestures, keys, selection, attach](docs/phone.md)
 - [Core bootstrap and per-computer updates](docs/installation-updates.md)
 - [Installed apps and remembered computers](docs/pwa.md) · [Background notifications](docs/web-push.md)
 - [Self-hosting stable and main](distribution/main-channel.md)

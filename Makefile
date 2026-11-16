@@ -1,4 +1,4 @@
-.PHONY: all build frontend frontend-deps setup check check-fast ui-test ui-watch test release run dev dev-build dev-embedded clean smoke help
+.PHONY: all build frontend frontend-deps setup check check-fast ui-test ui-watch test release run dev dev-build dev-embedded clean smoke ui-e2e help
 all: release
 
 help:
@@ -71,6 +71,12 @@ smoke:
 	python3 -B scripts/test_terminal_provenance.py
 	python3 -B scripts/test_access_privacy.py --binary "$(CURDIR)/target/release/herdr-webapp"
 	uv run --script scripts/smoke.py --binary "$(CURDIR)/target/release/herdr-webapp"
+	uv run --script scripts/ui-e2e.py --binary "$(CURDIR)/target/release/herdr-webapp"
+
+# Phone and desktop browser behaviour against a disposable Core: keyboard,
+# scrolling, selection, attach, key row, row menus and Settings. Needs Chrome.
+ui-e2e: frontend-deps
+	uv run --script scripts/ui-e2e.py --binary "$(CURDIR)/target/release/herdr-webapp"
 
 clean:
 	cargo clean

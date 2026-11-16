@@ -36,6 +36,7 @@ viewer, administration dashboard, or desktop-control approval workflow.
 - `make check-fast`; focused tests: `make ui-test TEST=fontSize.test.ts` or `make ui-watch TEST=fontSize.test.ts`.
 - Reuse the debug backend for UI edits; `make dev-build` + restart dev after Rust changes. `make setup` forces dependency refresh.
 - Reuse `scripts/relay-e2e/browser.py` helpers; wait for actual reload/disconnect state, not sleeps or positional selectors. Same-profile tabs share saved navigation.
+- `make ui-e2e` drives a headless phone and desktop Chrome against a disposable Core (keyboard, scrolling, selection, attach, Settings); extend `scripts/ui-e2e.py` when a browser-only behaviour changes. It also runs as part of `make smoke`.
 - Run full `make check && make release && make smoke` once at the final gate. Local HMR does not prove relay/TURN behavior.
 
 ## Engineering and verification

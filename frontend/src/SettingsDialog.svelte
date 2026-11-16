@@ -6,6 +6,8 @@
   import NotificationSettings from './NotificationSettings.svelte';
   import AccessSettings from './AccessSettings.svelte';
   import { installApp } from './lib/pwa';
+  import { loadedBuild } from './lib/versions';
+  import { channelBase } from './lib/channel';
   import { initializeAppearance, setAppearance, watchAppearance } from './lib/appearance';
   import type { AppearancePreference } from './lib/appearance';
   import { initializeTerminalPrefs, setTerminalPref, watchGrid, watchTerminalPrefs } from './lib/terminalPrefs';
@@ -38,6 +40,8 @@
     catch { if (!disposed) installMessage = 'Installation could not start. Try your browser’s Install app menu, or continue using Herdr here.'; }
   }
   async function closeInstall() { installMessage = ''; await resume(installButton); }
+  // Which build is loaded, at a glance: a dev server and the deployed app look alike.
+  const buildLabel = [import.meta.env.DEV ? 'Development server' : channelBase() === '/main/' ? 'Main' : 'Stable', loadedBuild().version || 'unknown build'].join(' · ');
   let appearance = $state(initializeAppearance());
   let saved = $state(true);
   let fontSaved = $state(true);
@@ -144,7 +148,7 @@
           <span class="action-copy"><strong>Install app</strong><small>Home screen or desktop</small></span><span class="action-arrow" aria-hidden="true">›</span>
         </button>
         <button class="version-option" bind:this={versionButton} aria-haspopup="dialog" onclick={openVersions}>
-          <span class="action-copy"><strong>Version</strong><small>Builds and updates</small></span><span class="action-arrow" aria-hidden="true">›</span>
+          <span class="action-copy"><strong>Version</strong><small>{buildLabel}</small></span><span class="action-arrow" aria-hidden="true">›</span>
         </button>
       </div>
       <div class="source-row"><SourceLink /></div>

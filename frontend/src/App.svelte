@@ -233,6 +233,12 @@
       { label: 'Close pane', danger: true, disabled, run: () => treeAction('close-pane', document, space, item, pane) },
     ] };
   }
+  /** Aligns the selected pane's ⋯ button with its row, whatever the row heights are. */
+  function besideSelected(node: HTMLElement, index: number) {
+    const place = (row: number) => { const link = node.parentElement?.querySelectorAll<HTMLElement>('.pane-link')[row]; if (link) node.style.top = `${link.offsetTop}px`; };
+    place(index);
+    return { update: place };
+  }
   /** Phone equivalent of the desktop ⋯ menu, for the pane on screen. */
   function currentMenu() {
     if (!selected || !tab) return;
@@ -380,7 +386,12 @@
 {#if auth !== 'signed-in'}
   <main class="login-shell">
     <section class="login-card" aria-labelledby="login-heading">
-      <div class="wordmark"><img class="herdr-mark" src={channelPath('/icons/herdr.svg')} alt="" width="32" height="32" />herdr<span class="web-label">web</span></div>
+      <div class="wordmark"><img
+        class="herdr-mark"
+        src={channelPath('/icons/herdr.svg')}
+        alt=""
+        width="32"
+        height="32"/>herdr<span class="web-label">web</span></div>
       <p class="eyebrow">Your machines. One quiet workspace.</p>
       <h1 id="login-heading">Open your spaces.</h1>
       <p class="muted">Your Herdr spaces and terminals, ready to use from your phone.</p>
@@ -388,9 +399,20 @@
       {:else}
         <form onsubmit={(event) => login(event)}>
           <label for="token">Access token</label>
-          <input id="token" type="password" bind:value={token} required autocomplete="off" spellcheck="false" autocapitalize="off" disabled={loginBusy} />
+          <input
+            id="token"
+            type="password"
+            bind:value={token}
+            required
+            autocomplete="off"
+            spellcheck="false"
+            autocapitalize="off"
+            disabled={loginBusy}/>
           {#if loginError}<p class="error" role="alert">{loginError}</p>{/if}
-          <button class="primary" type="submit" disabled={loginBusy || !token.trim()}>{loginBusy ? 'Connecting…' : 'Connect to Herdr'}</button>
+          <button
+            class="primary"
+            type="submit"
+            disabled={loginBusy || !token.trim()}>{loginBusy ? 'Connecting…' : 'Connect to Herdr'}</button>
         </form>
       {/if}
       <p class="login-footnote">The token is exchanged for a private session cookie. It is never saved in browser storage.</p>
@@ -398,26 +420,77 @@
     </section>
   </main>
 {:else if !workspaceState.initialized}
-  <ConnectionStatus name={computers.find(c => c.id === selectedComputer)?.name || 'Your terminals'} status="Restoring your terminals…" error={error || snapshot.error} retry={() => void start()} connections={onConnections} />
+  <ConnectionStatus
+    name={computers.find(c => c.id === selectedComputer)?.name || 'Your terminals'}
+    status="Restoring your terminals…"
+    error={error || snapshot.error}
+    retry={() => void start()}
+    connections={onConnections}/>
 {:else}
   <div class="app-shell" class:mobile style:height={viewportHeight ? `${viewportHeight}px` : undefined}>
     <header class="app-header">
       <div class="app-brand">
-        <button class="navigation-toggle" aria-label="Toggle navigation" aria-expanded={sidebarOpen} aria-controls="navigation-drawer" onclick={toggleNavigation}>☰</button>
+        <button
+          class="navigation-toggle"
+          aria-label="Toggle navigation"
+          aria-expanded={sidebarOpen}
+          aria-controls="navigation-drawer"
+          onclick={toggleNavigation}>☰</button>
       </div>
-      <span class="mobile-location" use:swipe={swipePane} use:longPress={currentMenu} title={selected ? `${selected.machine} / ${selected.name} / ${readable(tab?.name, 'Workspace')} / ${activePane ? paneTitle(activePane, selected.document.on, snapshot.terminals) : ''}` : 'Herdr'}>
+      <span
+        class="mobile-location"
+        use:swipe={swipePane}
+        use:longPress={currentMenu}
+        title={selected ? `${selected.machine} / ${selected.name} / ${readable(tab?.name, 'Workspace')} / ${activePane ? paneTitle(activePane, selected.document.on, snapshot.terminals) : ''}` : 'Herdr'}>
           <ProgramIcon program={terminalProgram(activeTerminal)} />
           <AgentIndicator status={agentStatus(activeTerminal)} showIdle={false} />
           {selected ? selected.name : 'Herdr'}{#if tab}<span class="location-divider">/</span>{readable(tab.name, 'Tab')}{/if}
-          {#if position}<span class="pane-position" aria-label={`Pane ${position.index} of ${position.count}`}>{position.index}/{position.count}</span>{/if}
+          {#if position}<span
+            class="pane-position"
+            aria-label={`Pane ${position.index} of ${position.count}`}>{position.index}/{position.count}</span>{/if}
         </span>
-        <button class="pane-jump ready-agent-jump" aria-label={`Next unseen ready agent (${waitingAgents.length} waiting)`} title={`Next unseen ready agent — ${waitingAgents.length} waiting`} disabled={!ready || !waitingAgents.length} onclick={jumpReadyAgent}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10 2 17v4h20v-4l-2-7 M2 17h6l2 3h4l2-3h6 M8 6l3 3 6-6"/></svg><span class="ready-agent-count" aria-hidden="true">{waitingAgents.length > 99 ? '99+' : waitingAgents.length}</span>
+        <button
+          class="pane-jump ready-agent-jump"
+          aria-label={`Next unseen ready agent (${waitingAgents.length} waiting)`}
+          title={`Next unseen ready agent — ${waitingAgents.length} waiting`}
+          disabled={!ready || !waitingAgents.length}
+          onclick={jumpReadyAgent}>
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"><path d="M4 10 2 17v4h20v-4l-2-7 M2 17h6l2 3h4l2-3h6 M8 6l3 3 6-6"/></svg><span
+            class="ready-agent-count"
+            aria-hidden="true">{waitingAgents.length > 99 ? '99+' : waitingAgents.length}</span>
         </button>
-        <button class="pane-jump previous-pane-jump" aria-label="Previous pane" title="Return to previous pane" disabled={!ready || !previousPane} onclick={jumpPreviousPane}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 4-5 5 5 5 M4 9h9a7 7 0 0 1 7 7v4"/></svg>
+        <button
+          class="pane-jump previous-pane-jump"
+          aria-label="Previous pane"
+          title="Return to previous pane"
+          disabled={!ready || !previousPane}
+          onclick={jumpPreviousPane}>
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"><path d="m9 4-5 5 5 5 M4 9h9a7 7 0 0 1 7 7v4"/></svg>
         </button>
-        <button class="keyboard-toggle" aria-label="Terminal keyboard shortcuts" aria-pressed={showKeys} title="Show terminal keys" onclick={() => keysOverride = !showKeys}>⌨</button>
+        <button
+          class="keyboard-toggle"
+          aria-label="Terminal keyboard shortcuts"
+          aria-pressed={showKeys}
+          title="Show terminal keys"
+          onclick={() => keysOverride = !showKeys}>⌨</button>
       {#if !mobile}
         <details class="workspace-menu" bind:this={actionsMenu}>
           <summary aria-label="Workspace actions" title="Workspace actions">⋯</summary>
@@ -425,8 +498,22 @@
         </details>
       {/if}
     </header>
-    <dialog id="navigation-drawer" class="navigation-drawer" bind:this={drawer} onclose={() => sidebarOpen = false} onpointerdown={event => { if (event.target === drawer) closeNavigation(); }} aria-label="Navigate computers, workspaces, tabs and panes">
-        <header class="drawer-heading"><a class="drawer-brand" href={channelPath('/')} aria-label="Herdr-webapp — Connections" title="Connections" onclick={event => { if (onConnections && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); closeNavigation(); onConnections(); } }}>Herdr-webapp</a><button class="quiet" aria-label="Close navigation" onclick={closeNavigation}>×</button></header>
+    <dialog
+      id="navigation-drawer"
+      class="navigation-drawer"
+      bind:this={drawer}
+      onclose={() => sidebarOpen = false}
+      onpointerdown={event => { if (event.target === drawer) closeNavigation(); }}
+      aria-label="Navigate computers, workspaces, tabs and panes">
+        <header class="drawer-heading"><a
+          class="drawer-brand"
+          href={channelPath('/')}
+          aria-label="Herdr-webapp — Connections"
+          title="Connections"
+          onclick={event => { if (onConnections && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); closeNavigation(); onConnections(); } }}>Herdr-webapp</a><button
+          class="quiet"
+          aria-label="Close navigation"
+          onclick={closeNavigation}>×</button></header>
         <div class="navigation-scroll">{@render navigation()}</div>
         {@render settingsFooter()}
     </dialog>
@@ -439,18 +526,39 @@
           {#if mobile}
             {#each phonePanes as kept (kept.key)}
               <div class="kept-pane" hidden={!kept.active}>
-                <PaneTree node={kept.node} on={kept.on} terminals={snapshot.terminals} focused={kept.active ? focused : ''} stacks={view.stacks} compact visible={kept.active} holdGrid={terminalPrefs.holdGrid && keyboardOpen} showKeys={kept.active && showKeys} focus={(id) => { if (kept.active) view.focused[tabKey] = id; }} selectStack={selectStack} />
+                <PaneTree
+                  node={kept.node}
+                  on={kept.on}
+                  terminals={snapshot.terminals}
+                  focused={kept.active ? focused : ''}
+                  stacks={view.stacks}
+                  compact
+                  visible={kept.active}
+                  holdGrid={terminalPrefs.holdGrid && keyboardOpen}
+                  showKeys={kept.active && showKeys}
+                  focus={(id) => { if (kept.active) view.focused[tabKey] = id; }}
+                  selectStack={selectStack}/>
               </div>
             {/each}
             {#if !activePane}<section class="workspace-empty"><h2>No visible panes</h2><p>Choose another tab from the menu or create one.</p><button onclick={() => openAction('new-tab')}>New tab</button></section>{/if}
           {:else}
             {#key tabKey}
-              <PaneTree node={zoomed || tab.root} on={selected.document.on} terminals={snapshot.terminals} {focused} stacks={view.stacks} {showKeys} focus={(id) => view.focused[tabKey] = id} selectStack={selectStack} />
+              <PaneTree
+                node={zoomed || tab.root}
+                on={selected.document.on}
+                terminals={snapshot.terminals}
+                {focused}
+                stacks={view.stacks}
+                {showKeys}
+                focus={(id) => view.focused[tabKey] = id}
+                selectStack={selectStack}/>
             {/key}
           {/if}
         </div>
       {:else if selected}
-        <section class="workspace-empty"><h2>{selected.name}</h2><p>Add a tab to open a terminal.</p><button disabled={!ready} onclick={() => openAction('new-tab')}>New tab</button></section>
+        <section class="workspace-empty"><h2>{selected.name}</h2><p>Add a tab to open a terminal.</p><button
+          disabled={!ready}
+          onclick={() => openAction('new-tab')}>New tab</button></section>
       {:else}
         <section class="workspace-empty"><h2>Your Herdr workspace</h2><p>Choose or create a workspace from the menu.</p><button onclick={toggleNavigation}>Open navigation</button></section>
       {/if}
@@ -459,17 +567,49 @@
 {/if}
 {#if modal}<TopologyDialog {...modal} close={() => modal = null} saved={topologySaved} />{/if}
 {#if rowMenu}<RowMenu title={rowMenu.title} items={rowMenu.items} close={() => rowMenu = null} />{/if}
-<AgentPresence ready={ready && !sidebarOpen && !showSettings && !modal && !computerDetails} terminals={snapshot.terminals} visible={drawnTerminals(mobile ? activePane : zoomed || tab?.root, selected?.document.on ?? null, view.stacks)} />
-<NotificationPresence {ready} terminal={typeof activePane?.content?.terminal === 'string' && selected ? qualify(activePane.content.terminal, selected.document.on) : ''} />
-{#if notificationNotice}<aside role="status" class="notification-notice">{notificationNotice}<button onclick={() => notificationNotice = ''} aria-label="Dismiss notification destination message">×</button></aside>{/if}
+<AgentPresence
+  ready={ready && !sidebarOpen && !showSettings && !modal && !computerDetails}
+  terminals={snapshot.terminals}
+  visible={drawnTerminals(mobile ? activePane : zoomed || tab?.root, selected?.document.on ?? null, view.stacks)}/>
+<NotificationPresence
+  {ready}
+  terminal={typeof activePane?.content?.terminal === 'string' && selected ? qualify(activePane.content.terminal, selected.document.on) : ''}/>
+{#if notificationNotice}<aside role="status" class="notification-notice">{notificationNotice}<button
+  onclick={() => notificationNotice = ''}
+  aria-label="Dismiss notification destination message">×</button></aside>{/if}
 {#if !peerMode}<UpdateProgress connected={ready} />{/if}
-{#if computerDetails}<ComputerDetailsDialog name={computerDetails.name} on={computerDetails.on} document={snapshot.documents.find(doc => doc.on === computerDetails?.on)} connected={ready} coreVersion={snapshot.coreVersion} refresh={refresh} close={() => void closeComputer()} />{/if}
-{#if showSettings}<SettingsDialog close={() => showSettings = false} {peerMode} {serverMode} {peerBuild} {peerVersion} coreVersion={snapshot.coreVersion} connected={ready} computerName={computers.find(c => c.id === selectedComputer)?.name || machineName(null, snapshot.machines, 0, snapshot.core)} />{/if}
+{#if computerDetails}<ComputerDetailsDialog
+  name={computerDetails.name}
+  on={computerDetails.on}
+  document={snapshot.documents.find(doc => doc.on === computerDetails?.on)}
+  connected={ready}
+  coreVersion={snapshot.coreVersion}
+  refresh={refresh}
+  close={() => void closeComputer()}/>{/if}
+{#if showSettings}<SettingsDialog
+  close={() => showSettings = false}
+  {peerMode}
+  {serverMode}
+  {peerBuild}
+  {peerVersion}
+  coreVersion={snapshot.coreVersion}
+  connected={ready}
+  computerName={computers.find(c => c.id === selectedComputer)?.name || machineName(null, snapshot.machines, 0, snapshot.core)}/>{/if}
 
 {#snippet settingsFooter()}
   <footer class="navigation-settings">
     <button class="settings-button" aria-label="Settings" title="Settings" aria-haspopup="dialog" onclick={() => showSettings = true}>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 3-.6 2.2-2 .9-2-.6-2 3.5 1.5 1.6v2.3L2.4 14.5l2 3.5 2-.6 2 .9L9 21h4l.6-2.7 2-.9 2 .6 2-3.5-1.5-1.6v-2.3l1.5-1.6-2-3.5-2 .6-2-.9L13 3Z"/><circle cx="11" cy="12" r="3"/></svg>
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.6"
+        aria-hidden="true"><path d="m9 3-.6 2.2-2 .9-2-.6-2 3.5 1.5 1.6v2.3L2.4 14.5l2 3.5 2-.6 2 .9L9 21h4l.6-2.7 2-.9 2 .6 2-3.5-1.5-1.6v-2.3l1.5-1.6-2-3.5-2 .6-2-.9L13 3Z"/><circle
+        cx="11"
+        cy="12"
+        r="3"/></svg>
     </button>
   </footer>
 {/snippet}
@@ -482,7 +622,9 @@
   <button class="danger" disabled={!ready || !focused} onclick={() => action('close-pane')}>Close pane</button>
   <button class="danger" disabled={!ready || !tab} onclick={() => action('close-tab')}>Close tab</button>
   <button class="danger" disabled={!ready || !selected} onclick={() => action('close-space')}>Close workspace</button>
-  {#if !mobile}<button disabled={!focused} onclick={() => { dismissActions(); view.zoomed[tabKey] = zoomed ? '' : focused; }}>{zoomed ? 'Show all panes' : 'Zoom pane'}</button>{/if}
+  {#if !mobile}<button
+    disabled={!focused}
+    onclick={() => { dismissActions(); view.zoomed[tabKey] = zoomed ? '' : focused; }}>{zoomed ? 'Show all panes' : 'Zoom pane'}</button>{/if}
 {/snippet}
 
 {#snippet navigation()}
@@ -490,13 +632,31 @@
   <nav class="workspace-navigation" aria-label="Computers and workspaces">
     {#each snapshot.documents as document, i (viewKey(document.on))}
       <section class="machine-group">
-        <header><h2><button class="computer-details-trigger" aria-label={`Computer details: ${machineName(document.on, snapshot.machines, i, snapshot.core)}`} aria-haspopup="dialog" onclick={event => openComputer(document, i, event)}><span class="computer-glyph" aria-hidden="true">▱</span><span class="computer-name">{machineName(document.on, snapshot.machines, i, snapshot.core)}</span><span class="dot" class:live={snapshot.connected && streamLive && !document.error} aria-label={snapshot.connected && streamLive && !document.error ? 'Connected' : 'Unavailable'}></span></button></h2><button class="icon-button" aria-label={`New workspace on ${machineName(document.on, snapshot.machines, i, snapshot.core)}`} disabled={!ready || treeBusy || !!document.error} title="New workspace" onclick={() => treeAction('new-space', document)}>+</button></header>
+        <header><h2><button
+          class="computer-details-trigger"
+          aria-label={`Computer details: ${machineName(document.on, snapshot.machines, i, snapshot.core)}`}
+          aria-haspopup="dialog"
+          onclick={event => openComputer(document, i, event)}><span
+          class="computer-glyph"
+          aria-hidden="true">▱</span><span class="computer-name">{machineName(document.on, snapshot.machines, i, snapshot.core)}</span><span
+          class="dot"
+          class:live={snapshot.connected && streamLive && !document.error}
+          aria-label={snapshot.connected && streamLive && !document.error ? 'Connected' : 'Unavailable'}></span></button></h2><button
+          class="icon-button"
+          aria-label={`New workspace on ${machineName(document.on, snapshot.machines, i, snapshot.core)}`}
+          disabled={!ready || treeBusy || !!document.error}
+          title="New workspace"
+          onclick={() => treeAction('new-space', document)}>+</button></header>
         {#each document.spaces as space, j (space.id || j)}
           {@const key = viewKey(document.on, space.id)}
           {@const name = spaceName(space, document.on, snapshot.terminals, `Workspace ${j + 1}`)}
             <div class="tree-node workspace-node">
               <details class="workspace-branch" open={expandedSpaces[key] ?? spaceKey === key}>
-                <summary use:longPress={() => spaceMenu(document, space, name)} onclick={event => { event.preventDefault(); expandedSpaces[key] = !(expandedSpaces[key] ?? spaceKey === key); }}><span class="space-badge" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span><span>{name}</span></summary>
+                <summary
+                  use:longPress={() => spaceMenu(document, space, name)}
+                  onclick={event => { event.preventDefault(); expandedSpaces[key] = !(expandedSpaces[key] ?? spaceKey === key); }}><span
+                  class="space-badge"
+                  aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span><span>{name}</span></summary>
                 {#each space.tabs as item, k (item.id || k)}
                   {@const tabName = readable(item.name, String(k + 1))}
                   <div class="tree-node tab-node">
@@ -504,18 +664,57 @@
                       <summary use:longPress={() => tabMenu(document, space, item, tabName)}><span aria-hidden="true">▣</span><span>{tabName}</span></summary>
                       <div class="pane-branches">
                         {#each visiblePanes(item.root) as pane, n (pane.id || n)}
-                          <button class="pane-link" class:selected={spaceKey === key && tab?.id === item.id && focused === pane.id} aria-current={spaceKey === key && tab?.id === item.id && focused === pane.id ? 'page' : undefined} use:longPress={() => paneMenu(document, space, item, pane, paneTitle(pane, document.on, snapshot.terminals, n))} onclick={() => choosePane(document, space, item, pane)}><span class="pane-number">{n + 1}</span><span>{paneTitle(pane, document.on, snapshot.terminals, n)}</span></button>
+                          <button
+                            class="pane-link"
+                            class:selected={spaceKey === key && tab?.id === item.id && focused === pane.id}
+                            aria-current={spaceKey === key && tab?.id === item.id && focused === pane.id ? 'page' : undefined}
+                            use:longPress={() => paneMenu(document, space, item, pane, paneTitle(pane, document.on, snapshot.terminals, n))}
+                            onclick={() => choosePane(document, space, item, pane)}><span class="pane-number">{n + 1}</span><span>{paneTitle(pane, document.on, snapshot.terminals, n)}</span></button>
                         {:else}<span class="rail-empty">No visible panes</span>{/each}
+                        <!-- After the pane rows, so tests and styles can keep counting them as siblings. -->
+                        {#each visiblePanes(item.root) as pane, n (pane.id || n)}
+                          {#if spaceKey === key && tab?.id === item.id && focused === pane.id}{@const title = paneTitle(pane, document.on, snapshot.terminals, n)}
+                            <button
+                              class="tree-action tree-more pane-more"
+                              use:besideSelected={n}
+                              aria-label={`More actions for ${title}`}
+                              title="Split, close…"
+                              aria-haspopup="dialog"
+                              onclick={() => paneMenu(document, space, item, pane, title)}>⋯</button>
+                          {/if}
+                        {/each}
                       </div>
                     </details>
                     <div class="tree-node-actions">
-                      <button class="tree-action tree-create" aria-label={`New pane in ${tabName}`} title="New pane" disabled={!ready || treeBusy || !!document.error} onclick={() => void newPane(document, space, item)}>+</button>
+                      <button
+                        class="tree-action tree-more"
+                        aria-label={`More actions for ${tabName}`}
+                        title="Rename, close…"
+                        aria-haspopup="dialog"
+                        onclick={() => tabMenu(document, space, item, tabName)}>⋯</button>
+                      <button
+                        class="tree-action tree-create"
+                        aria-label={`New pane in ${tabName}`}
+                        title="New pane"
+                        disabled={!ready || treeBusy || !!document.error}
+                        onclick={() => void newPane(document, space, item)}>+</button>
                     </div>
                   </div>
                 {:else}<button class="empty-workspace" onclick={() => chooseSpace(key)}>Open empty workspace</button>{/each}
               </details>
               <div class="tree-node-actions">
-                <button class="tree-action tree-create" aria-label={`New tab in ${name}`} title="New tab" disabled={!ready || treeBusy || !!document.error} onclick={() => treeAction('new-tab', document, space)}>+</button>
+                <button
+                  class="tree-action tree-more"
+                  aria-label={`More actions for ${name}`}
+                  title="Rename, close…"
+                  aria-haspopup="dialog"
+                  onclick={() => spaceMenu(document, space, name)}>⋯</button>
+                <button
+                  class="tree-action tree-create"
+                  aria-label={`New tab in ${name}`}
+                  title="New tab"
+                  disabled={!ready || treeBusy || !!document.error}
+                  onclick={() => treeAction('new-tab', document, space)}>+</button>
               </div>
             </div>
 
@@ -525,7 +724,9 @@
   </nav>
   {#if treeError}<p class="document-error" role="alert">{treeError}</p>{/if}
   <section class="agent-section" aria-labelledby="drawer-agents-heading">
-    <div class="agents-heading"><h2 class="rail-heading" id="drawer-agents-heading">Agents</h2><AgentSortControl mode={agentSortMode} onchange={changeAgentSort} /></div>
+    <div class="agents-heading"><h2 class="rail-heading" id="drawer-agents-heading">Agents</h2><AgentSortControl
+      mode={agentSortMode}
+      onchange={changeAgentSort}/></div>
     <nav class="agent-navigation" aria-label="Agents and sub-agents">
       {#each agentGroups as group, index (`${group.id}:${index}`)}
         <div class="agent-group-heading">{group.label || 'Workspace'}</div>

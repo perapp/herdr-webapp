@@ -180,10 +180,23 @@
 {/if}
 {#if connectionState.service}
   {#key selected}
-  <App onConnections={showConnections} {serverMode} peerBuild={connectionState.build} peerMode={true} peerVersion={connectionState.version} computers={computers.map(c => ({ id: c.machineId, name: labelComputer(c) }))} selectedComputer={selected} />
+  <App
+    onConnections={showConnections}
+    {serverMode}
+    peerBuild={connectionState.build}
+    peerMode={true}
+    peerVersion={connectionState.version}
+    computers={computers.map(c => ({ id: c.machineId, name: labelComputer(c) }))}
+    selectedComputer={selected}/>
   {/key}
 {:else if selected || loading}
-  <ConnectionStatus name={selectedName} status={connectionState.status} error={connectionState.error} {retry} connections={showConnections} forget={selected ? () => void forget() : undefined} />
+  <ConnectionStatus
+    name={selectedName}
+    status={connectionState.status}
+    error={connectionState.error}
+    {retry}
+    connections={showConnections}
+    forget={selected ? () => void forget() : undefined}/>
 {:else}
   <main class="login-shell" data-testid="connections-page">
     <section class="login-card" aria-labelledby="relay-heading">
@@ -192,7 +205,15 @@
         <button aria-haspopup="dialog" onclick={() => showSettings = true}>Settings</button>
       </nav></details>
       <header class="start-heading">
-        <a class="wordmark" href={channelPath('/')} aria-label="Herdr-webapp — Connections"><img class="herdr-mark" src={channelPath('/icons/herdr.svg')} alt="" width="32" height="32" />herdr<span class="web-label">web</span></a>
+        <a
+          class="wordmark"
+          href={channelPath('/')}
+          aria-label="Herdr-webapp — Connections"><img
+          class="herdr-mark"
+          src={channelPath('/icons/herdr.svg')}
+          alt=""
+          width="32"
+          height="32"/>herdr<span class="web-label">web</span></a>
         <span class="channel-label">{channel}</span>
       </header>
       <h1 id="relay-heading">{selected ? 'Opening your terminals' : computers.length ? 'Your computers' : 'Your terminals, anywhere.'}</h1>
@@ -225,7 +246,11 @@
       {:else if computers.length}
         <ul class="connections" aria-label="Remembered computers" data-testid="remembered-computers">
           {#each computers as computer (computer.machineId)}
-            <li><a class="computer-link" data-testid="open-computer" href={routePath(connectionPath(computer.machineId))} onclick={event => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); choose(computer.machineId); } }}>
+            <li><a
+              class="computer-link"
+              data-testid="open-computer"
+              href={routePath(connectionPath(computer.machineId))}
+              onclick={event => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); choose(computer.machineId); } }}>
               <span class="terminal-prompt" aria-hidden="true">&gt;_</span>
               <span class="computer-label"><strong>{labelComputer(computer)}</strong><span>Open terminal</span></span>
               <span class="open-arrow" aria-hidden="true">→</span>
@@ -261,7 +286,10 @@
         <p>Pair only computers you trust. The private link grants terminal access; keep it to yourself. Remembered computers are saved in this browser, separately for Stable and Main.</p>
         <p>Pairing pins your computer’s identity. Terminal content, commands and files travel through encrypted WebRTC, directly when possible or through a configured TURN relay.</p>
         <p>Keep the connector running to reconnect. The setup command reuses a compatible Core; it does not replace an incompatible Core automatically. Managed setups can opt out of Core installation with <code>--no-install-core</code>.</p>
-        <details class="start-details"><summary>Connection diagnostics</summary><label class="turn-option"><input type="checkbox" bind:checked={forceTurn} disabled={!!connection} /> Force TURN on the next connection</label><p>Relay {displayVersion(modeBuild(serverMode), relayVersion)}. TURN availability depends on this relay’s configuration.</p></details>
+        <details class="start-details"><summary>Connection diagnostics</summary><label class="turn-option"><input
+          type="checkbox"
+          bind:checked={forceTurn}
+          disabled={!!connection}/> Force TURN on the next connection</label><p>Relay {displayVersion(modeBuild(serverMode), relayVersion)}. TURN availability depends on this relay’s configuration.</p></details>
       </details>
       <div class="source-row"><SourceLink /></div>
     </section>
