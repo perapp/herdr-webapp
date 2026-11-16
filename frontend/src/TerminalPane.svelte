@@ -8,6 +8,7 @@
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import { WebLinksAddon } from '@xterm/addon-web-links';
+  import { reportGrid, watchTerminalPrefs } from './lib/terminalPrefs';
   import { openTerminalLink } from './lib/terminalLinks';
   import { terminalInput } from './lib/terminalInput';
   import type { InputSource } from './lib/terminalInput';
@@ -48,6 +49,8 @@
   let conceal: () => void = () => {};
   let reveal: () => void = () => {};
   $effect(() => { if (visible) reveal(); else conceal(); });
+  let announceGrid: () => void = () => {};
+  $effect(() => { if (active && visible) announceGrid(); });
   // While the on-screen keyboard is up the grid keeps its full size: a resize
   // makes full-screen programs redraw and reflow, and agents that redraw in
   // place leave duplicated text in history. The pane shows the part of the
@@ -173,13 +176,26 @@
     // renderer does by rebuilding elements on the main thread. Any failure, or
     // the browser reclaiming the context, falls back to that renderer.
     // Loaded on demand: the add-on needs browser globals at import time.
-    let unmounted = false;
-    void import('@xterm/addon-webgl').then(({ WebglAddon }) => {
-      if (unmounted) return;
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    }).catch(() => { /* No WebGL2 here: the DOM renderer remains. */ });
+    // The Settings switch applies at once, in both directions.
+    let unmounted = false, wantGpu = false, loadingGpu = false;
+    let webgl: { dispose(): void } | undefined;
+    const stopPrefs = watchTerminalPrefs(prefs => {
+      wantGpu = prefs.gpu;
+      if (!wantGpu) { const old = webgl; webgl = undefined; try { old?.dispose(); } catch { /* Gone with its context. */ } return; }
+      if (webgl || loadingGpu) return;
+      loadingGpu = true;
+      void import('@xterm/addon-webgl').then(({ WebglAddon }) => {
+        loadingGpu = false;
+        if (unmounted || !wantGpu || webgl) return;
+        const addon = new WebglAddon();
+        addon.onContextLoss(() => { if (webgl === addon) webgl = undefined; addon.dispose(); });
+        term.loadAddon(addon); webgl = addon;
+      }).catch(() => { loadingGpu = false; /* No WebGL2 here: the DOM renderer remains. */ });
+    });
+    // Settings shows what the text size means in columns for the pane in view.
+    const announce = () => { if (active && visible) reportGrid({ cols: term.cols, rows: term.rows }); };
+    const gridSub = term.onResize(announce);
+    announceGrid = announce; announce();
     const submission = new TerminalSubmission();
     let socket: SocketLike | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -482,7 +498,7 @@
     return () => {
       disposed = true; generation++; uploadController?.abort(); clearTimeout(timer); cancelAnimationFrame(raf);
       observer.disconnect(); socket?.close(); submission.clear(); scrolling.dispose(); inputSub.dispose();
-      unmounted = true; stopRepeat(); scrollSub.dispose(); cursorSub.dispose(); selectionSub.dispose(); handleSub.dispose(); cancelAnimationFrame(placing); viewport?.removeEventListener('scroll', updateScrolled);
+      unmounted = true; stopPrefs(); gridSub.dispose(); stopRepeat(); scrollSub.dispose(); cursorSub.dispose(); selectionSub.dispose(); handleSub.dispose(); cancelAnimationFrame(placing); viewport?.removeEventListener('scroll', updateScrolled);
       host.removeEventListener('beforeinput', beforeInput, true); host.removeEventListener('paste', paste, true);
       host.removeEventListener('click', clickTerminal);
       host.removeEventListener('focusin', focused); host.removeEventListener('focusout', blurred);

@@ -20,6 +20,7 @@
   import PaneTree from './PaneTree.svelte';
   import TopologyDialog from './TopologyDialog.svelte';
   import SettingsDialog from './SettingsDialog.svelte';
+  import { initializeTerminalPrefs, watchTerminalPrefs } from './lib/terminalPrefs';
   import NotificationPresence from './NotificationPresence.svelte';
   import AgentPresence from './AgentPresence.svelte';
   import AgentIndicator from './AgentIndicator.svelte';
@@ -57,7 +58,9 @@
   // until the keyboard next opens or closes.
   let keyboardOpen = $state(false);
   let keysOverride = $state<boolean>();
-  const showKeys = $derived(keysOverride ?? keyboardOpen);
+  let terminalPrefs = $state(initializeTerminalPrefs());
+  $effect(() => watchTerminalPrefs(value => terminalPrefs = value));
+  const showKeys = $derived(keysOverride ?? (terminalPrefs.autoKeys && keyboardOpen));
   let rowMenu = $state<{ title: string; items: RowMenuItem[] } | null>(null);
   let showSettings = $state(false);
   let computerDetails = $state<{ on: string | null; name: string }>();
@@ -436,7 +439,7 @@
           {#if mobile}
             {#each phonePanes as kept (kept.key)}
               <div class="kept-pane" hidden={!kept.active}>
-                <PaneTree node={kept.node} on={kept.on} terminals={snapshot.terminals} focused={kept.active ? focused : ''} stacks={view.stacks} compact visible={kept.active} holdGrid={keyboardOpen} showKeys={kept.active && showKeys} focus={(id) => { if (kept.active) view.focused[tabKey] = id; }} selectStack={selectStack} />
+                <PaneTree node={kept.node} on={kept.on} terminals={snapshot.terminals} focused={kept.active ? focused : ''} stacks={view.stacks} compact visible={kept.active} holdGrid={terminalPrefs.holdGrid && keyboardOpen} showKeys={kept.active && showKeys} focus={(id) => { if (kept.active) view.focused[tabKey] = id; }} selectStack={selectStack} />
               </div>
             {/each}
             {#if !activePane}<section class="workspace-empty"><h2>No visible panes</h2><p>Choose another tab from the menu or create one.</p><button onclick={() => openAction('new-tab')}>New tab</button></section>{/if}

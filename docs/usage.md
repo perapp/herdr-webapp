@@ -483,6 +483,13 @@ preferences disable momentum.
   keyboard button overrides that until the keyboard next opens or closes.
   Keyboard detection is inferred from viewport height on touch devices and
   needs validation on physical iOS/Android devices.
+- **Settings** (drawer footer) is a full-screen sheet on phones. *Text size*
+  shows a sample and what the size means for the pane in view, such as
+  "13 px · 44 columns × 29 rows". *Terminal* has three switches, stored in this
+  browser only and all on by default: **Keys with the keyboard**, **Steady size
+  under the keyboard** and **Smooth drawing** (GPU). Turn the last one off if
+  text looks wrong on a device. The two keyboard switches are hidden on
+  devices without a touch screen.
 - **Long press selects text.** Hold a word for about half a second to select
   it, keep dragging to extend the selection, then use the **Copy** / **×** bar
   that appears above your finger. Terminal text is drawn on a GPU canvas
