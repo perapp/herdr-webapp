@@ -121,15 +121,7 @@ impl GraphicsProbe {
         }
         let mut bytes = [0u8; 1024];
         for _ in 0..8 {
-            let mut pfd = libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            if unsafe { libc::poll(&mut pfd, 1, 0) } <= 0
-                || pfd.revents & libc::POLLIN == 0
-                || !is_foreground(fd)
-            {
+            if !readable(fd) || !is_foreground(fd) {
                 break;
             }
             // ICANON off and VMIN/VTIME zero: never blocks, even if another
@@ -270,6 +262,32 @@ impl ProbeTiming {
 
 fn is_foreground(fd: RawFd) -> bool {
     unsafe { libc::tcgetpgrp(fd) == libc::getpgrp() }
+}
+
+/// Zero-timeout readiness. Deliberately select(), not poll(): under `curl | sh`
+/// stdin is `/dev/tty`, and macOS poll() reports POLLNVAL for that device, so
+/// keys and graphics replies were never drained and filled the tty input queue.
+fn readable(fd: RawFd) -> bool {
+    if fd < 0 || fd as usize >= libc::FD_SETSIZE {
+        return false;
+    }
+    unsafe {
+        let mut set = std::mem::zeroed::<libc::fd_set>();
+        libc::FD_ZERO(&mut set);
+        libc::FD_SET(fd, &mut set);
+        let mut timeout = libc::timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        };
+        libc::select(
+            fd + 1,
+            &mut set,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut timeout,
+        ) == 1
+            && libc::FD_ISSET(fd, &set)
+    }
 }
 
 fn same_foreground_terminal(input: RawFd, output: RawFd) -> bool {
@@ -642,6 +660,7 @@ mod tests {
                     revents: 0,
                 };
                 assert_eq!(unsafe { libc::poll(&mut pfd, 1, 1000) }, 1);
+                assert!(readable(terminal.fd.as_raw_fd()));
                 let mut bytes = [0u8; 64];
                 let n = unsafe {
                     libc::read(
@@ -655,6 +674,7 @@ mod tests {
                 toggles += keys.feed(&bytes[..n as usize]);
                 matched |= replies.feed(&bytes[..n as usize]);
             }
+            assert!(!readable(terminal.fd.as_raw_fd()));
             assert_eq!(toggles, expected);
             assert_eq!(matched, positive);
         }
