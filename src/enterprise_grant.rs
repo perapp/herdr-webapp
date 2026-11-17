@@ -216,7 +216,10 @@ mod tests {
             session_id: "session",
             browser_key: Some(&browser),
         };
-        let (verified, lifetime) = verify(&signed, &expected(), now()).unwrap();
+        // Measure from the grant's own issue time: a clock tick between issuing and
+        // checking must not move the boundaries under test.
+        let issued = grant.iat;
+        let (verified, lifetime) = verify(&signed, &expected(), issued).unwrap();
         assert_eq!(verified, grant);
         assert_eq!(lifetime, Duration::from_secs(300));
         let other_user = Principal {
@@ -261,9 +264,9 @@ mod tests {
             assert!(verify(&signed, &wrong, now()).is_err());
         }
         // Expired, replayed-later and future-dated grants are refused.
-        assert!(verify(&signed, &expected(), now() + 300 + CLOCK_TOLERANCE).is_err());
-        assert!(verify(&signed, &expected(), now() + CLOCK_TOLERANCE + 1).is_err());
-        assert!(verify(&signed, &expected(), now() - CLOCK_TOLERANCE - 1).is_err());
+        assert!(verify(&signed, &expected(), issued + 300 + CLOCK_TOLERANCE).is_err());
+        assert!(verify(&signed, &expected(), issued + CLOCK_TOLERANCE + 1).is_err());
+        assert!(verify(&signed, &expected(), issued - CLOCK_TOLERANCE - 1).is_err());
         // Malformed or altered envelopes are refused before any field is trusted.
         let mut altered = signed.clone();
         altered["body"] = json!(signed["body"].as_str().unwrap().replace("00u1", "00u2"));
