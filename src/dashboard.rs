@@ -225,6 +225,9 @@ fn transport_notice(login: &str) -> &'static str {
         "HTTP is unencrypted. Use a trusted network, VPN or HTTPS. Ctrl+C stops."
     }
 }
+/// Widest inline image QR, in terminal cells (about half as many rows). Large
+/// enough to scan from a phone, small enough to leave the logs on screen.
+const IMAGE_QR_MAX_COLUMNS: usize = 32;
 fn connection_rows(login: &str, width: usize, mode: Mode) -> Vec<String> {
     let mut rows = vec![
         format!("HERDR / WEB   ·   {}", crate::build_info::VERSION),
@@ -267,7 +270,7 @@ impl Frame {
         let available = usize::from(height).saturating_sub(rows.len() + 7);
         let columns = usable
             .saturating_sub(1)
-            .min(48)
+            .min(IMAGE_QR_MAX_COLUMNS)
             .min(available.saturating_mul(2));
         let image = if supported && columns >= 20 {
             let placement = Placement {
@@ -648,7 +651,7 @@ mod tests {
             false,
         );
         let at = frame.image.unwrap();
-        assert!(at.rows <= 24 && frame.log_start + 3 <= 40);
+        assert!(at.columns == 32 && at.rows == 16 && frame.log_start + 3 <= 40);
         let logs = String::from_utf8(frame.log_text(&["ready".into()])).unwrap();
         assert!(!logs.contains("\x1b_G"));
         assert!(logs.starts_with(&format!("\x1b[{};1H", frame.log_start + 1)));
