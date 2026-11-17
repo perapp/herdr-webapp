@@ -1,4 +1,4 @@
-.PHONY: all build frontend frontend-deps setup check check-fast ui-test ui-watch test release run dev dev-build dev-embedded clean smoke ui-e2e audit help
+.PHONY: all build frontend frontend-deps setup check check-fast ui-test ui-watch test release run dev dev-build dev-embedded clean smoke ui-e2e enterprise-e2e audit help
 all: release
 
 help:
@@ -73,11 +73,17 @@ smoke:
 	python3 -B scripts/test_access_privacy.py --binary "$(CURDIR)/target/release/herdr-webapp"
 	uv run --script scripts/smoke.py --binary "$(CURDIR)/target/release/herdr-webapp"
 	uv run --script scripts/ui-e2e.py --binary "$(CURDIR)/target/release/herdr-webapp"
+	uv run --script scripts/enterprise-e2e.py --binary "$(CURDIR)/target/release/herdr-webapp"
 
 # Phone and desktop browser behaviour against a disposable Core: keyboard,
 # scrolling, selection, attach, key row, row menus and Settings. Needs Chrome.
 ui-e2e: release
 	uv run --script scripts/ui-e2e.py --binary "$(CURDIR)/target/release/herdr-webapp"
+
+# Enterprise (Okta) mode with a local stand-in identity provider: sign-in,
+# same-user enforcement, renewal, outage and revocation. Needs Chrome and hc.
+enterprise-e2e: release
+	uv run --script scripts/enterprise-e2e.py --binary "$(CURDIR)/target/release/herdr-webapp"
 
 clean:
 	cargo clean

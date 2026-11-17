@@ -14,6 +14,8 @@ resolver = "3"
 [dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
 web-push = { version = "0.11", default-features = false }
+# Same maintained JWT implementation web-push already links; verifies Okta ID tokens.
+jwt-simple = { version = "0.12", default-features = false, features = ["pure-rust"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 hmac = "0.12"
 p256 = { version = "0.13", features = ["ecdsa"] }

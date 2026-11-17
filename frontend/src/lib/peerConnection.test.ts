@@ -170,6 +170,32 @@ describe('PeerConnection signaling authentication and epochs', () => {
     expect(Socket.instances).toHaveLength(2); expect(Socket.instances[1].signals()).toHaveLength(0);
   });
 
+  it('enterprise join names the browser key, and a relay refusal stops without a retry loop', async () => {
+    const states: ConnectionState[] = [];
+    const connection = new PeerConnection({ computer }, state => states.push(state), false, undefined, true);
+    connections.push(connection); connection.start();
+    const socket = Socket.instances.at(-1)!;
+    await flush();
+    socket.receive({ type: 'challenge', nonce: 'relay-challenge' });
+    await flush();
+    expect(socket.sent[0]).toEqual({ type: 'join', machineId: 'machine', browserKey: 'browser-key' });
+    socket.receive({ type: 'error', message: 'invalid relay request', code: 'enterprise-owner-mismatch' });
+    await flush();
+    expect(states.at(-1)).toMatchObject({ status: 'Not your computer', denial: 'enterprise-owner-mismatch' });
+    expect(socket.close).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(Socket.instances).toHaveLength(1);
+    // The ordinary relay keeps the v1 join and its generic retry behaviour.
+    const plain = setup();
+    await flush();
+    plain.socket.receive({ type: 'challenge', nonce: 'relay-challenge' });
+    await flush();
+    expect(plain.socket.sent[0]).toEqual({ type: 'join', machineId: 'machine' });
+    plain.socket.receive({ type: 'error', message: 'invalid relay request', code: 'unknown-code' });
+    await flush();
+    expect(plain.states.at(-1)?.denial).toBeUndefined();
+    expect(plain.states.at(-1)?.status).toBe('Connection interrupted');
+  });
   it('joins and signs session-bound resume authentication, but never offers before verified acceptance', async () => {
     const { socket, states } = setup();
     expect(socket.url.href).toBe(`${origin.replace('https:', 'wss:')}/relay/socket`);

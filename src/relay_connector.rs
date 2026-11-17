@@ -1,6 +1,8 @@
 //! Outbound-only authenticated relay endpoint. Signaling never carries Core operations.
 use crate::{
     core::{Core, Plain},
+    enterprise_connector::{Enrollment, GrantClock, Proof},
+    enterprise_grant::fingerprint,
     peer_service::{PeerMessage, PeerService},
     relay_crypto::{self, Identity},
     relay_pairings::Pairings,
@@ -53,6 +55,8 @@ pub struct ConnectorConfig {
     pub force_turn: bool,
     pub reset_pairings: bool,
     pub no_dashboard: bool,
+    /// Enabled enterprise mode: the Okta-enrolled owner of this computer.
+    pub enterprise: Option<Arc<Enrollment>>,
 }
 fn accepted_payload(computer_name: Option<&str>) -> Value {
     let mut payload = json!({"kind":"accepted","version":crate::build_info::VERSION,"protocolVersion":1,"build":crate::build_info::BuildInfo::current()});
@@ -108,6 +112,8 @@ struct Endpoint {
     force_turn: bool,
     outgoing: mpsc::Sender<Value>,
     dashboard: Option<crate::dashboard::DashboardHandle>,
+    /// Enrollment plus the grant key this relay registration presented.
+    enterprise: Option<(Arc<Enrollment>, String)>,
 }
 impl Endpoint {
     async fn signed(&self, session: &str, seq: u64, body: Value) -> Result<()> {
@@ -157,20 +163,39 @@ impl Drop for ConnectionGuard {
         });
     }
 }
-async fn session(endpoint: Arc<Endpoint>, id: String, mut incoming: mpsc::Receiver<Value>) {
+async fn session(
+    endpoint: Arc<Endpoint>,
+    id: String,
+    mut incoming: mpsc::Receiver<Value>,
+    clock: Option<Arc<GrantClock>>,
+) {
     // RAII also releases reservations if bounded supervisor shutdown aborts a worker.
     let _reservation = ReservationGuard {
         pairings: endpoint.pairings.clone(),
         session: id.clone(),
     };
-    let _ = session_inner(endpoint.clone(), &id, &mut incoming).await;
+    let result = session_inner(endpoint.clone(), &id, &mut incoming, clock.clone()).await;
     endpoint.pairings.lock().await.release(&id);
+    if let (Some((enrollment, _)), Some(clock)) = (&endpoint.enterprise, clock) {
+        enrollment.audit.log(
+            "session-end",
+            json!({"sub":clock.sub,"machineId":endpoint.machine,"session":fingerprint(&id),
+                "browser":fingerprint(&clock.browser_key),
+                "reason":result.err().map(|e| e.to_string()).unwrap_or_else(|| "closed".into())}),
+        );
+    }
 }
 async fn session_inner(
     e: Arc<Endpoint>,
     id: &str,
     incoming: &mut mpsc::Receiver<Value>,
+    clock: Option<Arc<GrantClock>>,
 ) -> Result<()> {
+    // Fail closed if an enterprise endpoint ever reaches here without a grant.
+    ensure!(
+        e.enterprise.is_none() || clock.is_some(),
+        "enterprise authorization missing"
+    );
     let auth = payload(&receive(incoming).await?)?;
     ensure!(auth["kind"] == "auth", "expected authentication");
     let key = auth["publicKey"]
@@ -178,6 +203,14 @@ async fn session_inner(
         .context("missing browser key")?
         .to_owned();
     relay_crypto::machine_id(&key)?;
+    // The Okta grant names one browser key. Neither the pairing secret nor a
+    // previously trusted key is accepted from any other browser, or without it.
+    if let Some(clock) = &clock {
+        ensure!(
+            clock.browser_key == key,
+            "enterprise authorization names a different browser"
+        );
+    }
     let nonce = auth["nonce"].as_str().context("missing nonce")?;
     ensure!(
         (16..=256).contains(&nonce.len()) && !nonce.contains('\n'),
@@ -214,9 +247,19 @@ async fn session_inner(
         ready.clone(),
     );
     tokio::pin!(work);
+    let authorization = async {
+        match &clock {
+            Some(clock) => clock.expired().await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(authorization);
     loop {
         tokio::select! {
             biased;
+            // Also ends an established direct WebRTC connection: dropping `work`
+            // closes the peer connection and every Core channel.
+            _ = &mut authorization => bail!("enterprise authorization expired without renewal"),
             changed = changes.changed() => {
                 changed?;
                 let pairings = e.pairings.lock().await;
@@ -478,6 +521,13 @@ async fn serve_data_channel(
         if let Some(dashboard) = &e.dashboard {
             dashboard.first_authenticated_client();
         }
+        if let Some((enrollment, _)) = &e.enterprise {
+            enrollment.audit.log(
+                "session-start",
+                json!({"sub":enrollment.owner.sub,"machineId":e.machine,"session":fingerprint(&session),
+                    "browser":fingerprint(&key),"paired":pairing}),
+            );
+        }
         // Persistence/authentication precede anything the browser can observe.
         // A failed ready send exits this control handler and tears down the session.
         ready.store(true, Ordering::SeqCst);
@@ -626,6 +676,10 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
     relay_crypto::ensure_private_dir(&config.state_dir)?;
     let _state_lock = relay_crypto::lock_private(&config.state_dir.join("connector.lock"))?;
     endpoint.bind_state(&config.state_dir)?;
+    ensure!(
+        config.enterprise.is_none() || endpoint.base_path == "/",
+        "enterprise mode does not support the main channel"
+    );
     let identity = Arc::new(Identity::load_or_create(
         &config.state_dir.join("identity.json"),
     )?);
@@ -656,6 +710,9 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
     let mut background = JoinSet::new();
     background.spawn(notifications.observe(core.notification_events.subscribe()));
     background.spawn(core.clone().monitor());
+    if let Some(enrollment) = &config.enterprise {
+        background.spawn(enrollment.clone().maintain());
+    }
     let mut socket_url = url.clone();
     socket_url
         .set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
@@ -711,6 +768,16 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
             )
             .await;
             clear_ready(&config.ready_file);
+            if let Some(enrollment) = &config.enterprise
+                && matches!(*enrollment.proofs().borrow(), Proof::Revoked)
+            {
+                background.abort_all();
+                drop(dashboard);
+                bail!(
+                    "Okta no longer authorizes this computer's owner. All access has ended; \
+                     start the connector again to sign in."
+                );
+            }
             match outcome {
                 Ok(true) => break,
                 Ok(false) => {
@@ -761,7 +828,16 @@ where
     let version = crate::build_info::VERSION;
     let signature = identity
         .sign(format!("herdr-register-v1\n{origin}\n{machine}\n{nonce}\n{version}").as_bytes());
-    socket.send(Message::Text(json!({"type":"register","machineId":machine,"publicKey":identity.public_key(),"version":version,"nonce":nonce,"signature":signature}).to_string().into())).await?;
+    let mut register = json!({"type":"register","machineId":machine,"publicKey":identity.public_key(),"version":version,"nonce":nonce,"signature":signature});
+    let mut proofs = config.enterprise.as_ref().map(|e| e.proofs());
+    if let (Some(enrollment), Some(proofs)) = (&config.enterprise, &mut proofs) {
+        proofs.mark_unchanged();
+        register["idToken"] = json!(enrollment.current_token()?);
+    }
+    let mut proved = register["idToken"].as_str().unwrap_or("").to_owned();
+    socket
+        .send(Message::Text(register.to_string().into()))
+        .await?;
     let registered = tokio::select! {
         _ = &mut *stop => return Ok(true),
         value = tokio::time::timeout(Duration::from_secs(10), socket.next()) => value?.context("relay closed")??,
@@ -771,6 +847,29 @@ where
         registered["type"] == "registered" && registered["machineId"] == machine,
         "registration rejected"
     );
+    // The relay must enforce the same owner, and hand over its grant key. A relay
+    // that does not is not the enterprise deployment this connector requires.
+    let enterprise = match &config.enterprise {
+        Some(enrollment) => {
+            let key = registered["enterprise"]["grantKey"]
+                .as_str()
+                .context("relay does not enforce enterprise authorization")?;
+            relay_crypto::machine_id(key)?;
+            ensure!(
+                registered["enterprise"]["owner"]["iss"] == enrollment.owner.iss.as_str()
+                    && registered["enterprise"]["owner"]["sub"] == enrollment.owner.sub.as_str(),
+                "relay registered a different owner"
+            );
+            Some((enrollment.clone(), key.to_owned()))
+        }
+        None => {
+            ensure!(
+                registered["enterprise"].is_null(),
+                "relay requires enterprise authorization; restart the connector"
+            );
+            None
+        }
+    };
     // Registration may follow a long reconnect backoff: do not reuse a stale
     // startup handshake as evidence that Core is still available for readiness.
     tokio::select! {
@@ -808,13 +907,24 @@ where
         force_turn: config.force_turn,
         outgoing,
         dashboard: dashboard.map(crate::dashboard::Dashboard::handle),
+        enterprise,
     });
-    let mut sessions = HashMap::<String, mpsc::Sender<Value>>::new();
+    let mut sessions = HashMap::<String, (mpsc::Sender<Value>, Option<Arc<GrantClock>>)>::new();
     let mut workers = JoinSet::new();
     let mut shutdown = false;
     let result: Result<()> = async {
         loop { tokio::select! {
             _ = &mut *stop => { shutdown = true; break; },
+            // Owner re-verification: forward each fresh proof, and stop serving
+            // as soon as the last one is revoked or older than the recheck bound.
+            changed = async { match &mut proofs { Some(p) => p.changed().await, None => std::future::pending().await } } => {
+                changed?;
+                let enrollment = config.enterprise.as_ref().context("enterprise state missing")?;
+                let token = enrollment.current_token()?;
+                if token == proved { continue; }
+                proved.clone_from(&token);
+                tokio::time::timeout(Duration::from_secs(5), socket.send(Message::Text(json!({"type":"renew","idToken":token}).to_string().into()))).await??;
+            },
             Some(value) = output.recv() => { tokio::time::timeout(Duration::from_secs(5), socket.send(Message::Text(value.to_string().into()))).await??; },
             Some(done) = workers.join_next(), if !workers.is_empty() => { if let Ok(id) = done { sessions.remove(&id); } },
             message = socket.next() => {
@@ -829,11 +939,38 @@ where
                     Some("session") => {
                         ensure!(!id.is_empty() && id.len() <= 128 && !id.contains('\n') && value["machineId"] == endpoint.machine && !sessions.contains_key(&id), "invalid relay session");
                         if sessions.len() >= 4 { continue; }
-                        let (tx, rx) = mpsc::channel(32); sessions.insert(id.clone(), tx);
-                        let endpoint = endpoint.clone(); workers.spawn(async move { session(endpoint, id.clone(), rx).await; id });
+                        // Enterprise: verify the relay's grant before the session exists at all.
+                        let clock = match &endpoint.enterprise {
+                            None => None,
+                            Some((enrollment, key)) => match enrollment.verify_grant(key, &value["grant"], &endpoint.machine, &endpoint.origin, &id, None) {
+                                Ok((grant, lifetime)) => {
+                                    enrollment.audit.log("access-granted", json!({"sub":grant.sub,"machineId":endpoint.machine,"session":fingerprint(&id),"browser":fingerprint(&grant.browser_key)}));
+                                    Some(Arc::new(GrantClock::new(&grant, lifetime)))
+                                }
+                                Err(error) => {
+                                    enrollment.audit.log("access-denied", json!({"machineId":endpoint.machine,"session":fingerprint(&id),"reason":error.to_string()}));
+                                    continue;
+                                }
+                            },
+                        };
+                        let (tx, rx) = mpsc::channel(32); sessions.insert(id.clone(), (tx, clock.clone()));
+                        let endpoint = endpoint.clone(); workers.spawn(async move { session(endpoint, id.clone(), rx, clock).await; id });
                     },
                     Some("signal" | "ice") => {
-                        if let Some(tx) = sessions.get(&id) && tx.try_send(value).is_err() { sessions.remove(&id); }
+                        if let Some((tx, _)) = sessions.get(&id) && tx.try_send(value).is_err() { sessions.remove(&id); }
+                    },
+                    // A renewal extends only the session, user and browser it was issued for.
+                    Some("grant") => {
+                        let renewed = match (&endpoint.enterprise, sessions.get(&id)) {
+                            (Some((enrollment, key)), Some((_, Some(clock)))) => match enrollment.verify_grant(key, &value["grant"], &endpoint.machine, &endpoint.origin, &id, Some(&clock.browser_key)) {
+                                Ok((_, lifetime)) => { clock.renew(lifetime); enrollment.audit.log("grant-renewed", json!({"sub":clock.sub,"machineId":endpoint.machine,"session":fingerprint(&id)})); true }
+                                Err(error) => { enrollment.audit.log("access-denied", json!({"machineId":endpoint.machine,"session":fingerprint(&id),"reason":error.to_string()})); false }
+                            },
+                            // Unknown session: it already ended here.
+                            (Some(_), None) => true,
+                            _ => false,
+                        };
+                        if !renewed { sessions.remove(&id); }
                     },
                     Some("ended") => { sessions.remove(&id); },
                     _ => bail!("unexpected relay message"),

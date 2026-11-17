@@ -44,6 +44,11 @@ pub struct Config {
     /// Exact external origin when behind an HTTPS reverse proxy (e.g. https://herdr.example).
     #[arg(long, global = true, env = "HERDR_WEB_PUBLIC_ORIGIN")]
     pub public_origin: Option<String>,
+    /// Configuration file replacing the default user configuration. Not needed
+    /// normally: /etc/herdr-webapp/config.toml and ~/.config/herdr-webapp/config.toml
+    /// are discovered automatically, and system enterprise policy always applies.
+    #[arg(long = "config", global = true, env = "HERDR_WEBAPP_CONFIG")]
+    pub config_file: Option<PathBuf>,
     /// Plain output instead of the pinned QR / URL dashboard (automatic when redirected).
     #[arg(long, global = true)]
     pub no_dashboard: bool,
@@ -129,8 +134,9 @@ pub struct ServeRelay {
 }
 #[derive(Debug, Args)]
 pub struct ConnectRelay {
+    /// Optional when enterprise configuration names the relay.
     #[arg(long, env = "HERDR_RELAY_URL")]
-    pub relay_url: String,
+    pub relay_url: Option<String>,
     /// Persistent private laptop identity and paired-browser keys.
     #[arg(long, env = "HERDR_RELAY_STATE_DIR")]
     pub state_dir: Option<PathBuf>,

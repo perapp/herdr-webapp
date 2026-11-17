@@ -8,6 +8,11 @@ mod config;
 mod core;
 mod dashboard;
 mod dashboard_graphics;
+mod enterprise_config;
+mod enterprise_connector;
+mod enterprise_grant;
+mod enterprise_oidc;
+mod enterprise_relay;
 mod main_catalog;
 mod notifications;
 mod peer_service;
@@ -80,12 +85,35 @@ async fn main() -> anyhow::Result<()> {
         );
         return Ok(());
     }
+    // Discovered on every start, without arguments. Anything present but invalid
+    // stops here: an enabled enterprise deployment never falls back to another mode.
+    let allow_http_loopback = match &config.mode {
+        Some(config::Mode::ServeRelay(options)) => options.allow_http_loopback,
+        Some(config::Mode::ConnectRelay(options)) => options.allow_http_loopback,
+        _ => false,
+    };
+    let enterprise =
+        enterprise_config::discover(config.config_file.as_deref(), allow_http_loopback)?;
     match &config.mode {
         Some(config::Mode::ServeRelay(options)) => {
-            let origin = config.public_origin.as_deref().ok_or_else(|| {
-                anyhow::anyhow!("serve-relay requires --public-origin https://host")
-            })?;
+            let origin = config
+                .public_origin
+                .as_deref()
+                .or(enterprise.as_ref().map(|policy| policy.relay_url.as_str()))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("serve-relay requires --public-origin https://host")
+                })?;
             let origin = relay_crypto::origin(origin, options.allow_http_loopback)?;
+            anyhow::ensure!(
+                enterprise.is_none() || (!options.enable_main && options.channel_base_path == "/"),
+                "enterprise mode does not support the main channel; remove --enable-main"
+            );
+            let enterprise = match enterprise.clone() {
+                Some(policy) => {
+                    Some(enterprise_relay::Enterprise::start(policy, origin.clone()).await?)
+                }
+                None => None,
+            };
             let is_main = options.channel_base_path == "/main/";
             anyhow::ensure!(
                 !options.enable_main || !is_main,
@@ -187,6 +215,7 @@ async fn main() -> anyhow::Result<()> {
                     turn_urls: options.turn_urls.clone(),
                     turn_secret,
                     turn_ttl_seconds: options.turn_ttl_seconds,
+                    enterprise,
                     ..Default::default()
                 },
                 catalog,
@@ -195,10 +224,15 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(config::Mode::ConnectRelay(options)) => {
             use sha2::{Digest, Sha256};
-            let endpoint = relay_channel::RelayEndpoint::parse(
-                &options.relay_url,
-                options.allow_http_loopback,
-            )?;
+            let relay_url = options
+                .relay_url
+                .as_deref()
+                .or(enterprise.as_ref().map(|policy| policy.relay_url.as_str()))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("connect-relay requires --relay-url https://host")
+                })?;
+            let endpoint =
+                relay_channel::RelayEndpoint::parse(relay_url, options.allow_http_loopback)?;
             let origin = endpoint.url();
             let state_dir = match &options.state_dir {
                 Some(path) => std::path::absolute(path)?,
@@ -220,7 +254,68 @@ async fn main() -> anyhow::Result<()> {
                     )
                 }
             };
+            // The relay states whether Okta is required; local policy can only add to
+            // that, never remove it. The main channel has no enterprise mode.
+            let policy = enterprise_connector::resolve_policy(
+                &endpoint.origin,
+                &endpoint.path("/api/mode"),
+                enterprise,
+                options.allow_http_loopback,
+            )
+            .await?;
+            let enrollment = match policy {
+                None => None,
+                Some(policy) => {
+                    anyhow::ensure!(
+                        endpoint.base_path == "/",
+                        "enterprise mode does not support the main channel"
+                    );
+                    relay_crypto::ensure_private_dir(&state_dir)?;
+                    if options.reset_pairings {
+                        enterprise_connector::Enrollment::reset(&state_dir)?;
+                    }
+                    eprintln!(
+                        "Enterprise mode ({}): Okta sign-in by this computer's owner is required.",
+                        policy.source.display()
+                    );
+                    let prompt_file = state_dir.join("enterprise-login.json");
+                    let interactive = std::io::IsTerminal::is_terminal(&std::io::stderr());
+                    let announce = |prompt: &enterprise_oidc::DevicePrompt| {
+                        if interactive {
+                            eprintln!(
+                                "\nSign in with Okta to enroll this computer:\n  {}\n  Code: {}\n(valid for {} minutes; waiting…)",
+                                prompt
+                                    .verification_uri_complete
+                                    .as_deref()
+                                    .unwrap_or(&prompt.verification_uri),
+                                prompt.user_code,
+                                prompt.expires_in / 60
+                            );
+                        } else {
+                            // Captured logs are not private: leave the one-time code in owner-only state.
+                            let _ = relay_crypto::write_private(
+                                &prompt_file,
+                                &serde_json::to_vec(
+                                    &json!({"verificationUri":prompt.verification_uri,
+                                    "verificationUriComplete":prompt.verification_uri_complete,
+                                    "userCode":prompt.user_code,"expiresIn":prompt.expires_in}),
+                                )
+                                .unwrap_or_default(),
+                            );
+                            eprintln!(
+                                "Okta sign-in required to enroll this computer. Instructions: {}",
+                                prompt_file.display()
+                            );
+                        }
+                    };
+                    let enrollment =
+                        enterprise_connector::Enrollment::open(policy, &state_dir, announce).await;
+                    let _ = std::fs::remove_file(&prompt_file);
+                    Some(enrollment?)
+                }
+            };
             return relay_connector::run(relay_connector::ConnectorConfig {
+                enterprise: enrollment,
                 relay_url: origin,
                 core_socket: std::path::absolute(config.socket()?)?,
                 state_dir,
@@ -237,6 +332,15 @@ async fn main() -> anyhow::Result<()> {
             .await;
         }
         Some(config::Mode::Local) | None => {}
+    }
+    // No alternate listener: the LAN server authenticates with a token, not Okta.
+    if let Some(policy) = &enterprise {
+        anyhow::bail!(
+            "enterprise mode is enabled by {}: direct LAN access is disabled. \
+             Use `herdr-webapp connect-relay` to reach this computer through {}.",
+            policy.source.display(),
+            policy.relay_url
+        );
     }
     if let Some(plan) = &config.update_helper {
         // Deliberately do not expose plan paths or subprocess diagnostics.

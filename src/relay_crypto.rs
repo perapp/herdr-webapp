@@ -101,6 +101,12 @@ impl Identity {
             SigningKey::from_slice(&decode(&saved.private_key, 32)?).context("Invalid identity")?;
         Ok(Self { key })
     }
+    /// Process-lifetime key that is never written anywhere.
+    pub fn ephemeral() -> Self {
+        Self {
+            key: SigningKey::random(&mut OsRng),
+        }
+    }
     pub fn public_key(&self) -> String {
         URL_SAFE_NO_PAD.encode(self.key.verifying_key().to_encoded_point(false).as_bytes())
     }

@@ -234,3 +234,41 @@ path, public origin, revision and signaling protocol. Incompatible candidates
 cannot replace the currently serving main process. Stable catalogs/version URLs
 are never overwritten. Old main sockets drain finitely; activation requires
 fresh signaling sessions and makes no seamless-migration or input-replay promise.
+
+## Optional enterprise (Okta) mode
+
+Deployment, configuration and bounds are in `docs/enterprise-okta.md`. The v1
+transcripts above are unchanged; an enterprise relay adds these fields and
+messages, and refuses clients that omit them. An ordinary relay rejects a
+registration that carries `idToken`.
+
+- `/api/mode` adds `enterprise: {required:true, issuer, clientId, acrValues,
+  requiredAmr, grantLifetimeSeconds, recheckSeconds}` (otherwise `null`).
+- `register` adds `idToken`: the owner's current Okta ID token for `clientId`
+  (RS256; issuer, audience, expiry and issue time validated; issued within
+  `recheckSeconds`). `registered` adds
+  `enterprise: {grantKey, owner: {iss, sub}}`. `grantKey` is the relay's
+  process-lifetime P-256 key in the usual encoding.
+- Connector `{type:"renew", idToken}` re-proves the same owner. A registration
+  not renewed within `recheckSeconds` is removed and its socket closed.
+- Browser `join` adds `browserKey`. The upgrade request must carry the relay's
+  Okta session cookie and the exact `Origin`. The relay admits the join only if
+  the session principal `(iss, sub)` equals the registered owner.
+- The connector's `session` event adds `grant: {body, signature}`. `body` is the
+  exact JSON string
+  `{v:1, iss, sub, machineId, browserKey, context, sessionId, iat, exp, jti}`
+  and the signature covers `herdr-enterprise-grant-v1\n<body>` with `grantKey`.
+  `context` is the transcript context line. The browser never receives a grant.
+- Relay `{type:"grant", sessionId, grant}` renews at half life. A connector
+  rejects a grant unless signature, owner (its own enrolled principal),
+  `machineId`, `context`, `sessionId`, an unseen `jti`, a lifetime of at most
+  900 s and an `iat` within 120 s all hold; the browser key must equal the
+  session's first grant and the `publicKey` of the auth payload. Validity is then
+  timed monotonically for `exp - iat` from receipt.
+- When that time passes without a renewal the connector ends the session and
+  closes the peer connection. The relay ends a session (`ended`) as soon as its
+  Okta session, owner match or revocation state no longer holds.
+- A refusal that its user can act on adds a fixed `code` to the otherwise
+  payload-free `error`: `enterprise-login-required`,
+  `enterprise-okta-unavailable`, `enterprise-owner-mismatch`,
+  `enterprise-revoked`.

@@ -37,6 +37,7 @@ viewer, administration dashboard, or desktop-control approval workflow.
 - Reuse the debug backend for UI edits; `make dev-build` + restart dev after Rust changes. `make setup` forces dependency refresh.
 - Reuse `scripts/relay-e2e/browser.py` helpers; wait for actual reload/disconnect state, not sleeps or positional selectors. Same-profile tabs share saved navigation.
 - `make ui-e2e` drives a headless phone and desktop Chrome against a disposable Core (keyboard, scrolling, selection, attach, Settings); extend `scripts/ui-e2e.py` when a browser-only behaviour changes. It also runs as part of `make smoke`.
+- `make enterprise-e2e` covers the optional Okta mode (`docs/enterprise-okta.md`) with a stand-in identity provider; it also runs in `make smoke`. Extend `scripts/enterprise-e2e.py` when authorization behaviour changes.
 - Run full `make check && make release && make smoke` once at the final gate; add `make audit` (dependency advisories, needs network) when dependencies changed or before a release. Local HMR does not prove relay/TURN behavior.
 
 ## Engineering and verification

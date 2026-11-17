@@ -80,6 +80,7 @@ identities so already-installed launchers and relay managers keep working.
 - [Core bootstrap and per-computer updates](docs/installation-updates.md)
 - [Installed apps and remembered computers](docs/pwa.md) · [Background notifications](docs/web-push.md)
 - [Self-hosting stable and main](distribution/main-channel.md)
+- [Enterprise deployment with Okta sign-in](docs/enterprise-okta.md)
 - [Connector launcher and updates](distribution/relay-launcher.md)
 - [Release catalog](distribution/relay-catalog.md) · [Relay protocol](RELAY-PROTOCOL.md)
 - [Verification results](RELAY-VERIFICATION.md)

@@ -4,8 +4,10 @@ import type { Pairing, Computer, BrowserIdentity } from './peerCrypto';
 import { PeerService } from './peerService';
 import { normalizeBuild, versionText } from './versions';
 import type { BuildInfo } from './versions';
+import { denialMessage, isEnterpriseDenial } from './enterprise';
+import type { EnterpriseDenial } from './enterprise';
 
-export interface ConnectionState { status: string; service?: PeerService; version?: string; build?: BuildInfo; route?: string; error?: string }
+export interface ConnectionState { status: string; service?: PeerService; version?: string; build?: BuildInfo; route?: string; error?: string; /** Enterprise refusal: reconnecting cannot help until the user acts. */ denial?: EnterpriseDenial }
 export interface PeerTarget { computer?: Computer; pairing?: Pairing }
 /** A reconnect creates a new signaling session, PC, service and all channel epochs. */
 export class PeerConnection {
@@ -15,7 +17,7 @@ export class PeerConnection {
   private retry: ReturnType<typeof setTimeout> | undefined;
   private attempts = 0;
   private identity: BrowserIdentity | undefined;
-  constructor(private target: PeerTarget, private update: (state: ConnectionState) => void, private forceTurn = false, private onSignalingOpen?: () => void) {}
+  constructor(private target: PeerTarget, private update: (state: ConnectionState) => void, private forceTurn = false, private onSignalingOpen?: () => void, private enterprise = false) {}
   start(): void { this.stopped = false; void this.connect(); }
   stop(): void { this.stopped = true; this.epoch++; clearTimeout(this.retry); this.cleanup?.(); this.cleanup = undefined; }
   private async connect(): Promise<void> {
@@ -118,7 +120,7 @@ export class PeerConnection {
         const msg = JSON.parse(event.data);
         if (msg.type === 'challenge') {
           if (joined || typeof msg.nonce !== 'string') throw new Error('Duplicate challenge');
-          joined = true; send({ type: 'join', machineId });
+          joined = true; send(this.enterprise ? { type: 'join', machineId, browserKey: identity.publicKey } : { type: 'join', machineId });
         } else if (msg.type === 'session') {
           if (!joined || sessionId || typeof msg.sessionId !== 'string' || !msg.sessionId || msg.sessionId.length > 256 || /[\r\n]/.test(msg.sessionId) || msg.machineId !== machineId) throw new Error('Invalid session');
           sessionId = msg.sessionId;
@@ -152,6 +154,10 @@ export class PeerConnection {
             if (!accepted || !offered || answered || !pc || typeof body.sdp !== 'string') throw new Error('Unexpected answer');
             answered = true; await pc.setRemoteDescription({ type: 'answer', sdp: body.sdp }); guard();
           } else throw new Error('Unexpected signed message');
+        } else if (msg.type === 'error' && isEnterpriseDenial(msg.code)) {
+          // The relay refused or ended authorization. Retrying silently would loop.
+          dispose(); this.epoch++; this.stopped = true;
+          this.update({ ...denialMessage(msg.code), denial: msg.code });
         } else if (msg.type === 'ended' || msg.type === 'error') throw new Error('Signaling session ended');
         else throw new Error('Unknown relay message');
       };

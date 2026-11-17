@@ -18,6 +18,7 @@
   import { PeerConnection } from './lib/peerConnection';
   import type { PeerTarget, ConnectionState } from './lib/peerConnection';
   import { disconnectedTransport, setApplicationTransport } from './lib/transport';
+  import { clearLoginAttempt, enterpriseLogout, enterpriseRequired, enterpriseSession, loginErrorMessage, loginUrl, mayAutoLogin, stashPairing, takeLoginError, takeStashedPairing } from './lib/enterprise';
 
   let { pairingFragment = null, relayVersion = '', serverMode, sourceRevision = '' }: { pairingFragment?: string | null; relayVersion?: string; serverMode?: unknown; sourceRevision?: string } = $props();
   let update = $state<ReloadState>({ ready: false, critical: false, dirty: false });
@@ -51,8 +52,70 @@
   let loading = $state(true);
   const channel = channelBase() === '/main/' ? 'Main' : 'Stable';
   let showSettings = $state(false);
+  // The raw capability of the pairing in progress, kept in memory only.
+  let pairingSource: string | null = null;
   const command = `curl -fsSL '${location.origin}${channelPath('/run')}' | sh`;
   const generation = new ConnectionGeneration();
+  // Enterprise deployment: the relay and connector refuse everything without the
+  // owner's Okta sign-in. This only routes the user there and back.
+  const enterprise = (() => enterpriseRequired(serverMode))();
+  let signIn = $state<{ message?: string } | null>(null);
+  let account = $state('');
+  let held: string | null = null;
+  function startLogin() {
+    if (held) stashPairing(held);
+    held = null;
+    location.assign(loginUrl());
+  }
+  /** Resolves true when signed in; otherwise shows or starts the sign-in. */
+  async function ensureSignedIn(fragment: string | null, automatic = true): Promise<boolean> {
+    held = fragment;
+    const failure = takeLoginError();
+    try {
+      const session = await enterpriseSession();
+      if (!mounted) return false;
+      if (session.authenticated) { account = session.name || ''; signIn = null; clearLoginAttempt(); return true; }
+    } catch {
+      if (mounted) { loading = false; signIn = { message: 'Could not check your company sign-in. Check your connection and try again.' }; }
+      return false;
+    }
+    account = '';
+    if (failure) signIn = { message: loginErrorMessage(failure) };
+    else if (automatic && mayAutoLogin()) startLogin();
+    else signIn = {};
+    loading = false;
+    return false;
+  }
+  async function enter(fragment: string | null) {
+    if (!enterprise) { void resolveRoute(fragment); return; }
+    stop(); loading = true;
+    if (!await ensureSignedIn(fragment)) return;
+    held = null;
+    let pairing = fragment;
+    if (!pairing) {
+      const stashed = takeStashedPairing();
+      if (stashed.expired) {
+        paired?.(); loading = false;
+        connectionState = { status: 'Pairing link expired', error: 'Signing in took longer than a pairing link is kept. Scan the QR code on your computer again.' };
+        return;
+      }
+      pairing = stashed.fragment ?? null;
+    }
+    void resolveRoute(pairing);
+  }
+  let sessionChecked = 0;
+  function reauthenticate() {
+    // Keep an unfinished pairing for after the sign-in; nothing is replayed.
+    const pending = pairingSource;
+    stop(); loading = true;
+    void ensureSignedIn(pending).then(ok => { if (ok && mounted) void resolveRoute(pending); });
+  }
+  async function signOut() {
+    stop(); selected = '';
+    try { await enterpriseLogout(); } catch { /* the session check below decides */ }
+    account = '';
+    await ensureSignedIn(null, false);
+  }
   function stop() {
     generation.invalidate();
     captureActivity();
@@ -74,11 +137,18 @@
       // Snapshot before App teardown; removed drafts must not become falsely safe.
       captureActivity();
       if (next.status === 'Pairing expired') paired?.();
+      if (next.denial === 'enterprise-login-required') { reauthenticate(); return; }
+      // A lost connection may be a lost sign-in (for example when the computer went
+      // offline at the same moment): ask the relay rather than retrying blindly.
+      if (enterprise && !next.service && !next.denial && next.error && Date.now() - sessionChecked > 10_000) {
+        sessionChecked = Date.now();
+        void enterpriseSession().then(session => { if (mounted && current() && !session.authenticated) reauthenticate(); }).catch(() => {});
+      }
       // Relay App is unmounted on loss: no stale terminal, HTTP or upload can replay.
       setApplicationTransport(next.service || disconnectedTransport);
       connectionState = next;
-      if (next.service) { paired?.(); void refresh(current).catch(() => {}); }
-    }, forceTurn, () => { if (current()) void updater.check(); });
+      if (next.service) { pairingSource = null; paired?.(); void refresh(current).catch(() => {}); }
+    }, forceTurn, () => { if (current()) void updater.check(); }, enterprise);
     connection.start();
   }
   function routePath(path: string) { return forceTurn ? `${path}${path.includes('?') ? '&' : '?'}forceTurn=1` : path; }
@@ -94,6 +164,7 @@
     try {
       // A pairing capability overrides launch restoration and explicit connection URLs.
       if (fragment) {
+        pairingSource = fragment;
         const pairing = await parsePairing(fragment);
         if (!mounted || !current()) return;
         history.replaceState(null, '', routePath(connectionPath(pairing.machineId)));
@@ -150,7 +221,7 @@
       if (mounted && current()) connectionState = { status: 'Unable to forget this computer', error: 'Browser storage is unavailable. Try again.' };
     }
   }
-  function retry() { void resolveRoute(); }
+  function retry() { void enter(null); }
   async function copy() {
     copied = false; copyError = '';
     try { await navigator.clipboard.writeText(command); if (mounted) copied = true; }
@@ -164,10 +235,10 @@
     document.addEventListener('visibilitychange', foreground);
     void updater.check(); // Also catch old assets racing a newly activated mode response.
     setApplicationTransport(disconnectedTransport);
-    const popstate = () => { paired?.(); void resolveRoute(); };
+    const popstate = () => { paired?.(); void enter(null); };
     window.addEventListener('popstate', popstate);
     const fragment = pairingFragment; pairingFragment = null;
-    void resolveRoute(fragment);
+    void enter(fragment);
     return () => { mounted = false; stop(); updater.stop(); activity.stop(); document.removeEventListener('visibilitychange', foreground); window.removeEventListener('popstate', popstate); };
   });
 </script>
@@ -178,7 +249,24 @@
     <button disabled={update.critical} onclick={reloadUpdate}>Reload</button>
   </aside>
 {/if}
-{#if connectionState.service}
+{#if signIn}
+  <main class="login-shell" data-testid="enterprise-sign-in">
+    <section class="login-card" aria-labelledby="sign-in-heading">
+      <header class="start-heading">
+        <span class="wordmark"><img
+          class="herdr-mark"
+          src={channelPath('/icons/herdr.svg')}
+          alt=""
+          width="32"
+          height="32"/>herdr<span class="web-label">web</span></span>
+      </header>
+      <h1 id="sign-in-heading">Sign in to continue</h1>
+      <p class="start-intro">This relay requires your company Okta account. Only the owner of a computer can open its terminals.</p>
+      {#if signIn.message}<p class="error" role="alert">{signIn.message}</p>{/if}
+      <button class="copy-command" data-testid="enterprise-sign-in-button" onclick={startLogin}>Sign in with Okta</button>
+    </section>
+  </main>
+{:else if connectionState.service}
   {#key selected}
   <App
     onConnections={showConnections}
@@ -291,6 +379,9 @@
           bind:checked={forceTurn}
           disabled={!!connection}/> Force TURN on the next connection</label><p>Relay {displayVersion(modeBuild(serverMode), relayVersion)}. TURN availability depends on this relay’s configuration.</p></details>
       </details>
+      {#if enterprise && account}
+        <p class="account-row" data-testid="enterprise-account"><span>Signed in as {account}</span><button class="quiet" onclick={() => void signOut()}>Sign out</button></p>
+      {/if}
       <div class="source-row"><SourceLink /></div>
     </section>
   </main>
@@ -300,6 +391,7 @@
 <style>
   .login-shell { padding: 32px 20px; align-items: start; }
   .login-card { position: relative; min-width: 0; width: min(100%, 520px); margin: clamp(0px, 7vh, 72px) 0; padding: 24px; overflow-wrap: anywhere; }
+  .account-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 14px 0 0; padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; }
   .source-row { display: flex; justify-content: center; margin-top: 14px; }
   .start-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-right: 48px; margin-bottom: 28px; }
   .wordmark { text-decoration: none; gap: 7px; font-size: 1.65rem; }

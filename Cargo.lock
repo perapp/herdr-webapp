@@ -1529,6 +1529,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.12.0",
  "hyper-util",
+ "jwt-simple",
  "libc",
  "mime_guess",
  "openssl",
