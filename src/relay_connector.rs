@@ -45,6 +45,40 @@ use webrtc::{
 // Browser budget: 32 terminals, two uploads and control, with some headroom.
 const MAX_CONCURRENT_CHANNELS: usize = 40;
 const MESSAGE_SEND_TIMEOUT: Duration = Duration::from_secs(2);
+const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const RELAY_PING_INTERVAL: Duration = Duration::from_secs(15);
+const RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Detects a relay socket that died silently, as after switching networks or
+/// waking from sleep: the old TCP connection is never reset, so a read alone
+/// would wait forever while the relay has long since dropped this computer.
+struct RelayLiveness {
+    seen: tokio::time::Instant,
+    pinged: tokio::time::Instant,
+}
+impl RelayLiveness {
+    fn new(now: tokio::time::Instant) -> Self {
+        Self {
+            seen: now,
+            pinged: now,
+        }
+    }
+    /// Any frame from the relay, including the pong to our own ping.
+    fn received(&mut self, now: tokio::time::Instant) {
+        self.seen = now;
+    }
+    fn lost(&self, now: tokio::time::Instant) -> bool {
+        now.duration_since(self.seen) > RELAY_IDLE_TIMEOUT
+    }
+    /// True at most once per interval; the caller then sends one ping.
+    fn ping_due(&mut self, now: tokio::time::Instant) -> bool {
+        let due = now.duration_since(self.pinged) >= RELAY_PING_INTERVAL;
+        if due {
+            self.pinged = now;
+        }
+        due
+    }
+}
 
 pub struct ConnectorConfig {
     pub relay_url: String,
@@ -749,9 +783,8 @@ pub async fn run(config: ConnectorConfig) -> Result<()> {
         request
             .headers_mut()
             .insert("Origin", endpoint.origin.parse()?);
-        let connected =
-            tokio::select! { _ = &mut stop => break, result = connect_async(request) => result };
-        if let Ok((socket, _)) = connected {
+        let connected = tokio::select! { _ = &mut stop => break, result = tokio::time::timeout(RELAY_CONNECT_TIMEOUT, connect_async(request)) => result };
+        if let Ok(Ok((socket, _))) = connected {
             if let Some(card) = &dashboard {
                 card.log("Relay connected; authenticating registration.");
             }
@@ -912,9 +945,18 @@ where
     let mut sessions = HashMap::<String, (mpsc::Sender<Value>, Option<Arc<GrantClock>>)>::new();
     let mut workers = JoinSet::new();
     let mut shutdown = false;
+    let mut liveness = RelayLiveness::new(tokio::time::Instant::now());
+    let mut watchdog = tokio::time::interval(Duration::from_secs(5));
     let result: Result<()> = async {
         loop { tokio::select! {
             _ = &mut *stop => { shutdown = true; break; },
+            _ = watchdog.tick() => {
+                let now = tokio::time::Instant::now();
+                ensure!(!liveness.lost(now), "relay connection went silent");
+                if liveness.ping_due(now) {
+                    tokio::time::timeout(Duration::from_secs(5), socket.send(Message::Ping(Vec::new().into()))).await??;
+                }
+            },
             // Owner re-verification: forward each fresh proof, and stop serving
             // as soon as the last one is revoked or older than the recheck bound.
             changed = async { match &mut proofs { Some(p) => p.changed().await, None => std::future::pending().await } } => {
@@ -930,7 +972,9 @@ where
             message = socket.next() => {
                 let Some(message) = message else { break; };
                 let message = message?;
-                if let Message::Ping(bytes) = message { socket.send(Message::Pong(bytes)).await?; continue; }
+                liveness.received(tokio::time::Instant::now());
+                if let Message::Ping(bytes) = message { tokio::time::timeout(Duration::from_secs(5), socket.send(Message::Pong(bytes))).await??; continue; }
+                if matches!(message, Message::Pong(_)) { continue; }
                 if matches!(message, Message::Close(_)) { break; }
                 ensure!(message.len() <= 700 * 1024, "relay message too large");
                 let value: Value = serde_json::from_str(message.to_text()?)?;
@@ -988,7 +1032,8 @@ where
     if drained.is_err() {
         workers.abort_all();
     }
-    let _ = socket.close(None).await;
+    // A dead network must not hold up the reconnect.
+    let _ = tokio::time::timeout(Duration::from_secs(2), socket.close(None)).await;
     result?;
     Ok(shutdown)
 }
@@ -1016,6 +1061,22 @@ async fn shutdown_signal() {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn silent_relay_is_pinged_then_declared_lost_and_any_frame_revives_it() {
+        use super::{RELAY_IDLE_TIMEOUT, RELAY_PING_INTERVAL, RelayLiveness};
+        use std::time::Duration;
+        let start = tokio::time::Instant::now();
+        let mut liveness = RelayLiveness::new(start);
+        assert!(!liveness.ping_due(start + RELAY_PING_INTERVAL - Duration::from_secs(1)));
+        assert!(liveness.ping_due(start + RELAY_PING_INTERVAL));
+        assert!(!liveness.ping_due(start + RELAY_PING_INTERVAL + Duration::from_secs(5)));
+        assert!(!liveness.lost(start + RELAY_IDLE_TIMEOUT));
+        assert!(liveness.lost(start + RELAY_IDLE_TIMEOUT + Duration::from_secs(1)));
+        liveness.received(start + RELAY_IDLE_TIMEOUT);
+        assert!(!liveness.lost(start + RELAY_IDLE_TIMEOUT + Duration::from_secs(1)));
+        // Three missed ping intervals fit inside the idle bound.
+        assert!(RELAY_PING_INTERVAL * 3 <= RELAY_IDLE_TIMEOUT);
+    }
     #[test]
     fn channel_completion_scopes_errors_to_non_control_channels() {
         for succeeded in [false, true] {
